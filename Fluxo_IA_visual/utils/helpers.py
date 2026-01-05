@@ -517,6 +517,7 @@ def crear_objeto_resultado(datos_dict: dict) -> AnalisisTPV.ResultadoExtraccion:
             traspaso_entre_cuentas=datos_dict.get("traspaso_entre_cuentas"),
             total_entradas_financiamiento=datos_dict.get("total_entradas_financiamiento"),
             entradas_bmrcash=datos_dict.get("entradas_bmrcash"),
+            total_moratorios=datos_dict.get("total_moratorios"),
             entradas_TPV_bruto=datos_dict.get("entradas_TPV_bruto"),
             entradas_TPV_neto=datos_dict.get("entradas_TPV_neto"),
         )
@@ -539,6 +540,69 @@ def crear_objeto_resultado(datos_dict: dict) -> AnalisisTPV.ResultadoExtraccion:
             DetalleTransacciones=AnalisisTPV.ErrorRespuesta(error=f"Error al estructurar el diccionario de respuesta: {e}")
         )
     
+def construir_fecha_completa(dia_raw: str, periodo_inicio_str: str, periodo_fin_str: str) -> str:
+    """
+    Recibe un día (ej: "02", "15") y las fechas del periodo (metadata).
+    Devuelve la fecha completa formateada (dd/mm/yyyy).
+    """
+    # 1. Limpieza básica del día
+    if not dia_raw: return ""
+    
+    # Intentamos obtener solo los dígitos del día
+    dia_str = "".join(filter(str.isdigit, str(dia_raw)))
+    if not dia_str: return str(dia_raw) # Si no hay números, devolvemos lo que llegó
+    
+    try:
+        dia_int = int(dia_str)
+    except:
+        return str(dia_raw)
+
+    # 2. Parseo de fechas del periodo (Asumimos formato dd/mm/yyyy o yyyy-mm-dd)
+    # Ajusta los formatos según cómo los devuelva tu función de metadata
+    def parse_fecha(f_str):
+        if not f_str: return None
+        # Intentamos formatos comunes
+        for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y"):
+            try:
+                return datetime.strptime(str(f_str).strip(), fmt)
+            except ValueError:
+                continue
+        return None
+
+    dt_inicio = parse_fecha(periodo_inicio_str)
+    dt_fin = parse_fecha(periodo_fin_str)
+
+    # 3. Lógica de asignación de Mes/Año
+    # Si no tenemos metadata, devolvemos solo el día (fallback)
+    if not dt_inicio: 
+        return f"{dia_int:02d}/??/????"
+
+    # Si solo tenemos inicio (o inicio y fin son el mismo mes/año), es fácil
+    mes = dt_inicio.month
+    anio = dt_inicio.year
+
+    if dt_fin:
+        # CASO COMPLEJO: El periodo cruza meses (Ej: 15 Dic a 14 Ene)
+        if dt_inicio.month != dt_fin.month:
+            # Heurística: Si el día extraído es mayor o igual al día de inicio, 
+            # probablemente pertenece al primer mes. Si es menor, al segundo.
+            # Ej: Periodo 15/12 al 14/01. Día "20" -> 20/12. Día "05" -> 05/01.
+            if dia_int >= dt_inicio.day:
+                mes = dt_inicio.month
+                anio = dt_inicio.year
+            else:
+                mes = dt_fin.month
+                anio = dt_fin.year
+    
+    # 4. Construcción final
+    try:
+        # Creamos la fecha para validar que sea real (ej: evitar 30 de Febrero)
+        fecha_completa = datetime(year=anio, month=mes, day=dia_int)
+        return fecha_completa.strftime("%d/%m/%Y")
+    except ValueError:
+        # Si el día es inválido (ej: 32), devolvemos error controlado
+        return f"{dia_int:02d}/{mes:02d}/{anio} (Fecha Inválida)"
+        
 # --- FUNCIONES AUXILIARES NOMIFLASH ---
 def verificar_fecha_comprobante(fecha_str: Optional[str]) -> Optional[bool]:
     """

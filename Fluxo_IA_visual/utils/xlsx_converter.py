@@ -1,14 +1,16 @@
-import io
+import io, re
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, NamedStyle
 from typing import Dict, Any
-
 from .helpers_texto_fluxo import (
     PALABRAS_EFECTIVO, 
     PALABRAS_TRASPASO_ENTRE_CUENTAS,
     PALABRAS_TRASPASO_FINANCIAMIENTO,
     PALABRAS_BMRCASH,
-    PALABRAS_EXCLUIDAS
+    PALABRAS_EXCLUIDAS,
+    AGREGADORES_MAPPING,
+    PALABRAS_TRASPASO_MORATORIO,
+    TERMINALES_BANCO_MAPPING
 )
 
 def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
@@ -25,6 +27,32 @@ def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
             cell.fill = header_fill
             cell.alignment = Alignment(horizontal='center')
 
+    # --- NUEVA LÓGICA DE DETECCIÓN INTELIGENTE ---
+    def detectar_proveedor_terminal(descripcion: str, banco_actual: str) -> str:
+        desc_lower = descripcion.lower()
+        banco_upper = banco_actual.upper() if banco_actual else "GENERICO"
+
+        # 1. NIVEL PRIORITARIO: REGEX ESPECÍFICOS (Banorte)
+        # Busca 8 dígitos seguidos de 'c' o 'd' (ej: 12345678c), respetando límites de palabra (\b)
+        if banco_upper == "BANORTE":
+            if re.search(r"\b\d{8}[cd]\b", desc_lower):
+                return "BANORTE TERMINAL"
+
+        # 2. NIVEL GLOBAL: AGREGADORES (Busca siempre)
+        for nombre_agg, keywords in AGREGADORES_MAPPING.items():
+            if any(k in desc_lower for k in keywords):
+                return nombre_agg
+
+        # 3. NIVEL CONTEXTUAL: SOLO BUSCAR EN EL DICCIONARIO DEL BANCO ACTUAL
+        # Si el banco es BBVA, solo buscamos las keys de BBVA.
+        if banco_upper in TERMINALES_BANCO_MAPPING:
+            keywords_banco = TERMINALES_BANCO_MAPPING[banco_upper]
+            if any(k in desc_lower for k in keywords_banco):
+                # Retornamos el nombre del banco como proveedor de la terminal
+                return banco_upper 
+
+        return "NO DEFINIDA"
+
     resultados = data_json.get("resultados_individuales", [])
 
     # ==========================================
@@ -34,7 +62,7 @@ def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
     ws1.title = "Resumen por Cuenta"
     ws1.append([
         "Mes", "Cuenta", "Moneda", "Depósitos", "Cargos", "TPV Bruto", 
-        "Financiamientos", "Efectivo", "Traspaso entre cuentas", "BMR CASH"
+        "Financiamientos", "Efectivo", "Traspaso entre cuentas", "BMR CASH", "Moratorios"
     ])
     
     for res in resultados:
@@ -55,7 +83,8 @@ def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
             ia.get("total_entradas_financiamiento", 0.0),
             ia.get("depositos_en_efectivo", 0.0),
             ia.get("traspaso_entre_cuentas", 0.0),
-            ia.get("entradas_bmrcash", 0.0)
+            ia.get("entradas_bmrcash", 0.0),
+            ia.get("total_moratorios", 0.0)
         ])
 
     aplicar_estilo_header(ws1)
@@ -92,11 +121,22 @@ def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
     # ==========================================
     def crear_hoja_detalle(nombre_hoja, criterio_filtro_func):
         ws = wb.create_sheet(nombre_hoja)
-        ws.append(["Banco", "Fecha", "Descripción", "Monto", "Tipo", "Categoría (IA)"])
+        
+        # Headers
+        headers = ["Banco", "Fecha", "Descripción", "Monto", "Tipo", "Categoría (IA)"]
+        es_hoja_tpv = (nombre_hoja == "Transacciones TPV")
+        if es_hoja_tpv:
+            headers.append("Terminal / Proveedor")
+            
+        ws.append(headers)
         
         for res in resultados:
             ia = res.get("AnalisisIA") or {}
-            banco_nom = ia.get("banco", "Desconocido")
+            
+            # --- OBTENER EL BANCO ACTUAL DEL RESULTADO ---
+            # Esto es clave para la lógica de contexto
+            banco_actual_doc = ia.get("banco", "Desconocido")
+            
             detalle = res.get("DetalleTransacciones", {})
             transacciones = detalle.get("transacciones", [])
             
@@ -104,23 +144,32 @@ def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
                 for tx in transacciones:
                     desc = str(tx.get("descripcion", "")).lower()
                     tipo = str(tx.get("tipo", "")).lower()
-                    # AHORA EXTRAEMOS LA CATEGORÍA PARA EL FILTRO
                     cat = str(tx.get("categoria", "GENERAL")).upper()
                     
-                    # --- FILTRADO ---
-                    # Pasamos (Descripción, Tipo, Categoría) al filtro
                     if criterio_filtro_func(desc, tipo, cat):
                         try:
                             monto_val = float(str(tx.get("monto", "0")).replace(",", ""))
                         except: monto_val = 0.0
 
-                        ws.append([
-                            banco_nom, tx.get("fecha", ""), tx.get("descripcion", ""),
-                            monto_val, tx.get("tipo", ""), cat
-                        ])
+                        fila = [
+                            banco_actual_doc, 
+                            tx.get("fecha", ""), 
+                            tx.get("descripcion", ""),
+                            monto_val, 
+                            tx.get("tipo", ""), 
+                            cat
+                        ]
+
+                        # Pasar el banco actual a la función de detección
+                        if es_hoja_tpv:
+                            nombre_terminal = detectar_proveedor_terminal(desc, banco_actual_doc)
+                            fila.append(nombre_terminal)
+
+                        ws.append(fila)
         
         aplicar_estilo_header(ws)
         ws.column_dimensions['C'].width = 60
+        if es_hoja_tpv: ws.column_dimensions['G'].width = 25
         for row in ws.iter_rows(min_row=2, min_col=4, max_col=4):
             for cell in row: cell.style = currency_style
 
@@ -152,6 +201,7 @@ def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
         if any(p in desc for p in PALABRAS_TRASPASO_ENTRE_CUENTAS): return False
         if any(p in desc for p in PALABRAS_TRASPASO_FINANCIAMIENTO): return False
         if any(p in desc for p in PALABRAS_BMRCASH): return False
+        if any(p in desc for p in PALABRAS_TRASPASO_MORATORIO): return False
         
         return True
     
@@ -169,8 +219,11 @@ def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
     # 8. BMRCASH
     crear_hoja_detalle("BMRCASH", lambda d, t, c: not es_excluido(d) and any(p in d for p in PALABRAS_BMRCASH))
 
+    # 9. MORATORIOS
+    crear_hoja_detalle("Moratorios", lambda d, t, c: not es_excluido(d) and any(p in d for p in PALABRAS_TRASPASO_MORATORIO))
+
     # ==========================================
-    # 9. RESUMEN GENERAL
+    # 10. RESUMEN GENERAL
     # ==========================================
     ws_final = wb.create_sheet("Resumen General")
     ws_final.append(["Métrica", "Valor"])
