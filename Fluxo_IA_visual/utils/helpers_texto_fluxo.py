@@ -22,7 +22,7 @@ PALABRAS_TRASPASO_ENTRE_CUENTAS = [
 ]   
 
 PALABRAS_TRASPASO_FINANCIAMIENTO = [
-    "prestamo", "anticipo de ventas", "anticipo de venta", "financiamiento"
+    "prestamo", "anticipo de ventas", "anticipo de venta", "financiamiento", "anticipo", "adelanto", "adelanto de ventas", "préstamo", "crédito", "otorgamiento de crédito"
 ]
 
 PALABRAS_BMRCASH = [
@@ -30,7 +30,7 @@ PALABRAS_BMRCASH = [
 ]
 
 PALABRAS_TRASPASO_MORATORIO = [ # Faltan ejemplos
-    "cargo por moratorio", "intereses moratorios", "mora", "recargo", "recargos", "penalización", "pena", "penalizaciones", "pena convencional", "penalizacion", "penalizaciones convencionales", "cargo por moratorios", "interes moratorio"
+    "cargo por moratorio", "intereses moratorios", "recargo", "recargos", "penalización", "pena", "penalizaciones", "pena convencional", "penalizacion", "penalizaciones convencionales", "cargo por moratorios", "interes moratorio", "cargo por intereses moratorios", "recargo por intereses moratorios"
 ]
 
 # Definimos los campos esperados y sus tipos (No funcionan aún)
@@ -42,6 +42,45 @@ CAMPOS_STR = [
 CAMPOS_FLOAT = [
     "comisiones", "depositos", "cargos", "saldo_promedio", "depositos_en_efectivo", "entradas_TPV_bruto", "entradas_TPV_neto"
 ]
+
+# ==========================================
+# 1. CONFIGURACIÓN DE TERMINALES (REESTRUCTURADA)
+# ==========================================
+
+# A. AGREGADORES (Globales: Aparecen en cualquier banco)
+AGREGADORES_MAPPING = {
+    "BILLPOCKET": ["billpocket", "deposito pocketgroup", "deposito billpocket", "deposito bpu", "pocketgroup", "pocket de latinoamerica sapi de cv", "pocket de latinoamérica, s.a.p.i de c.v."],
+    "GETNET": ["getnet"],
+    "FISERV": ["fiserv", "first data", "firstdata"],
+    "SR PAGO": ["sr pago", "srpago"],
+    "KIWI": ["kiwi", "kiwi bop sa de cv", "kiwi international payment technologies"],
+    "CLIP": ["clip"],
+    "MENTA": ["menta"],
+    "ZETTLE": ["zettle", "izettle", "izettle by paypal", "zettle by pay pal", "zettle by paypal"],
+    "MERCADO PAGO": ["mercado pago", "mercadopago"],
+    "MP AGREGADOR": ["mp agregador", "blue point"],
+    "NET PAY": ["net pay", "netpay"],
+    "SMPS": ["smps"],
+    "WUZI": ["wuzi"],
+    "VELPAY": ["velpay"],
+    "EVOPAY": ["evopay mx", "evopay", "deposito ventas netas por evopaymx", "deposito ventas netas d tar", "deposito ventas netas d amex"]
+}
+
+# B. TERMINALES BANCARIAS (Contextuales: Solo se buscan si estamos en ese banco)
+# Las llaves deben coincidir con el nombre estandarizado del banco que devuelve tu IA/Regex
+TERMINALES_BANCO_MAPPING = {
+    "BANBAJIO": ["deposito negocios afiliados"],
+    "BBVA": ["terminales punto de venta", "tdc inter", "ventas crédito", "ventas débito", "ventas nal. amex", "ventas nal amex"],
+    "AFIRME": ["venta tpv cr", "venta tpv db", "venta tpvcr", "venta tpvdb"],
+    "HSBC": ["venta tpv hsbc", "ventatpv hsbc", "venta tpvhsbc", "venta tpv cr hsbc", "venta tpv db hsbc", "venta tpvcr hsbc", "venta tpvdb hsbc", "transf rec hsbcnet tpv cr", "transf rec hsbcnet tpv db", "transf rec hsbcnet tpvcr", "transf rec hsbcnet tpvdb"],
+    "MIFEL": ["venta tpv mifel", "ventatpv mifel", "venta tpvmifel", "venta tpv cr mifel", "venta tpv db mifel", "venta tpvcr mifel", "venta tpvdb mifel", "transf rec mifelnet tpv cr", "transf rec mifelnet tpv db", "transf rec mifelnet tpvcr", "transf rec mifelnet tpvdb"],
+    "SCOTIABANK": ["amexco se", "american express company mexico", "american express company"],
+    "BANREGIO": ["abono ventas tdd", "abono ventas tdc", "abono ventastdd", "abono ventastdc"],
+    "SANTANDER": ["deposito ventas del día afil", "deposito ventas del dia afil"],
+    "MULTIVA": ["ventas tpvs", "ventas tdd", "ventas tdc", "ventas tarjetas", "ventas tdc inter", "venta credito", "ventas debito"],
+    # BANORTE se maneja por Regex especial, pero podemos poner palabras clave extra si existen
+    "BANORTE": [] 
+}
 
 CONFIGURACION_BANCOS = {
     "banorte": {
@@ -252,7 +291,7 @@ INSTRUCCIONES DE FORMATO (TOON):
 2.  Una línea por transacción.
 3.  Delimitador: Usa el caracter `|` (pipe) para separar los campos.
 4.  Estructura: `FECHA | DESCRIPCION COMPLETA | MONTO | TIPO | ETIQUETA`
-    * `FECHA`: dd/mm o formato original.
+    * `FECHA`: ÚNICAMENTE EL NÚMERO DE LA FECHA (ej. '02').
     * `DESCRIPCION`: Todo el texto del concepto.
     * `MONTO`: Solo números y puntos (ej. 1500.50).
     * `TIPO`: "cargo" o "abono".
@@ -268,8 +307,8 @@ INSTRUCCIONES CLAVE DE PROCESAMIENTO:
 5. Precisión Absoluta: Sé meticuloso con los montos y las fechas. No alucines información. Si un dato no está, déjalo como null.
 
 EJEMPLO DE SALIDA, SIEMPRE EN MINUSCULAS:
-05/MAY | VENTAS TARJETAS 123456 | 15200.50 | abono | GENERAL
-06/MAY | COMISION POR APERTURA | 500.00 | cargo | TPV
+05 | VENTAS TARJETAS 123456 | 15200.50 | abono | GENERAL
+06 | COMISION POR APERTURA | 500.00 | cargo | TPV
 """
 
 PROMPT_OCR_INSTRUCCIONES_BASE = """
@@ -278,7 +317,7 @@ INSTRUCCIONES DE FORMATO (TOON):
 2.  Una línea por transacción.
 3.  Delimitador: Usa el caracter `|` (pipe) para separar los campos.
 4.  Estructura: `FECHA | DESCRIPCION COMPLETA | MONTO | TIPO | ETIQUETA`
-    * `FECHA`: dd/mm o formato original.
+    * `FECHA`: ÚNICAMENTE EL NÚMERO DE LA FECHA (ej. '02').
     * `DESCRIPCION`: Todo el texto del concepto.
     * `MONTO`: Solo números y puntos (ej. 1500.50).
     * `TIPO`: "cargo" o "abono".
@@ -291,8 +330,8 @@ INSTRUCCIONES CLAVE DE PROCESAMIENTO:
 4.  procesamiento secuencial obligatorio: Estás recibiendo solo una imagen. Debes extraer los datos de la Imagen 1. Hasta terminar con todas. NO TE SALTES NINGUNA transacción. Tu objetivo es transcribir CADA transacción visible. Si hay 50 transacciones en una página, debes generar 50 objetos toon. No resumas.
 
 EJEMPLO DE SALIDA:
-05/MAY | DEPOSITO EFECTIVO SUC 02 | 5000.00 | abono | GENERAL
-05/MAY | CHEQUE PAGADO 001 | 2000.00 | cargo | GENERAL
+05 | DEPOSITO EFECTIVO SUC 02 | 5000.00 | abono | GENERAL
+05 | CHEQUE PAGADO 001 | 2000.00 | cargo | GENERAL
 """
 
 PROMPT_GENERICO = """
@@ -301,7 +340,7 @@ PROMPT_GENERICO = """
         - evopay
         - evopayments
         - psm payment services mexico sa de cv
-        - deposito bpu3057970600
+        - deposito bpu y 10 numeros
         - cobra online s.a.p.i. de c.v.
         - sr. pago
         - por favor paguen a tiempo, s.a. de c.v.
@@ -312,24 +351,13 @@ PROMPT_GENERICO = """
         - deremate.com de méxico, s. de r.l. de  c.v.
         - mercadolibre s de rl de cv
         - mercado lending, s.a de c.v
-        - deremate.com de méxico, s. de r.l de c.v
         - first data merchant services méxico s. de r.l. de c.v
         - adquira méxico, s.a. de c.v
-        - flap
-        - mercadotecnia ideas y tecnología, sociedad anónima de capital variable
-        - mit s.a. de c.v.
         - payclip, s. de r.l. de c.v
-        - grupo conektame s.a de c.v.
-        - conekta
-        - conektame
         - pocket de latinoamérica, s.a.p.i de c.v.
         - billpocket
         - pocketgroup
-        - banxol de méxico, s.a. de c.v.
-        - banwire
-        - promoción y operación, s.a. de c.v.
         - evo payments
-        - prosa
         - net pay sa de cv
         - net pay sapi de cv
         - izettle méxico, s. de r.l. de c.v.
@@ -349,15 +377,6 @@ PROMPT_GENERICO = """
         - exce cca
         - venta nal. amex
         - pocketgroup
-        - deposito efectivo
-        - deposito en efectivo
-        - dep.efectivo
-        - deposito efectivo corresponsal
-        - traspaso entre cuentas
-        - anticipo de ventas
-        - anticipo de venta
-        - financiamiento
-        - credito
     """
 
 PROMPTS_POR_BANCO = {
@@ -369,14 +388,6 @@ PROMPTS_POR_BANCO = {
             - venta tdc inter
             - ventas crédito
             - ventas débito 
-            - deposito efectivo
-            - deposito en efectivo
-            - dep.efectivo 
-            - deposito efectivo corresponsal 
-            - traspaso entre cuentas 
-            - traspaso cuentas propias
-            - anticipo de ventas
-            - anticipo de venta
             - financiamiento # si aparece esta palabra, colocala en la salida
             - credito # si aparece esta palabra, colocala en la salida
             - ventas nal. amex
@@ -394,9 +405,7 @@ PROMPTS_POR_BANCO = {
             las demás líneas deben contener:
             - deposito bpu
             - mp agregador s de rl de cv 
-            - anticipo rr belleza
-            - haycash sapi de cv
-            - gana
+            - anticipo {nombre comercial}
             - 0000001af
             - 0000001sq
             - trans sr pago
@@ -414,8 +423,6 @@ PROMPTS_POR_BANCO = {
             - zettle by paypal
             - pw online mexico sapi de cv
             - liquidacion wuzi
-            - prestamo
-            - anticipo
     IMPORTANTE: Cualquier otro tipo de depósito SPEI, transferencias de otros bancos o pagos de nómina que no coincidan con las frases de arriba de forma exacta, son tratados como 'GENERALES'.
     """,
 
@@ -426,6 +433,26 @@ PROMPTS_POR_BANCO = {
             - deposito negocios afiliados 
             - deposito negocios afiliados adquiriente
             - deposito negocios afiliados adquiriente optblue amex
+        
+        Reglas de la extracción multilinea, para que sea válida debe cumplir ambas:
+            la primer línea debe contener:
+            - deposito spei
+            
+            alguna de las demás líneas deben contener:
+            - cobra online sapi de cv
+            - bn-nts 6 digitos
+            - pw online mexico sapi de cv
+            - liquidacion wuzi
+            - mp agregador s de rl de cv
+            - trans sr pago
+            - net pay sapi de cv
+            - getnet mexico servicios de adquirencia s
+            - payclip s de rl de cv
+            - pocket de latinoamerica sapi de cv
+            - kiwi bop sa de cv
+            - kiwi international payment technologies
+            - zettle by paypal
+            - gananciasclip
     
     IMPORTANTE: Cualquier otro tipo de depósito SPEI, transferencias de otros bancos o pagos de nómina que no coincidan con las frases de arriba, son tratados como 'generales'.
     """,
@@ -441,17 +468,30 @@ PROMPTS_POR_BANCO = {
             la primer línea debe contener:
             - spei recibido
             - traspaso de cta
-            - spei recibido edl cliente red amigo
+            - spei recibido del cliente red amigo
             - pago recibido de banorte por
+            - deposito spei
             las demás líneas deben contener:
             - ganancias clip
             - clip
             - amexco
             - orden de netpay sapi de cv
-            - traspaso cuentas propias
-            - traspaso entre cuentas propias
-            - prestamo
             - dal sapi de cv
+            - cobra online sapi de cv
+            - bn-nts 6 digitos
+            - pw online mexico sapi de cv
+            - liquidacion wuzi
+            - deposito bpu
+            - mp agregador s de rl de cv
+            - trans sr pago
+            - net pay sapi de cv
+            - getnet mexico servicios de adquirencia s
+            - payclip s de rl de cv
+            - pocket de latinoamerica sapi de cv
+            - kiwi bop sa de cv
+            - kiwi international payment technologies
+            - zettle by paypal
+            - gananciasclip
     IMPORTANTE: Cualquier otro tipo de depósito SPEI, transferencias de otros bancos o pagos de nómina que no coincidan con las frases de arriba, son tratados como 'generales'.
     """,
 
@@ -466,6 +506,25 @@ PROMPTS_POR_BANCO = {
             - deposito efectivo
             - deposito en efectivo
             - dep.efectivo
+        Reglas de la extracción multilinea, para que sea válida debe cumplir ambas:
+        la primer línea debe contener:
+            - deposito spei
+            
+            alguna de las demás líneas deben contener:
+            - cobra online sapi de cv
+            - bn-nts 6 digitos
+            - pw online mexico sapi de cv
+            - liquidacion wuzi
+            - mp agregador s de rl de cv
+            - trans sr pago
+            - net pay sapi de cv
+            - getnet mexico servicios de adquirencia s
+            - payclip s de rl de cv
+            - pocket de latinoamerica sapi de cv
+            - kiwi bop sa de cv
+            - kiwi international payment technologies
+            - zettle by paypal
+            - gananciasclip
     IMPORTANTE: Cualquier otro tipo de depósito SPEI, transferencias de otros bancos o pagos de nómina que no coincidan con las frases de arriba, son tratados como 'generales'.
     """,
 
@@ -479,6 +538,26 @@ PROMPTS_POR_BANCO = {
             - deposito bpu y 10 numeros
             - transf rec hsbcnet dep tpv (comnibaciones de numeros)
             - deposito bpu (varias combinaciones)
+
+        Reglas de la extracción multilinea, para que sea válida debe cumplir ambas:
+        la primer línea debe contener:
+            - deposito spei
+            
+            alguna de las demás líneas deben contener:
+            - cobra online sapi de cv
+            - bn-nts 6 digitos
+            - pw online mexico sapi de cv
+            - liquidacion wuzi
+            - mp agregador s de rl de cv
+            - trans sr pago
+            - net pay sapi de cv
+            - getnet mexico servicios de adquirencia s
+            - payclip s de rl de cv
+            - pocket de latinoamerica sapi de cv
+            - kiwi bop sa de cv
+            - kiwi international payment technologies
+            - zettle by paypal
+            - gananciasclip
     IMPORTANTE: Cualquier otro tipo de depósito SPEI, transferencias de otros bancos o pagos de nómina que no coincidan con las frases de arriba, son tratados como 'generales'.
     """,
 
@@ -497,9 +576,25 @@ PROMPTS_POR_BANCO = {
             - transferencia spei
             - transferencia spei bn
             - transferencia spei entre
+            - deposito spei
             las demás líneas deben contener:
-            - dispersion ed fondos
+            - dispersion de fondos
             - cuentas
+            - cobra online sapi de cv
+            - bn-nts 6 digitos
+            - pw online mexico sapi de cv
+            - liquidacion wuzi
+            - deposito bpu
+            - mp agregador s de rl de cv
+            - trans sr pago
+            - net pay sapi de cv
+            - getnet mexico servicios de adquirencia s
+            - payclip s de rl de cv
+            - pocket de latinoamerica sapi de cv
+            - kiwi bop sa de cv
+            - kiwi international payment technologies
+            - zettle by paypal
+            - gananciasclip
     IMPORTANTE: Cualquier otro tipo de depósito SPEI, transferencias de otros bancos o pagos de nómina que no coincidan con las frases de arriba, son tratados como 'generales'.
     """,
 
@@ -509,6 +604,7 @@ PROMPTS_POR_BANCO = {
         Reglas de la extracción multilinea, para que sea válida debe cumplir ambas:
             la primer línea debe contener:
             - transf interbancaria spei
+            - deposito spei
             la segunda línea deben contener:
             - transf interbancaria spei
             - deposito bpu
@@ -517,7 +613,22 @@ PROMPTS_POR_BANCO = {
             la tercera línea deben contener:
             - pocket de latinoamerica sapi
             - first data merchant services m
-            - american express company mexic
+            - american express company mexico
+
+            alguna de las demás líneas deben contener:
+            - cobra online sapi de cv
+            - bn-nts 6 digitos
+            - pw online mexico sapi de cv
+            - liquidacion wuzi
+            - mp agregador s de rl de cv
+            - trans sr pago
+            - net pay sapi de cv
+            - getnet mexico servicios de adquirencia s
+            - payclip s de rl de cv
+            - kiwi bop sa de cv
+            - kiwi international payment technologies
+            - zettle by paypal
+            - gananciasclip
     IMPORTANTE: Cualquier otro tipo de depósito SPEI, transferencias de otros bancos o pagos de nómina que no coincidan con las frases de arriba, son tratados como 'generales'.
     """,
 
@@ -530,10 +641,26 @@ PROMPTS_POR_BANCO = {
         Reglas de la extracción multilinea, para que sea válida debe cumplir ambas:
             la primer línea debe contener:
             - billpocket
+            - deposito spei
             la segunda línea deben contener:
             - pocket de latinoamerica sapi de cv
             la tercera línea deben contener:
             - deposito bpu
+
+            alguna de las demás líneas deben contener:
+            - cobra online sapi de cv
+            - bn-nts 6 digitos
+            - pw online mexico sapi de cv
+            - liquidacion wuzi
+            - mp agregador s de rl de cv
+            - trans sr pago
+            - net pay sapi de cv
+            - getnet mexico servicios de adquirencia s
+            - payclip s de rl de cv
+            - kiwi bop sa de cv
+            - kiwi international payment technologies
+            - zettle by paypal
+            - gananciasclip
     IMPORTANTE: Cualquier otro tipo de depósito SPEI, transferencias de otros bancos o pagos de nómina que no coincidan con las frases de arriba, son tratados como 'generales'.
     """,
 
@@ -548,9 +675,23 @@ PROMPTS_POR_BANCO = {
             la segunda línea deben contener:
             - de la cuenta
             - recibido de stp
+            - deposito spei
             las demás líneas deben contener:
             - deposito bpu
-            - traspaso entre cuentas
+            - cobra online sapi de cv
+            - bn-nts 6 digitos
+            - pw online mexico sapi de cv
+            - liquidacion wuzi
+            - mp agregador s de rl de cv
+            - trans sr pago
+            - net pay sapi de cv
+            - getnet mexico servicios de adquirencia s
+            - payclip s de rl de cv
+            - pocket de latinoamerica sapi de cv
+            - kiwi bop sa de cv
+            - kiwi international payment technologies
+            - zettle by paypal
+            - gananciasclip
     IMPORTANTE: Cualquier otro tipo de depósito SPEI, transferencias de otros bancos o pagos de nómina que no coincidan con las frases de arriba, son tratados como 'generales'.
     """,
 
@@ -568,9 +709,24 @@ PROMPTS_POR_BANCO = {
         Reglas de la extracción multilinea, para que sea válida debe cumplir ambas:
             la primer línea debe contener:
             - spei recibido stp
+            - deposito spei
             las demás líneas deben contener:
             - latinoamerica sapi de cv
-            - bpu2437419281
+            - deposito bpu y 10 numeros
+            - cobra online sapi de cv
+            - bn-nts 6 digitos
+            - pw online mexico sapi de cv
+            - liquidacion wuzi
+            - mp agregador s de rl de cv
+            - trans sr pago
+            - net pay sapi de cv
+            - getnet mexico servicios de adquirencia s
+            - payclip s de rl de cv
+            - pocket de latinoamerica sapi de cv
+            - kiwi bop sa de cv
+            - kiwi international payment technologies
+            - zettle by paypal
+            - gananciasclip
     IMPORTANTE: Cualquier otro tipo de depósito SPEI, transferencias de otros bancos o pagos de nómina que no coincidan con las frases de arriba, son tratados como 'generales'.
     """,
 
@@ -584,9 +740,25 @@ PROMPTS_POR_BANCO = {
             la primer línea debe contener:
             - deposito ventas netas d tar
             - deposito ventas netas d amex
+            - deposito spei
             las demás líneas deben contener:
             - por evopay
             - suc
+            - cobra online sapi de cv
+            - bn-nts 6 digitos
+            - pw online mexico sapi de cv
+            - liquidacion wuzi
+            - deposito bpu
+            - mp agregador s de rl de cv
+            - trans sr pago
+            - net pay sapi de cv
+            - getnet mexico servicios de adquirencia s
+            - payclip s de rl de cv
+            - pocket de latinoamerica sapi de cv
+            - kiwi bop sa de cv
+            - kiwi international payment technologies
+            - zettle by paypal
+            - gananciasclip
     IMPORTANTE: Cualquier otro tipo de depósito SPEI, transferencias de otros bancos o pagos de nómina que no coincidan con las frases de arriba, son tratados como 'generales'.
     """,
 
@@ -601,9 +773,25 @@ PROMPTS_POR_BANCO = {
             la primer línea debe contener:
             - deposito ventas netas d tar
             - deposito ventas netas d amex
+            - deposito spei
             las demás líneas deben contener:
             - por evopay
             - suc
+            - cobra online sapi de cv
+            - bn-nts 6 digitos
+            - pw online mexico sapi de cv
+            - liquidacion wuzi
+            - deposito bpu
+            - mp agregador s de rl de cv
+            - trans sr pago
+            - net pay sapi de cv
+            - getnet mexico servicios de adquirencia s
+            - payclip s de rl de cv
+            - pocket de latinoamerica sapi de cv
+            - kiwi bop sa de cv
+            - kiwi international payment technologies
+            - zettle by paypal
+            - gananciasclip
     IMPORTANTE: Cualquier otro tipo de depósito SPEI, transferencias de otros bancos o pagos de nómina que no coincidan con las frases de arriba, son tratados como 'generales'.
     """,
 
@@ -613,10 +801,25 @@ PROMPTS_POR_BANCO = {
         Reglas de la extracción multilinea:
             la primer línea puede contener:
             - transferencia spei a su favor
+            - deposito spei
             las demás líneas pueden contener:
             - emisor: banorte
             - emisor: santander
             - payclip s de rl decv
+            - gananciasclip
+            - cobra online sapi de cv
+            - bn-nts 6 digitos
+            - pw online mexico sapi de cv
+            - liquidacion wuzi
+            - deposito bpu
+            - mp agregador s de rl de cv
+            - trans sr pago
+            - net pay sapi de cv
+            - getnet mexico servicios de adquirencia s
+            - pocket de latinoamerica sapi de cv
+            - kiwi bop sa de cv
+            - kiwi international payment technologies
+            - zettle by paypal
             - gananciasclip
     IMPORTANTE: Cualquier otro tipo de depósito SPEI, transferencias de otros bancos o pagos de nómina que no coincidan con las frases de arriba, son tratados como 'generales'.
     """,
@@ -631,6 +834,20 @@ PROMPTS_POR_BANCO = {
             - kiwi international payment technologies
             - cobra online sapi de cv
             - operadora paypal de mexico s de rl
+            - bn-nts 6 digitos
+            - pw online mexico sapi de cv
+            - liquidacion wuzi
+            - deposito bpu
+            - mp agregador s de rl de cv
+            - trans sr pago
+            - net pay sapi de cv
+            - getnet mexico servicios de adquirencia s
+            - payclip s de rl de cv
+            - pocket de latinoamerica sapi de cv
+            - kiwi bop sa de cv
+            - zettle by paypal
+            - payclip s de rl decv
+            - gananciasclip
     IMPORTANTE: Cualquier otro tipo de depósito SPEI, transferencias de otros bancos o pagos de nómina que no coincidan con las frases de arriba, son tratados como 'generales'.
     """,
 
@@ -642,8 +859,25 @@ PROMPTS_POR_BANCO = {
             - recepcion spei jp morgan
             - recepcion spei santander
             - recepcion spei banorte
+            - deposito spei
             la última línea deben contener:
             - 136180018635900157
+            - cobra online sapi de cv
+            - bn-nts 6 digitos
+            - pw online mexico sapi de cv
+            - liquidacion wuzi
+            - deposito bpu
+            - mp agregador s de rl de cv
+            - trans sr pago
+            - net pay sapi de cv
+            - getnet mexico servicios de adquirencia s
+            - payclip s de rl de cv
+            - pocket de latinoamerica sapi de cv
+            - kiwi bop sa de cv
+            - kiwi international payment technologies
+            - zettle by paypal
+            - payclip s de rl decv
+            - gananciasclip
     IMPORTANTE: Cualquier otro tipo de depósito SPEI, transferencias de otros bancos o pagos de nómina que no coincidan con las frases de arriba, son tratados como 'generales'.
     """,
 
@@ -655,8 +889,25 @@ PROMPTS_POR_BANCO = {
             - recepcion spei jp morgan
             - recepcion spei santander
             - recepcion spei banorte
+            - deposito spei
             la última línea deben contener:
             - 136180018635900157
+            - cobra online sapi de cv
+            - bn-nts 6 digitos
+            - pw online mexico sapi de cv
+            - liquidacion wuzi
+            - deposito bpu
+            - mp agregador s de rl de cv
+            - trans sr pago
+            - net pay sapi de cv
+            - getnet mexico servicios de adquirencia s
+            - payclip s de rl de cv
+            - pocket de latinoamerica sapi de cv
+            - kiwi bop sa de cv
+            - kiwi international payment technologies
+            - zettle by paypal
+            - payclip s de rl decv
+            - gananciasclip
     IMPORTANTE: Cualquier otro tipo de depósito SPEI, transferencias de otros bancos o pagos de nómina que no coincidan con las frases de arriba, son tratados como 'generales'.
     """,
 }

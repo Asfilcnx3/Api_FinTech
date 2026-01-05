@@ -1,13 +1,14 @@
 from ..utils.helpers import (
     es_escaneado_o_no, extraer_datos_por_banco, extraer_json_del_markdown, limpiar_monto, sanitizar_datos_ia, 
-    reconciliar_resultados_ia, detectar_tipo_contribuyente, crear_chunks_con_superposicion, crear_objeto_resultado
+    reconciliar_resultados_ia, detectar_tipo_contribuyente, crear_chunks_con_superposicion, crear_objeto_resultado,
+    construir_fecha_completa
     
 )
 from .ia_extractor import (
     analizar_gpt_fluxo, analizar_gemini_fluxo, analizar_gpt_nomi, _extraer_datos_con_ia, llamar_agente_tpv, llamar_agente_ocr_vision
 )
 from ..utils.helpers_texto_fluxo import (
-    PALABRAS_BMRCASH, PALABRAS_EXCLUIDAS, PALABRAS_EFECTIVO, PALABRAS_TRASPASO_ENTRE_CUENTAS, PALABRAS_TRASPASO_FINANCIAMIENTO, prompt_base_fluxo
+    PALABRAS_BMRCASH, PALABRAS_EXCLUIDAS, PALABRAS_EFECTIVO, PALABRAS_TRASPASO_ENTRE_CUENTAS, PALABRAS_TRASPASO_FINANCIAMIENTO, PALABRAS_TRASPASO_MORATORIO
 )
 from ..utils.helpers_texto_nomi import (
     PROMPT_COMPROBANTE, PROMPT_ESTADO_CUENTA, PROMPT_NOMINA, SEGUNDO_PROMPT_NOMINA
@@ -176,23 +177,33 @@ async def procesar_documento_con_agentes_async(
     logger.info(f"Worker iniciando para: {nombre_cuenta}")
     banco = ia_data_cuenta.get("banco", "generico").lower()
     
+    # --- METADATA FECHAS PARA RECONSTRUCCIÓN ---
+    p_inicio = ia_data_cuenta.get("periodo_inicio")
+    p_fin = ia_data_cuenta.get("periodo_fin")
+
     # 1. FILTRAR INPUTS
     lista_paginas = list(range(start_pg, end_pg + 1))
     texto_subset = {k: v for k, v in texto_total.items() if k in lista_paginas}
     movimientos_subset = {k: v for k, v in movimientos_total.items() if k in lista_paginas}
     paginas_con_movimientos = [p for p, m in movimientos_subset.items() if m]
+
+    if not paginas_con_movimientos and texto_subset:
+        logger.warning(
+            f"{nombre_cuenta}: fallback a procesamiento por texto completo"
+        )
+        paginas_con_movimientos = list(texto_subset.keys())
     
-    if not paginas_con_movimientos:
-        logger.warning(f"La cuenta {nombre_cuenta} no tiene movimientos.")
-        return {
-            **ia_data_cuenta,
-            "nombre_archivo_virtual": nombre_cuenta,
-            "transacciones": [],
-            "depositos_en_efectivo": 0.0, "traspaso_entre_cuentas": 0.0,
-            "total_entradas_financiamiento": 0.0, "entradas_bmrcash": 0.0,
-            "entradas_TPV_bruto": 0.0, "entradas_TPV_neto": 0.0,
-            "error_transacciones": "Sin movimientos detectados en el rango asignado."
-        }
+    # if not paginas_con_movimientos:
+    #     logger.warning(f"La cuenta {nombre_cuenta} no tiene movimientos.")
+    #     return {
+    #         **ia_data_cuenta,
+    #         "nombre_archivo_virtual": nombre_cuenta,
+    #         "transacciones": [],
+    #         "depositos_en_efectivo": 0.0, "traspaso_entre_cuentas": 0.0,
+    #         "total_entradas_financiamiento": 0.0, "entradas_bmrcash": 0.0,
+    #         "total_moratorios": 0.0, "entradas_TPV_bruto": 0.0, "entradas_TPV_neto": 0.0,
+    #         "error_transacciones": "Sin movimientos detectados en el rango asignado."
+    #     }
 
     # 2. CHUNKING Y AGENTES
     chunks = crear_chunks_con_superposicion(
@@ -210,6 +221,7 @@ async def procesar_documento_con_agentes_async(
     for res in res_chunks:
         if not isinstance(res, Exception):
             for trx in res:
+                # Usamos el día crudo para el ID único temporalmente
                 id_trx = f"{trx.get('fecha')}-{trx.get('monto')}-{trx.get('descripcion', '')[:15]}"
                 if id_trx not in ids_unicos:
                     transacciones_totales.append(trx)
@@ -222,16 +234,17 @@ async def procesar_documento_con_agentes_async(
             "transacciones": [],
             "depositos_en_efectivo": 0.0, "traspaso_entre_cuentas": 0.0,
             "total_entradas_financiamiento": 0.0, "entradas_bmrcash": 0.0,
-            "entradas_TPV_bruto": 0.0, "entradas_TPV_neto": 0.0,
+            "total_moratorios": 0.0, "entradas_TPV_bruto": 0.0, "entradas_TPV_neto": 0.0,
             "error_transacciones": "Agentes LLM no encontraron transacciones TPV."
         }
     
-    # 4. CLASIFICACIÓN (Lógica correjida POR DESCARTE)
+    # 4. CLASIFICACIÓN Y FORMATEO DE FECHAS
     total_depositos_efectivo = 0.0
     total_traspaso_entre_cuentas = 0.0
     total_entradas_financiamiento = 0.0
     total_entradas_bmrcash = 0.0
     total_entradas_tpv = 0.0
+    total_moratorios = 0.0
     todas_las_transacciones = []
 
     for trx in transacciones_totales:
@@ -240,51 +253,45 @@ async def procesar_documento_con_agentes_async(
             monto_float = limpiar_monto(str(monto_float))
 
         descripcion_limpia = trx.get("descripcion", "").lower()
-        
-        # dependencia directa de la decisión de la IA para la categorización final
-        es_tpv_ia = trx.get("categoria", False) 
+        es_tpv_ia = trx.get("categoria", False)
+
+        # --- AQUÍ CONSTRUIMOS LA FECHA COMPLETA ---
+        dia_raw = trx.get("fecha")
+        fecha_final = construir_fecha_completa(dia_raw, p_inicio, p_fin)
 
         trx_procesada = {
-            "fecha": trx.get("fecha"),
+            "fecha": fecha_final, # Usamos la nueva fecha formateada
             "descripcion": trx.get("descripcion"),
             "monto": f"{monto_float:,.2f}",
             "tipo": trx.get("tipo"),
-            "categoria": "GENERAL" # Por defecto
+            "categoria": "GENERAL"
         }
 
         if trx.get("tipo") == "abono":
-            # 1. FILTRO DE EXCLUSIÓN
-            # Nota: Usamos 'any' para que si encuentra CUALQUIER palabra prohibida, lo descarte.
             if any(p in descripcion_limpia for p in PALABRAS_EXCLUIDAS):
-                # Se queda como GENERAL
                 pass 
-            
             else:
-                # 2. FILTROS ESPECÍFICOS (Efectivo, Traspaso, BMR...)
                 if any(p in descripcion_limpia for p in PALABRAS_EFECTIVO):
                     total_depositos_efectivo += monto_float
                     trx_procesada["categoria"] = "EFECTIVO"
-                
                 elif any(p in descripcion_limpia for p in PALABRAS_TRASPASO_ENTRE_CUENTAS):
                     total_traspaso_entre_cuentas += monto_float
                     trx_procesada["categoria"] = "TRASPASO"
-                
                 elif any(p in descripcion_limpia for p in PALABRAS_TRASPASO_FINANCIAMIENTO):
                     total_entradas_financiamiento += monto_float
                     trx_procesada["categoria"] = "FINANCIAMIENTO"
-                
                 elif any(p in descripcion_limpia for p in PALABRAS_BMRCASH):
                     total_entradas_bmrcash += monto_float
                     trx_procesada["categoria"] = "BMRCASH"
-                
+                elif any(p in descripcion_limpia for p in PALABRAS_TRASPASO_MORATORIO):
+                    total_moratorios += monto_float
+                    trx_procesada["categoria"] = "MORATORIOS"
                 else:
-                    # Ahora preguntamos: ¿La IA cree que ES TPV?
+                    # Lógica Doble Validación (Filtro + IA)
                     if es_tpv_ia:
                         total_entradas_tpv += monto_float
                         trx_procesada["categoria"] = "TPV"
                     else:
-                        # Pasó los filtros negativos, pero la IA no está segura.
-                        # Lo dejamos como GENERAL para revisión manual o descarte.
                         trx_procesada["categoria"] = "GENERAL"
         
         elif trx.get("tipo") == "cargo":
@@ -307,6 +314,7 @@ async def procesar_documento_con_agentes_async(
         "traspaso_entre_cuentas": total_traspaso_entre_cuentas,
         "total_entradas_financiamiento": total_entradas_financiamiento,
         "entradas_bmrcash": total_entradas_bmrcash,
+        "total_moratorios": total_moratorios,
         "entradas_TPV_bruto": total_entradas_tpv,
         "entradas_TPV_neto": entradas_TPV_neto,
         "error_transacciones": None
@@ -320,6 +328,10 @@ async def procesar_documento_escaneado_con_agentes_async(
     
     logger.info(f"Iniciando procesamiento OCR-Visión para: {filename}")
     banco = ia_data.get("banco", "generico")
+    
+    # --- METADATA FECHAS ---
+    p_inicio = ia_data.get("periodo_inicio")
+    p_fin = ia_data.get("periodo_fin")
     
     try:
         with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
@@ -352,11 +364,12 @@ async def procesar_documento_escaneado_con_agentes_async(
                     transacciones_totales.append(trx)
                     ids_unicos.add(id_trx)
 
-    # --- E. CLASIFICACIÓN DE NEGOCIO (LÓGICA UNIFICADA) ---
+    # --- E. CLASIFICACIÓN DE NEGOCIO Y FECHAS ---
     total_depositos_efectivo = 0.0
     total_traspaso_entre_cuentas = 0.0
     total_entradas_financiamiento = 0.0
     total_entradas_bmrcash = 0.0
+    total_moratorios = 0.0
     total_entradas_tpv = 0.0
     transacciones_clasificadas = []
 
@@ -366,46 +379,43 @@ async def procesar_documento_escaneado_con_agentes_async(
             monto_float = limpiar_monto(str(monto_float))
 
         descripcion_limpia = trx.get("descripcion", "").lower()
-        
-        # Obtenemos la opinión de la IA si existe (OCR también debería devolver esto)
         es_tpv_ia = trx.get("categoria", False)
 
-        # Estructura base
+        # --- CONSTRUIR FECHA ---
+        dia_raw = trx.get("fecha")
+        fecha_final = construir_fecha_completa(dia_raw, p_inicio, p_fin)
+
         trx_procesada = {
-            "fecha": trx.get("fecha"),
+            "fecha": fecha_final, # Fecha formateada
             "descripcion": trx.get("descripcion"),
             "monto": f"{monto_float:,.2f}",
             "tipo": trx.get("tipo", "abono"),
-            "categoria": "GENERAL" # Valor por defecto obligatorio
+            "categoria": "GENERAL"
         }
 
         tipo_trx = trx.get("tipo", "abono").lower()
 
         if "abono" in tipo_trx or "depósito" in tipo_trx:
-            # 1. FILTRO DE EXCLUSIÓN
             if any(p in descripcion_limpia for p in PALABRAS_EXCLUIDAS):
-                # Se queda como GENERAL
                 pass 
             else:
-                # 2. FILTROS ESPECÍFICOS
                 if any(p in descripcion_limpia for p in PALABRAS_EFECTIVO):
                     total_depositos_efectivo += monto_float
                     trx_procesada["categoria"] = "EFECTIVO"
-                
                 elif any(p in descripcion_limpia for p in PALABRAS_TRASPASO_ENTRE_CUENTAS):
                     total_traspaso_entre_cuentas += monto_float
                     trx_procesada["categoria"] = "TRASPASO"
-                
                 elif any(p in descripcion_limpia for p in PALABRAS_TRASPASO_FINANCIAMIENTO):
                     total_entradas_financiamiento += monto_float
                     trx_procesada["categoria"] = "FINANCIAMIENTO"
-                
                 elif any(p in descripcion_limpia for p in PALABRAS_BMRCASH):
                     total_entradas_bmrcash += monto_float
                     trx_procesada["categoria"] = "BMRCASH"
-                
+                elif any(p in descripcion_limpia for p in PALABRAS_TRASPASO_MORATORIO):
+                    total_moratorios += monto_float
+                    trx_procesada["categoria"] = "MORATORIOS"
                 else:
-                    # 3. DOBLE VALIDACIÓN (FILTRO NEGATIVO + IA POSITIVA)
+                    # Lógica Doble Validación
                     if es_tpv_ia:
                         total_entradas_tpv += monto_float
                         trx_procesada["categoria"] = "TPV"
@@ -417,14 +427,13 @@ async def procesar_documento_escaneado_con_agentes_async(
 
         transacciones_clasificadas.append(trx_procesada)
 
-    # --- F. ENSAMBLE FINAL DE LA CUENTA ---
+    # --- F. ENSAMBLE FINAL ---
     comisiones_str = ia_data.get("comisiones", "0.0")
     if comisiones_str is None: comisiones_str = "0.0"
     comisiones = limpiar_monto(str(comisiones_str))
     
     entradas_TPV_neto = total_entradas_tpv - comisiones
 
-    # Retorno (Envuelto en lista)
     return [{
         **ia_data, 
         "nombre_archivo_virtual": filename,
@@ -433,6 +442,7 @@ async def procesar_documento_escaneado_con_agentes_async(
         "traspaso_entre_cuentas": total_traspaso_entre_cuentas,
         "total_entradas_financiamiento": total_entradas_financiamiento,
         "entradas_bmrcash": total_entradas_bmrcash,
+        "total_moratorios": total_moratorios,
         "entradas_TPV_bruto": total_entradas_tpv,
         "entradas_TPV_neto": entradas_TPV_neto,
         "error_transacciones": None
