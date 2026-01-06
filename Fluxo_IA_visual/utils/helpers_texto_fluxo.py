@@ -22,7 +22,7 @@ PALABRAS_TRASPASO_ENTRE_CUENTAS = [
 ]   
 
 PALABRAS_TRASPASO_FINANCIAMIENTO = [
-    "prestamo", "anticipo de ventas", "anticipo de venta", "financiamiento", "anticipo", "adelanto", "adelanto de ventas", "préstamo", "crédito", "otorgamiento de crédito"
+    "prestamo", "anticipo de ventas", "anticipo de venta", "financiamiento", "anticipo", "adelanto", "adelanto de ventas", "préstamo", "crédito", "otorgamiento de crédito", "comision por apertura"
 ]
 
 PALABRAS_BMRCASH = [
@@ -291,7 +291,7 @@ INSTRUCCIONES DE FORMATO (TOON):
 2.  Una línea por transacción.
 3.  Delimitador: Usa el caracter `|` (pipe) para separar los campos.
 4.  Estructura: `FECHA | DESCRIPCION COMPLETA | MONTO | TIPO | ETIQUETA`
-    * `FECHA`: ÚNICAMENTE EL NÚMERO DE LA FECHA (ej. '02').
+    * `FECHA`: ÚNICAMENTE EL NÚMERO DEL DÍA DE LA FECHA (ej. '02').
     * `DESCRIPCION`: Todo el texto del concepto.
     * `MONTO`: Solo números y puntos (ej. 1500.50).
     * `TIPO`: "cargo" o "abono".
@@ -317,7 +317,7 @@ INSTRUCCIONES DE FORMATO (TOON):
 2.  Una línea por transacción.
 3.  Delimitador: Usa el caracter `|` (pipe) para separar los campos.
 4.  Estructura: `FECHA | DESCRIPCION COMPLETA | MONTO | TIPO | ETIQUETA`
-    * `FECHA`: ÚNICAMENTE EL NÚMERO DE LA FECHA (ej. '02').
+    * `FECHA`: ÚNICAMENTE EL NÚMERO DEL DÍA DE LA FECHA (ej. '02').
     * `DESCRIPCION`: Todo el texto del concepto.
     * `MONTO`: Solo números y puntos (ej. 1500.50).
     * `TIPO`: "cargo" o "abono".
@@ -642,14 +642,16 @@ PROMPTS_POR_BANCO = {
             la primer línea debe contener:
             - billpocket
             - deposito spei
+            - spei banorte
             la segunda línea deben contener:
             - pocket de latinoamerica sapi de cv
+            - net pay sapi de cv
             la tercera línea deben contener:
-            - deposito bpu
+            - deposito bpu y 10 numeros
+            - bn-nts y 6 digitos
 
-            alguna de las demás líneas deben contener:
+            algunas líneas pueden contener:
             - cobra online sapi de cv
-            - bn-nts 6 digitos
             - pw online mexico sapi de cv
             - liquidacion wuzi
             - mp agregador s de rl de cv
