@@ -3,7 +3,7 @@ from typing import Union
 import logging
 import openai
 
-from ...models.responses import CSF 
+from ...models.responses_csf import CSF
 from ...services.orchestators import procesar_constancia
 
 logger = logging.getLogger(__name__)

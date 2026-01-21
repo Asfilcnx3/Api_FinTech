@@ -3,7 +3,7 @@ import re
 from fpdf import FPDF
 from datetime import datetime, timedelta
 
-from Fluxo_IA_visual.models.responses import  AnalisisTPV
+from Fluxo_IA_visual.models.responses_analisisTPV import AnalisisTPV
 
 from Fluxo_IA_visual.utils.helpers import ( # debemos hacer más test para este módulo
     construir_descripcion_optimizado, limpiar_monto, extraer_json_del_markdown, extraer_unico, extraer_datos_por_banco, sumar_lista_montos, es_escaneado_o_no,

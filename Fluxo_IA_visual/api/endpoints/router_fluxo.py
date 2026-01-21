@@ -10,7 +10,8 @@ import io
 
 from fastapi.responses import FileResponse
 
-from ...models.responses import AnalisisTPV, RespuestaProcesamientoIniciado
+from ...models.responses_analisisTPV import AnalisisTPV
+from ...models.responses_general import RespuestaProcesamientoIniciado
 from ...core.exceptions import PDFCifradoError
 from ...services.storage_service import obtener_ruta_archivo, guardar_excel_local, guardar_json_local, obtener_datos_json
 from ...utils.xlsx_converter import generar_excel_reporte

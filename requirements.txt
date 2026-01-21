@@ -16,3 +16,6 @@ openpyxl
 pytest-asyncio
 pyzbar
 fpdf2
+pandas
+numpy
+statsmodels

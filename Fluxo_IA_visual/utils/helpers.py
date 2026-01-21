@@ -1,4 +1,5 @@
-from ..models.responses import AnalisisTPV, NomiFlash
+from ..models.responses_analisisTPV import AnalisisTPV
+from ..models.responses_nomiflash import NomiFlash
 from .helpers_texto_fluxo import (
     BANCO_DETECTION_REGEX, ALIAS_A_BANCO_MAP, PATRONES_COMPILADOS, PALABRAS_CLAVE_VERIFICACION, PROMPT_GENERICO, PROMPT_OCR_INSTRUCCIONES_BASE, PROMPT_TEXTO_INSTRUCCIONES_BASE, PROMPTS_POR_BANCO
 )
@@ -10,6 +11,8 @@ import json
 from datetime import datetime
 import logging
 import re
+
+
 
 logger = logging.getLogger(__name__)
 

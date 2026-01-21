@@ -6,7 +6,7 @@ PALABRAS_CLAVE_VERIFICACION = re.compile(
 )
 
 # Creamos la lista e palabras excluidas
-PALABRAS_EXCLUIDAS = ["comision", "iva", "com.", "-com x", "cliente stripe", "imss"]
+PALABRAS_EXCLUIDAS = ["comision", "iva", "com.", "-com x", "cliente stripe", "imss", "spei recibidove por mas", "spei recibidomifel"]
 
 # Creamos la lista de palabras clave generales (quitamos mit y american express)
 palabras_clave_generales = [
@@ -242,15 +242,16 @@ TRIGGERS_CONFIG = {
 
 # Creamos el prompt del modelo a utilizar
 prompt_base_fluxo = """
-Eres un experto extractor de datos de estados de cuenta bancarios. Analiza las imágenes y extrae EXACTAMENTE los siguientes datos.
+Eres un experto extractor de datos de estados de cuenta bancarios. 
 - Estas imágenes son de las primeras páginas de un estado de cuenta bancario, pueden venir gráficos o tablas.
 - En caso de que reconozcas gráficos, extrae únicamente los valores que aparecen en la leyenda numerada.
 
+Analizarás las imágenes en líneas horizontales y extraerás EXACTAMENTE los siguientes datos con las instrucciones siguientes.
 INSTRUCCIONES CRÍTICAS (CAMPOS A EXTRAER):
 1. NOMBRE DEL BANCO: Busca cerca de "Banco:", "Institución:", o en el encabezado. Debe ser el nombre corto, por ejemplo, "banco del bajío" es banbajío.
 2. TIPO DE MONEDA: Busca cerca de "Moneda:", "Tipo de moneda:", o en la sección de resumen. Debe ser su versión resumida como "MXN" para pesos mexicanos o "USD" para dólares estadounidenses EUR para euros, etc.
 3. NOMBRE DEL CLIENTE: Busca cerca de "Titular:", "Cliente:", o "Razón Social:". Es el texto en mayúsculas después de estas palabras.
-4. CLABE: Son EXACTAMENTE 18 dígitos consecutivos. Busca cerca de "CLABE", "Clabe Interbancaria" o en la sección de datos de cuenta.
+4. CLABE: Son EXACTAMENTE 18 dígitos (pueden ser consecutivos o tener un espacio antes del último dígito). Busca cerca de "CLABE", "Clabe Interbancaria" o en la sección de datos de cuenta, puede estar en horizontal o vertical cerca de las palabras.
 5. RFC: Son 12-13 caracteres alfanuméricos. Busca cerca de "RFC:", "R.F.C." o después del nombre.
 6. PERIODO DE INICIO: La primera fecha del periodo en formato "YYYY-MM-DD".
 7. PERIODO DE FIN: La segunda fecha del periodo en formato "YYYY-MM-DD".
@@ -324,10 +325,11 @@ INSTRUCCIONES DE FORMATO (TOON):
     * `ETIQUETA`: "TPV" (si cumple las reglas) o "GENERAL" (si es cualquier otro movimiento).
 
 INSTRUCCIONES CLAVE DE PROCESAMIENTO:
-1.  Analiza las Imágenes de forma horizontal: Las siguientes imágenes son páginas de un estado de cuenta escaneado. Tu tarea es actuar como un OCR experto y un analista financiero analizano línea por línea los estados.
+1.  Analizarás las imágenes en forma de líneas horizontales: Las siguientes imágenes son páginas de un estado de cuenta escaneado. Tu tarea es actuar como un OCR experto y un analista financiero analizano línea por línea los estados.
 2. Extrae todo hasta el final: Procesa todas las transacciones que puedas identificar completamente. Si la *última* transacción del texto parece estar cortada o incompleta, extráela también. El siguiente fragmento se encargará de completarla y el sistema la deduplicará.
 3.  Precisión Absoluta: Sé meticuloso con los montos y las fechas. No alucines información, si no ves campos es porque no los hay, dejalos como null.
 4.  procesamiento secuencial obligatorio: Estás recibiendo solo una imagen. Debes extraer los datos de la Imagen 1. Hasta terminar con todas. NO TE SALTES NINGUNA transacción. Tu objetivo es transcribir CADA transacción visible. Si hay 50 transacciones en una página, debes generar 50 objetos toon. No resumas.
+5. para definir si es cargo o abono, usa las columnas de montos visibles en la imagen. Si el monto está en la columna de abonos o depósitos, es un abono. Si está en la columna de cargos, es un cargo.
 
 EJEMPLO DE SALIDA:
 05 | DEPOSITO EFECTIVO SUC 02 | 5000.00 | abono | GENERAL
