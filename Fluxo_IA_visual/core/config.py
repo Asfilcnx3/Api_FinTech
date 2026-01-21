@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     OPENAI_API_KEY_FLUXO: SecretStr # es obligatoria para que el servicio funcione
     FLUXO_MODEL: str = "gpt-5"
 
+    # Configuración Syntage
+    SYNTAGE_API_URL:str = "https://api.sandbox.syntage.com"
+    SYNTAGE_API_KEY: SecretStr # es obligatoria para que el servicio funcione
+
     # OpenAI Settings Nomi
     OPENAI_API_KEY_NOMI: SecretStr # es obligatoria para que el servicio funcione
     NOMI_MODEL: str = "gpt-5"
@@ -97,6 +101,18 @@ class Settings(BaseSettings):
         if not v.startswith("sk-"):
             raise ValueError("OPENROUTER_API_KEY no comienza con 'sk-'. Podría ser inválida.")
         return secret
+
+
+    @field_validator("SYNTAGE_API_KEY")
+    @classmethod
+    def validate_syntage_api_key(cls, secret: str) -> SecretStr:
+        """
+        Valida que la clave de Syntage no esté vacía y tenga un formato plausible.
+        """
+        v = secret.get_secret_value()
+        if not v:
+            raise ValueError("La variable de entorno SYNTAGE_API_KEY no puede estar vacía.")
+        return secret   
     
 # INICIALIZACIÓN SEGURA 
 # Se envuelve la creación de la instancia en un bloque try/except para

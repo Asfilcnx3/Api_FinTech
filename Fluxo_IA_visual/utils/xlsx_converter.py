@@ -182,7 +182,7 @@ def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
 
     # 3. TODOS LOS MOVIMIENTOS
     # Nota: Agregamos 'c' (categoría) al lambda aunque no lo usemos, para cumplir con el helper
-    crear_hoja_detalle("Todos los Movimientos", lambda d, t, c: not es_excluido(d))
+    crear_hoja_detalle("Todos los Movimientos", lambda d, t, c: True)
 
     # 4. TRANSACCIONES TPV (Lógica Estricta Final)
     def filtro_tpv_estricto(desc, tipo, cat):

@@ -4,7 +4,7 @@ import asyncio
 import logging
 import openai
 
-from ...models.responses import NomiFlash
+from ...models.responses_nomiflash import NomiFlash
 from ...utils.helpers import aplicar_reglas_de_negocio
 from ...services.orchestators import (
     procesar_nomina, procesar_comprobante, procesar_estado_cuenta, procesar_segunda_nomina

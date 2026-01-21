@@ -62,7 +62,7 @@ async def analizar_gpt_fluxo(
             })
     client = get_fluxo_client()
     response = await client.chat.completions.create(
-        model="gpt-5",
+        model="gpt-5.2",
         messages=[{"role": "user","content": content}],
         reasoning_effort=razonamiento
     )
@@ -121,7 +121,7 @@ async def llamar_agente_tpv(
         # 2. Llamar al LLM (modo texto)
         client = get_fluxo_client()
         response = await client.chat.completions.create(
-            model="gpt-5", # O tu modelo de texto preferido
+            model="gpt-5.2", # O tu modelo de texto preferido
             messages=[
                 {"role": "system", "content": prompt_sistema},
                 {"role": "user", "content": prompt_usuario}
@@ -164,7 +164,7 @@ async def analizar_gpt_nomi(
         })
     try:
         response = await client_gpt_nomi.chat.completions.create(
-            model="gpt-5",
+            model="gpt-5.2",
             messages=[{"role": "user", "content": content}],
             reasoning_effort=razonamiento
         )

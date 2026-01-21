@@ -22,7 +22,9 @@ from .pdf_processor import (
 )
 
 from ..utils.helpers import extraer_rfc_curp_por_texto
-from ..models.responses import NomiFlash, CSF, AnalisisTPV
+from ..models.responses_analisisTPV import AnalisisTPV
+from ..models.responses_nomiflash import NomiFlash
+from ..models.responses_csf import CSF
 
 from typing import Dict, Any, Tuple, Optional, Union, List
 from fastapi import UploadFile

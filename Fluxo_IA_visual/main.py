@@ -1,5 +1,5 @@
 from .core.config import settings
-from .api.endpoints import router_fluxo, router_csf, router_nomi
+from .api.endpoints import router_fluxo, router_csf, router_nomi, router_precalificacion
 
 import sys
 import logging
@@ -70,6 +70,12 @@ app.include_router( # Ruta Fluxo
     tags=["Extracción de Fluxo"]
 )
 
+app.include_router( # Ruta Pre-calificación
+    router_precalificacion.router,
+    prefix=f"{settings.API_V1_STR}/PreCalificacion",
+    tags=["Pre-calificación RFC"]
+)
+    
 # Endpoint Raíz
 @app.get("/", tags=["General"])
 async def home():
@@ -104,6 +110,7 @@ async def info():
         "endpoints": {
             "csf": f"{settings.API_V1_STR}/CSF",
             "fluxo": f"{settings.API_V1_STR}/Fluxo",
-            "nomiflash": f"{settings.API_V1_STR}/NomiFlash"
+            "nomiflash": f"{settings.API_V1_STR}/NomiFlash",
+            "precalificacion": f"{settings.API_V1_STR}/PreCalificacion"
         }
     }
