@@ -1,15 +1,11 @@
+# utils/xlsx_converter.py
+
 import io, re
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, NamedStyle
 from typing import Dict, Any
 from .helpers_texto_fluxo import (
-    PALABRAS_EFECTIVO, 
-    PALABRAS_TRASPASO_ENTRE_CUENTAS,
-    PALABRAS_TRASPASO_FINANCIAMIENTO,
-    PALABRAS_BMRCASH,
-    PALABRAS_EXCLUIDAS,
     AGREGADORES_MAPPING,
-    PALABRAS_TRASPASO_MORATORIO,
     TERMINALES_BANCO_MAPPING
 )
 
@@ -27,28 +23,25 @@ def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
             cell.fill = header_fill
             cell.alignment = Alignment(horizontal='center')
 
-    # --- NUEVA LÓGICA DE DETECCIÓN INTELIGENTE ---
+    # --- LÓGICA DE DETECCIÓN DE PROVEEDOR (SOLO PARA LA COLUMNA EXTRA DE TPV) ---
     def detectar_proveedor_terminal(descripcion: str, banco_actual: str) -> str:
         desc_lower = descripcion.lower()
         banco_upper = banco_actual.upper() if banco_actual else "GENERICO"
 
-        # 1. NIVEL PRIORITARIO: REGEX ESPECÍFICOS (Banorte)
-        # Busca 8 dígitos seguidos de 'c' o 'd' (ej: 12345678c), respetando límites de palabra (\b)
+        # 1. Regex Banorte
         if banco_upper == "BANORTE":
             if re.search(r"\b\d{8}[cd]\b", desc_lower):
                 return "BANORTE TERMINAL"
 
-        # 2. NIVEL GLOBAL: AGREGADORES (Busca siempre)
+        # 2. Agregadores Globales
         for nombre_agg, keywords in AGREGADORES_MAPPING.items():
             if any(k in desc_lower for k in keywords):
                 return nombre_agg
 
-        # 3. NIVEL CONTEXTUAL: SOLO BUSCAR EN EL DICCIONARIO DEL BANCO ACTUAL
-        # Si el banco es BBVA, solo buscamos las keys de BBVA.
+        # 3. Terminales del Banco
         if banco_upper in TERMINALES_BANCO_MAPPING:
             keywords_banco = TERMINALES_BANCO_MAPPING[banco_upper]
             if any(k in desc_lower for k in keywords_banco):
-                # Retornamos el nombre del banco como proveedor de la terminal
                 return banco_upper 
 
         return "NO DEFINIDA"
@@ -89,7 +82,7 @@ def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
 
     aplicar_estilo_header(ws1)
     ws1.column_dimensions['B'].width = 25
-    for row in ws1.iter_rows(min_row=2, min_col=3, max_col=10):
+    for row in ws1.iter_rows(min_row=2, min_col=4, max_col=11):
         for cell in row: cell.style = currency_style
 
     # ==========================================
@@ -117,14 +110,18 @@ def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
         for cell in row: cell.style = currency_style
 
     # ==========================================
-    # HELPER GENERADOR DE HOJAS
+    # HELPER GENERADOR DE HOJAS SIMPLIFICADO
     # ==========================================
-    def crear_hoja_detalle(nombre_hoja, criterio_filtro_func):
+    def crear_hoja_detalle(nombre_hoja, categoria_filtro):
+        """
+        Crea una hoja filtrando DIRECTAMENTE por la etiqueta 'categoria' 
+        que viene del JSON. Ya no recalcula reglas.
+        """
         ws = wb.create_sheet(nombre_hoja)
         
-        # Headers
-        headers = ["Banco", "Fecha", "Descripción", "Monto", "Tipo", "Categoría (IA)"]
+        headers = ["Banco", "Fecha", "Descripción", "Monto", "Tipo", "Categoría"]
         es_hoja_tpv = (nombre_hoja == "Transacciones TPV")
+        
         if es_hoja_tpv:
             headers.append("Terminal / Proveedor")
             
@@ -132,40 +129,40 @@ def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
         
         for res in resultados:
             ia = res.get("AnalisisIA") or {}
-            
-            # --- OBTENER EL BANCO ACTUAL DEL RESULTADO ---
-            # Esto es clave para la lógica de contexto
             banco_actual_doc = ia.get("banco", "Desconocido")
-            
             detalle = res.get("DetalleTransacciones", {})
             transacciones = detalle.get("transacciones", [])
             
             if isinstance(transacciones, list):
                 for tx in transacciones:
-                    desc = str(tx.get("descripcion", "")).lower()
-                    tipo = str(tx.get("tipo", "")).lower()
-                    cat = str(tx.get("categoria", "GENERAL")).upper()
+                    # Datos básicos
+                    cat_tx = str(tx.get("categoria", "GENERAL")).upper()
                     
-                    if criterio_filtro_func(desc, tipo, cat):
-                        try:
-                            monto_val = float(str(tx.get("monto", "0")).replace(",", ""))
-                        except: monto_val = 0.0
+                    # FILTRO MAESTRO: ¿Coincide la categoría?
+                    # Si categoria_filtro es None, pasa todo (Hoja "Todos los Movimientos")
+                    if categoria_filtro is not None and cat_tx != categoria_filtro:
+                        continue
 
-                        fila = [
-                            banco_actual_doc, 
-                            tx.get("fecha", ""), 
-                            tx.get("descripcion", ""),
-                            monto_val, 
-                            tx.get("tipo", ""), 
-                            cat
-                        ]
+                    # Preparar fila
+                    try:
+                        monto_val = float(str(tx.get("monto", "0")).replace(",", ""))
+                    except: monto_val = 0.0
 
-                        # Pasar el banco actual a la función de detección
-                        if es_hoja_tpv:
-                            nombre_terminal = detectar_proveedor_terminal(desc, banco_actual_doc)
-                            fila.append(nombre_terminal)
+                    fila = [
+                        banco_actual_doc, 
+                        tx.get("fecha", ""), 
+                        tx.get("descripcion", ""),
+                        monto_val, 
+                        tx.get("tipo", ""), 
+                        cat_tx
+                    ]
 
-                        ws.append(fila)
+                    # Columna extra para TPV
+                    if es_hoja_tpv:
+                        nombre_terminal = detectar_proveedor_terminal(tx.get("descripcion", ""), banco_actual_doc)
+                        fila.append(nombre_terminal)
+
+                    ws.append(fila)
         
         aplicar_estilo_header(ws)
         ws.column_dimensions['C'].width = 60
@@ -174,53 +171,29 @@ def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
             for cell in row: cell.style = currency_style
 
     # ==========================================
-    # DEFINICIÓN DE FILTROS
+    # DEFINICIÓN DE HOJAS (Ahora es trivial)
     # ==========================================
 
-    def es_excluido(desc):
-        return any(p in desc for p in PALABRAS_EXCLUIDAS)
+    # 3. TODOS LOS MOVIMIENTOS (Filtro None = Todo)
+    crear_hoja_detalle("Todos los Movimientos", None)
 
-    # 3. TODOS LOS MOVIMIENTOS
-    # Nota: Agregamos 'c' (categoría) al lambda aunque no lo usemos, para cumplir con el helper
-    crear_hoja_detalle("Todos los Movimientos", lambda d, t, c: True)
-
-    # 4. TRANSACCIONES TPV (Lógica Estricta Final)
-    def filtro_tpv_estricto(desc, tipo, cat):
-        # 1. Filtro de basura (Excluidos)
-        if es_excluido(desc): return False
-        
-        # 2. Solo Abonos
-        if "abono" not in tipo and "depósito" not in tipo: return False
-
-        # 3. REQUERIMIENTO CLAVE: Categoría NO puede ser GENERAL
-        # Como arreglamos el worker, ahora las TPV vendrán etiquetadas como "TPV"
-        if cat == "GENERAL": return False
-
-        # 4. Filtro negativo (Redundancia de seguridad)
-        if any(p in desc for p in PALABRAS_EFECTIVO): return False
-        if any(p in desc for p in PALABRAS_TRASPASO_ENTRE_CUENTAS): return False
-        if any(p in desc for p in PALABRAS_TRASPASO_FINANCIAMIENTO): return False
-        if any(p in desc for p in PALABRAS_BMRCASH): return False
-        if any(p in desc for p in PALABRAS_TRASPASO_MORATORIO): return False
-        
-        return True
-    
-    crear_hoja_detalle("Transacciones TPV", filtro_tpv_estricto)
+    # 4. TRANSACCIONES TPV
+    crear_hoja_detalle("Transacciones TPV", "TPV")
 
     # 5. EFECTIVO
-    crear_hoja_detalle("Efectivo", lambda d, t, c: not es_excluido(d) and any(p in d for p in PALABRAS_EFECTIVO))
+    crear_hoja_detalle("Efectivo", "EFECTIVO")
 
     # 6. FINANCIAMIENTOS
-    crear_hoja_detalle("Financiamientos", lambda d, t, c: not es_excluido(d) and any(p in d for p in PALABRAS_TRASPASO_FINANCIAMIENTO))
+    crear_hoja_detalle("Financiamientos", "FINANCIAMIENTO")
 
     # 7. TRASPASO ENTRE CUENTAS
-    crear_hoja_detalle("Traspaso entre Cuentas", lambda d, t, c: not es_excluido(d) and any(p in d for p in PALABRAS_TRASPASO_ENTRE_CUENTAS))
+    crear_hoja_detalle("Traspaso entre Cuentas", "TRASPASO")
 
     # 8. BMRCASH
-    crear_hoja_detalle("BMRCASH", lambda d, t, c: not es_excluido(d) and any(p in d for p in PALABRAS_BMRCASH))
+    crear_hoja_detalle("BMRCASH", "BMRCASH")
 
     # 9. MORATORIOS
-    crear_hoja_detalle("Moratorios", lambda d, t, c: not es_excluido(d) and any(p in d for p in PALABRAS_TRASPASO_MORATORIO))
+    crear_hoja_detalle("Moratorios", "MORATORIOS")
 
     # ==========================================
     # 10. RESUMEN GENERAL

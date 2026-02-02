@@ -50,8 +50,11 @@ class PrequalificationService:
             # 4. Estados Financieros (Árbol JSON)
             financial_tree = await self.client_repo.get_financial_statements_tree(client, rfc)
             
-            # 5. Credenciales
-            ciec_st, buro_st, buro_score = await self.client_repo.get_credentials_status(client, rfc)
+            # 5. Credenciales y Cumplimiento (CIEC, Buró, Opinión 32-D)
+            # Ejecutamos las 3 llamadas en paralelo para velocidad
+            ciec_data = await self.client_repo.get_ciec_status(client, rfc) 
+            buro_data = await self.client_repo.get_buro_report_status(client, rfc)
+            compliance_data = await self.client_repo.get_compliance_opinion(client, rfc)
 
         # --- FASE 2: PROCESAMIENTO DE LÓGICA DE NEGOCIO (CPU Bound) ---
         
@@ -69,17 +72,41 @@ class PrequalificationService:
         # --- FASE 3: PRONÓSTICO DE VENTAS (CPU Bound) ---
         # Usamos los datos crudos de ventas ("sales-revenue")
         # El forecaster se encarga de ordenarlos y rellenar huecos.
-        sales_forecast = self.forecaster.generate_forecast(raw_sales, horizon=6)
+        sales_forecast = self.forecaster.generate_forecast(
+            historical_map=raw_sales,
+            horizon=12  # Confirmamos horizonte de 12 meses
+        )
+
+        # Si la API no devolvió fecha de cumplimiento, usamos la fecha de la CIEC
+        final_compliance_date = compliance_data["date"]
+        if not final_compliance_date and compliance_data["status"] != "not_found":
+            # Asumimos: Si tenemos opinión (positiva/negativa), se generó cuando corrió la CIEC.
+            final_compliance_date = ciec_data["date"]
 
         # --- FASE 4: CONSTRUCCIÓN DE RESPUESTA FINAL ---
         return PrequalificationResponse.PrequalificationFinalResponse(
             rfc=rfc,
             business_name=taxpayer_name,
             risk_indicators=risks,
-            ciec_status=ciec_st,
-            buro_status=buro_st,
-            buro_score_estimate=buro_score,
-            cashflow_last_12m=cashflow_metrics,
+
+            # Mapeo de credenciales (ciec, buro y opinión de cumplimiento)
+            ciec_info=PrequalificationResponse.CredentialInfo(
+                status=ciec_data["status"],
+                last_check_date=ciec_data["date"]
+            ),
+            buro_info=PrequalificationResponse.BuroInfo(
+                has_report=buro_data["has_report"],
+                status=buro_data["status"],
+                score=buro_data["score"],
+                last_check_date=buro_data["date"]
+            ),
+            
+            compliance_opinion=PrequalificationResponse.CredentialInfo(
+                status=compliance_data["status"],
+                last_check_date=final_compliance_date
+            ),
+
+            stats_last_months=cashflow_metrics,
             cashflow_current_month=current_month_metrics,
             concentration_last_12m=concentration_metrics,
             financial_ratios_history=financial_ratios,
@@ -95,24 +122,17 @@ class PrequalificationService:
         cashflow_map: Dict[str, Any], 
         sales_map: Dict[str, float], 
         exp_map: Dict[str, float]
-    ) -> Tuple[PrequalificationResponse.CashflowMetrics, PrequalificationResponse.CurrentMonthMetrics]:
+    ) -> Tuple[PrequalificationResponse.StatsWindows, PrequalificationResponse.CurrentMonthMetrics]:
         """
         Lógica para separar el mes en curso (incompleto) de los 12 meses históricos cerrados.
         Calcula estadísticas (media/mediana) sobre los meses cerrados.
         """
         current_month_key = datetime.now().strftime("%Y-%m")
         
-        # Listas para estadísticas (últimos 12 cerrados)
-        history = {
-            "in": [], "out": [], "nfcf": [], "sales": [], "exp": []
-        }
-        
-        # Variables para el mes actual
-        curr = {
-            "in": 0.0, "out": 0.0, "nfcf": 0.0, "sales": 0.0, "exp": 0.0
-        }
+        # Listas para almacenar historia (Ahora soportan hasta 24+ meses)
+        history = { "in": [], "out": [], "nfcf": [], "sales": [], "exp": [] }
+        curr = { "in": 0.0, "out": 0.0, "nfcf": 0.0, "sales": 0.0, "exp": 0.0 }
 
-        # Iteramos cronológicamente inverso
         sorted_keys = sorted(cashflow_map.keys(), reverse=True)
         count_closed = 0
 
@@ -135,8 +155,8 @@ class PrequalificationService:
                 curr["in"], curr["out"], curr["nfcf"] = val_in, val_out, val_nfcf
                 curr["sales"], curr["exp"] = val_sales, val_exp
             else:
-                # Es histórico
-                if count_closed < 12:
+                # Aumentamos el buffer de memoria a 24 meses
+                if count_closed < 24: 
                     history["in"].append(val_in)
                     history["out"].append(val_out)
                     history["nfcf"].append(val_nfcf)
@@ -144,7 +164,27 @@ class PrequalificationService:
                     history["exp"].append(val_exp)
                     count_closed += 1
 
-        # Construcción de Objetos de Respuesta
+        # Helper reutilizable (sin cambios, la magia del slicing lo hace todo)
+        def calculate_metrics_for_window(months_limit: int) -> PrequalificationResponse.CashflowMetrics:
+            # Si pedimos 24 meses y solo hay 14, Python usa los 14 disponibles automáticamente.
+            return PrequalificationResponse.CashflowMetrics(
+                inflows_stats=self._calculate_stats(history["in"][:months_limit]),
+                outflows_stats=self._calculate_stats(history["out"][:months_limit]),
+                nfcf_stats=self._calculate_stats(history["nfcf"][:months_limit]),
+                expenditures_stats=self._calculate_stats(history["exp"][:months_limit]),
+                sales_revenue_stats=self._calculate_stats(history["sales"][:months_limit])
+            )
+
+        # Construcción del objeto expandido
+        stats_windows = PrequalificationResponse.StatsWindows(
+            last_3_months=calculate_metrics_for_window(3),
+            last_6_months=calculate_metrics_for_window(6),
+            last_12_months=calculate_metrics_for_window(12),
+            last_16_months=calculate_metrics_for_window(16),
+            last_18_months=calculate_metrics_for_window(18),
+            last_24_months=calculate_metrics_for_window(24)
+        )
+
         current_metrics = PrequalificationResponse.CurrentMonthMetrics(
             month=current_month_key,
             inflows=round(curr["in"], 2),
@@ -152,17 +192,9 @@ class PrequalificationService:
             nfcf=round(curr["nfcf"], 2),
             sales_revenue=round(curr["sales"], 2),
             expenditures=round(curr["exp"], 2)
-        ) if current_month_key in cashflow_map else None # Opcional: devolver None si no hay datos del mes actual
+        ) if current_month_key in cashflow_map else None
 
-        cashflow_metrics = PrequalificationResponse.CashflowMetrics(
-            inflows_stats=self._calculate_stats(history["in"]),
-            outflows_stats=self._calculate_stats(history["out"]),
-            nfcf_stats=self._calculate_stats(history["nfcf"]),
-            expenditures_stats=self._calculate_stats(history["exp"]),
-            sales_revenue_stats=self._calculate_stats(history["sales"])
-        )
-
-        return cashflow_metrics, current_metrics
+        return stats_windows, current_metrics
 
     def _process_concentration(self, clients: List[Dict], suppliers: List[Dict]) -> PrequalificationResponse.ConcentrationMetrics:
         """
