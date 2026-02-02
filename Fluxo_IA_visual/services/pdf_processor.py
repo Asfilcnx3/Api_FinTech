@@ -1,6 +1,6 @@
 # Aqui irán todas las funciones de extracción de PDF (sin IA)
 from ..core.exceptions import PDFCifradoError
-from ..utils.helpers_texto_fluxo import TRIGGERS_CONFIG
+from ..utils.helpers_texto_fluxo import TRIGGERS_CONFIG, KEYWORDS_COLUMNAS
 
 from typing import Dict, List, Optional, Tuple, Any
 import re
@@ -33,6 +33,69 @@ def convertir_pdf_a_imagenes(pdf_bytes: bytes, paginas: List[int] = [1]) -> List
         raise ValueError(f"No se pudo procesar el archivo como PDF: {e}")
 
     return buffers_imagenes
+
+def extraer_texto_con_crop(
+    pdf_path: str, 
+    paginas: List[int], 
+    margen_superior_pct: float = 0.12, 
+    margen_inferior_pct: float = 0.06
+) -> Dict[int, str]:
+    """
+    Extrae texto aplicando un recorte geométrico Y ORDENAMIENTO VISUAL (Layout).
+    """
+    texto_limpio = {}
+    
+    try:
+        with fitz.open(pdf_path) as doc:
+            for num_pagina in paginas:
+                idx = num_pagina - 1 
+                
+                if 0 <= idx < len(doc):
+                    page = doc[idx]
+                    rect_completo = page.rect
+                    
+                    y1 = rect_completo.height * margen_superior_pct
+                    y2 = rect_completo.height * (1 - margen_inferior_pct)
+                    
+                    rect_recorte = fitz.Rect(0, y1, rect_completo.width, y2)
+                    
+                    # Usamos sort=True para que Fitz reorganice el texto visualmente (lectura humana)
+                    # Esto es vital para que las columnas de montos no aparezcan antes que la descripción
+                    texto_crop = page.get_text("text", clip=rect_recorte, sort=True)
+                    
+                    texto_limpio[num_pagina] = texto_crop.lower()
+                    
+    except Exception as e:
+        logger.error(f"Error en crop geométrico para {pdf_path}: {e}")
+        return {} 
+
+    return texto_limpio
+
+def detectar_zonas_columnas(page: fitz.Page) -> Dict[str, Tuple[float, float]]:
+    """
+    Escanea la página buscando los encabezados de las columnas de montos.
+    Retorna los rangos X (min, max) para 'cargo' y 'abono'.
+    """
+    zonas = {"cargo": None, "abono": None}
+    words = page.get_text("words") # (x0, y0, x1, y1, "texto", block_no, line_no, word_no)
+    
+    # Buscamos las palabras clave
+    for w in words:
+        texto = w[4].lower().replace(":", "").replace(".", "").strip()
+        x0, x1 = w[0], w[2]
+        
+        # Margen de tolerancia para la columna (expandimos un poco el ancho detectado)
+        margen = 30 
+        
+        if texto in KEYWORDS_COLUMNAS["cargo"]:
+            # Si encontramos "Cargos", definimos esa zona vertical
+            zonas["cargo"] = (x0 - margen, x1 + margen)
+        
+        elif texto in KEYWORDS_COLUMNAS["abono"]:
+            # Si encontramos "Abonos", definimos esa zona vertical
+            zonas["abono"] = (x0 - margen, x1 + margen)
+            
+    return zonas
 
 def leer_qr_de_imagenes(imagen_buffers: List[BytesIO]) -> Optional[str]:
     """
@@ -126,143 +189,122 @@ def extraer_texto_de_pdf(pdf_bytes: bytes, num_paginas: Optional[int] = None) ->
     return texto_extraido
 
 # --- FUNCIÓN PARA EXTRAER MOVIMIENTOS CON POSICIONES ---
-def extraer_movimientos_con_posiciones(pdf_bytes: bytes) -> Tuple[Dict[int, List[Dict[str, Any]]], Dict[int, str], List[Tuple[int, int]]]:
+def detectar_rangos_y_texto(pdf_bytes: bytes) -> Tuple[Dict[int, str], List[Tuple[int, int]]]:
     """
-    Extrae movimientos y detecta RANGOS EXACTOS de cuentas (Inicio -> Fin).
-    Si no encuentra rangos, devuelve el documento completo como un solo rango.
+    Escanea el PDF para extraer el texto crudo por página y detectar 
+    dónde empiezan y terminan las cuentas (Rangos).
+    YA NO EXTRAE MOVIMIENTOS (Eso lo hará la fase geométrica dedicada).
     """
-    resultados_por_pagina = {}
     texto_por_pagina = {}
+    rangos_detectados = []
+    inicio_actual = None
     
-    # Ahora almacenamos TUPLAS (inicio, fin)
-    rangos_detectados: List[Tuple[int, int]] = [] 
-    
-    # Variables de control de estado
-    inicio_actual: Optional[int] = None
-    
-    # Regex y Mappings (Igual que antes)
-    KEYWORDS_MAPPING = {
-        "cargo": ["cargos", "retiros", "retiro", "debitos", "débitos", "cargo", "debe", "signo"],
-        "abono": ["abonos", "depositos", "depósito", "depósitos", "creditos", "créditos", "abono"]
-    }
-    MONTO_REGEX = re.compile(r'^\d{1,3}(?:,\d{3})*\.\d{2}$')
-
+    # Configuración de triggers (Asegúrate de tener TRIGGERS_CONFIG importado)
     try:
         with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
             total_paginas = len(doc)
             
             for page_index, page in enumerate(doc):
                 page_num = page_index + 1
-                
-                # Extracción de texto
                 page_text = page.get_text("text").lower()
-                words = page.get_text("words") 
-                
                 texto_por_pagina[page_num] = page_text
-                resultados_por_pagina[page_num] = []
                 
-                # --- LÓGICA DE DETECCIÓN DE RANGOS ---
-                
-                # 1. Si NO tenemos un inicio activo, buscamos palabras de INICIO
+                # --- LÓGICA DE RANGOS (INTACTA) ---
                 if inicio_actual is None:
                     if any(trig in page_text for trig in TRIGGERS_CONFIG["inicio"]):
-                        logging.info(f"Página {page_num}: Inicio de cuenta detectado.")
                         inicio_actual = page_num
-                        # OJO: No hacemos 'continue', porque la cuenta podría empezar y acabar en esta misma página.
 
-                # 2. Si TENEMOS un inicio activo, buscamos palabras de FIN o un NUEVO INICIO (cascada)
                 if inicio_actual is not None:
                     encontrado_fin = False
-                    
-                    # A. ¿Hay palabra de fin?
+                    # A. Fin explícito
                     if any(trig in page_text for trig in TRIGGERS_CONFIG["fin"]):
-                        logging.info(f"Página {page_num}: Fin de cuenta detectado (Cierre normal).")
                         rangos_detectados.append((inicio_actual, page_num))
-                        inicio_actual = None # Reseteamos para buscar la siguiente cuenta
+                        inicio_actual = None
                         encontrado_fin = True
                     
-                    # B. Seguridad: ¿Aparece un NUEVO INICIO sin haber cerrado el anterior?
-                    # Esto pasa si el banco no pone footer legal entre cuentas pegadas.
+                    # B. Nuevo inicio (Cascada)
                     elif page_num > inicio_actual and any(trig in page_text for trig in TRIGGERS_CONFIG["inicio"]):
-                        logging.info(f"Página {page_num}: Nuevo inicio detectado. Cerrando cuenta anterior en pág {page_num - 1}.")
                         rangos_detectados.append((inicio_actual, page_num - 1))
-                        inicio_actual = page_num # El inicio actual es esta página
+                        inicio_actual = page_num
                     
-                    # C. Si estamos en la última página y sigue abierta, cerramos a la fuerza
+                    # C. Fin de documento
                     if not encontrado_fin and inicio_actual is not None and page_num == total_paginas:
-                        logging.info(f"Página {page_num}: Fin de documento. Cerrando cuenta abierta.")
                         rangos_detectados.append((inicio_actual, total_paginas))
                         inicio_actual = None
 
-                # --- LÓGICA DE EXTRACCIÓN DE COLUMNAS (Solo si estamos dentro de una posible cuenta) ---
-                # (Optimizacion: Si inicio_actual es None, técnicamente no deberíamos extraer, 
-                # pero lo dejamos correr por si el fallback se activa al final).
-                
-                # --- PASO 1: DETECTAR UBICACIÓN DE ENCABEZADOS ---
-                headers_found = {"cargo": [], "abono": []}
-                for w in words:
-                    text_clean = w[4].lower().strip().replace(":", "").replace(".", "")
-                    if text_clean in KEYWORDS_MAPPING["cargo"]:
-                        headers_found["cargo"].append((w[0] + w[2]) / 2)
-                    elif text_clean in KEYWORDS_MAPPING["abono"]:
-                        headers_found["abono"].append((w[0] + w[2]) / 2)
-
-                if not headers_found["cargo"] and not headers_found["abono"]:
-                    continue
-
-                # --- PASO 2: AGRUPAR NÚMEROS EN COLUMNAS ---
-                candidatos_montos = [
-                    {"centro_x": (w[0] + w[2]) / 2, "monto": float(w[4].replace(',', '')), "coords": w[:4], "x0": w[0], "x1": w[2]}
-                    for w in words if MONTO_REGEX.fullmatch(w[4].strip())
-                ]
-
-                if len(candidatos_montos) < 3: continue 
-
-                candidatos_montos.sort(key=lambda x: x['centro_x'])
-                columnas = []
-                if candidatos_montos:
-                    columna_actual = [candidatos_montos[0]]
-                    for i in range(len(candidatos_montos)-1):
-                        diff = candidatos_montos[i+1]['centro_x'] - candidatos_montos[i]['centro_x']
-                        if diff < 20: 
-                            columna_actual.append(candidatos_montos[i+1])
-                        else:
-                            columnas.append(columna_actual)
-                            columna_actual = [candidatos_montos[i+1]]
-                    columnas.append(columna_actual)
-
-                columnas_validas = [col for col in columnas if len(col) >= 3]
-                
-                # --- PASO 3: VINCULAR COLUMNAS ---
-                for columna in columnas_validas:
-                    col_min_x = min(m['x0'] for m in columna)
-                    col_max_x = max(m['x1'] for m in columna)
-                    tipo_asignado = "indefinido"
-                    margin = 15
-                    
-                    for header_x in headers_found["cargo"]:
-                        if (col_min_x - margin) <= header_x <= (col_max_x + margin):
-                            tipo_asignado = "cargo"; break
-                    
-                    if tipo_asignado == "indefinido":
-                        for header_x in headers_found["abono"]:
-                            if (col_min_x - margin) <= header_x <= (col_max_x + margin):
-                                tipo_asignado = "abono"; break
-                    
-                    if tipo_asignado != "indefinido":
-                        for item in columna:
-                            resultados_por_pagina[page_num].append({
-                                "monto": item["monto"], "tipo": tipo_asignado, "coords": item["coords"]
-                            })
-
     except Exception as e:
-        logging.error(f"Error al procesar posiciones: {e}", exc_info=True)
-    
-    # --- FALLBACK ---
-    # Si no detectamos ningún rango (ni inicio ni fin), asumimos que TODO el PDF es una cuenta
+        logger.error(f"Error detectando rangos: {e}")
+
+    # Fallback si no hay rangos
     if not rangos_detectados:
-        logging.warning("No se detectaron triggers de inicio/fin. Usando fallback (Todo el documento).")
         rangos_detectados = [(1, len(texto_por_pagina))]
 
-    # Retornamos los RANGOS ya calculados
-    return resultados_por_pagina, texto_por_pagina, rangos_detectados
+    return texto_por_pagina, rangos_detectados
+
+def generar_mapa_montos_geometrico(pdf_path: str, paginas: List[int]) -> List[Dict]:
+    """
+    Escanea el PDF y retorna una lista ordenada de todos los montos encontrados
+    con su clasificación (cargo/abono) basada ESTRICTAMENTE en su posición X.
+    """
+    mapa_montos = []
+    
+    try:
+        with fitz.open(pdf_path) as doc:
+            for num_pagina in paginas:
+                idx = num_pagina - 1
+                if idx >= len(doc): continue
+                
+                page = doc[idx]
+                
+                # 1. Detectar Columnas (Usamos la función que vimos antes)
+                # Asumimos que 'detectar_zonas_columnas' ya existe y funciona bien
+                zonas = detectar_zonas_columnas(page) 
+                
+                if not zonas["cargo"] and not zonas["abono"]:
+                    continue # Sin referencias visuales, no podemos juzgar
+
+                # 2. Extraer palabras y filtrar solo números con formato financiero
+                words = page.get_text("words")
+                
+                items_pagina = []
+                for w in words:
+                    texto = w[4].strip().replace("$", "").replace(",", "")
+                    try:
+                        # Verificamos si es float valido
+                        valor_float = float(texto)
+                        # Verificamos formato visual (tiene punto decimal)
+                        if "." not in w[4]: continue 
+                    except ValueError:
+                        continue
+
+                    # Calcular centro X
+                    x_centro = (w[0] + w[2]) / 2
+                    tipo_detectado = "indefinido"
+
+                    # 3. Clasificación Geométrica
+                    if zonas["cargo"]:
+                        if zonas["cargo"][0] <= x_centro <= zonas["cargo"][1]:
+                            tipo_detectado = "cargo"
+                    
+                    if zonas["abono"] and tipo_detectado == "indefinido":
+                        if zonas["abono"][0] <= x_centro <= zonas["abono"][1]:
+                            tipo_detectado = "abono"
+
+                    if tipo_detectado != "indefinido":
+                        items_pagina.append({
+                            "monto_str": texto, # "1500.50"
+                            "monto_float": valor_float,
+                            "tipo": tipo_detectado,
+                            "y": w[1], # Coordenada Y para ordenar (lectura de arriba a abajo)
+                            "pagina": num_pagina
+                        })
+                
+                # Ordenar por posición vertical (Arriba -> Abajo)
+                items_pagina.sort(key=lambda x: x["y"])
+                mapa_montos.extend(items_pagina)
+
+    except Exception as e:
+        logger.error(f"Error generando mapa de montos: {e}")
+        return []
+
+    return mapa_montos

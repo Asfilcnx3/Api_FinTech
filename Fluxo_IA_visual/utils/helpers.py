@@ -1,7 +1,7 @@
 from ..models.responses_analisisTPV import AnalisisTPV
 from ..models.responses_nomiflash import NomiFlash
 from .helpers_texto_fluxo import (
-    BANCO_DETECTION_REGEX, ALIAS_A_BANCO_MAP, PATRONES_COMPILADOS, PALABRAS_CLAVE_VERIFICACION, PROMPT_GENERICO, PROMPT_OCR_INSTRUCCIONES_BASE, PROMPT_TEXTO_INSTRUCCIONES_BASE, PROMPTS_POR_BANCO
+    BANCO_DETECTION_REGEX, ALIAS_A_BANCO_MAP, PATRONES_COMPILADOS, PALABRAS_CLAVE_VERIFICACION, PROMPT_GENERICO, PROMPT_FASE_2_ESCRIBA_VISION, PROMPT_FASE_2_ESCRIBA_TEXTO, PROMPTS_POR_BANCO
 )
 from .helpers_texto_nomi import CAMPOS_FLOAT, CAMPOS_STR, PATTERNS_COMPILADOS_RFC_CURP, RFCS_INSTITUCIONES_IGNORAR
 
@@ -185,54 +185,52 @@ def parsear_respuesta_toon(texto_toon: str) -> List[Dict[str, Any]]:
     Formato esperado por línea: FECHA | DESCRIPCION | MONTO | TIPO
     """
     transacciones = []
-    
-    # Limpiamos bloques de código si el LLM los puso (```text ... ```)
-    texto_limpio = re.sub(r'^```\w*\n|```$', '', texto_toon.strip(), flags=re.MULTILINE).strip()
-    
+    texto_limpio = texto_toon.replace("```json", "").replace("```text", "").replace("```", "").strip()
     lineas = texto_limpio.split('\n')
-    
+
     for linea in lineas:
         linea = linea.strip()
-        if not linea: continue # Saltar líneas vacías
-        
-        # Ignorar encabezados si el LLM los generó (ej. "Fecha | Desc...")
-        if "fecha" in linea.lower() and "monto" in linea.lower() and "|" in linea:
-            continue
+        if not linea: continue
 
         partes = linea.split('|')
         
-        # Esperamos 4 o 5 partes. Si hay más (ej. pipe en la descripción), intentamos unirlas
-        if len(partes) < 4: # Mínimo fecha, desc, monto
-            logger.debug(f"Línea TOON ignorada (formato incorrecto): {linea}")
+        # Aceptamos 3 (Digital) o 4 (OCR) columnas
+        if len(partes) < 3: 
             continue
-            
+        
         try:
             fecha = partes[0].strip()
             
-            # El último es la etiqueta, el penúltimo el tipo
-            etiqueta_raw = partes[-1].strip().upper() # "TPV" o "GENERAL"
-            tipo_raw = partes[-2].strip().lower()
-            monto_str = partes[-3].strip()
+            # Lógica dinámica según cantidad de columnas
+            if len(partes) == 3:
+                # CASO DIGITAL (Esperando Geometría)
+                # Fecha | Desc | Monto
+                descripcion = partes[1].strip()
+                monto_str = partes[2].strip()
+                tipo = "indefinido"
             
-            # Descripción es lo que sobra en medio
-            descripcion = " ".join(p.strip() for p in partes[1:-3])
-            
-            # Normalización de tipo
-            tipo = "abono" if "abono" in tipo_raw else "cargo" if "cargo" in tipo_raw else "indefinido"
-            
-            # Validación de etiqueta (fallback por seguridad)
-            es_tpv_ia = "TPV" in etiqueta_raw
+            else:
+                # CASO OCR / VISIÓN (4 columnas o más)
+                # Fecha | Desc | Monto | Tipo
+                # Unimos descripción por si hay pipes extra en el medio
+                descripcion = " ".join(p.strip() for p in partes[1:-2]) 
+                if not descripcion: descripcion = partes[1].strip()
+                
+                monto_str = partes[-2].strip() # Penúltimo
+                tipo_raw = partes[-1].strip().lower() # Último
+                
+                # Normalización del tipo que vió el OCR
+                tipo = "abono" if "abono" in tipo_raw else "cargo" if "cargo" in tipo_raw else "indefinido"
 
             transacciones.append({
                 "fecha": fecha,
                 "descripcion": descripcion,
                 "monto": monto_str,
-                "tipo": tipo,
-                "categoria": es_tpv_ia
+                "tipo": tipo, 
+                "categoria": "GENERAL" 
             })
             
-        except Exception as e:
-            logger.warning(f"Error parseando línea TOON: '{linea}' - {e}")
+        except Exception:
             continue
 
     return transacciones
@@ -459,42 +457,24 @@ def _crear_prompt_agente_unificado(
         tipo: Literal["texto", "vision"]
     ) -> str:
     """
-    Genera el prompt de sistema para el agente de extracción de TPV,
-    combinando las instrucciones específicas del banco con la base de 
-    instrucciones correcta (texto o visión).
+    Genera el prompt para la FASE 2 (Transcripción/Escriba).
+    Ya no inyecta reglas de negocio, solo contexto básico.
     """
-    banco_key = banco.lower().strip()
-    
-    # 1. Seleccionar la Introducción y las Instrucciones Base según el tipo
+    # Seleccionamos la base
     if tipo == "texto":
-        intro = f"Eres un agente de IA experto en analizar TEXTO de estados de cuenta del banco {banco}."
-        instrucciones_base = PROMPT_TEXTO_INSTRUCCIONES_BASE
-    else: # tipo == "vision"
-        intro = f"Eres un agente de IA experto en analizar IMÁGENES de estados de cuenta escaneados del banco {banco}."
-        instrucciones_base = PROMPT_OCR_INSTRUCCIONES_BASE
-        
-    # 2. Buscar las pistas específicas del banco
-    # Si no se encuentra, simplemente no se añaden pistas extra.
-    pistas_especificas = PROMPTS_POR_BANCO.get(banco_key, PROMPT_GENERICO)
+        instrucciones_base = PROMPT_FASE_2_ESCRIBA_TEXTO
+        contexto_extra = f"Estás analizando texto extraído de un estado de cuenta de {banco}."
+    else: # vision
+        instrucciones_base = PROMPT_FASE_2_ESCRIBA_VISION
+        contexto_extra = f"Estás viendo una imagen de un estado de cuenta de {banco}."
 
-    # 3. Construir el prompt final
+    # Construimos el prompt final limpio
     prompt_final = f"""
-    {intro}
+    {contexto_extra}
     
-    TU OBJETIVO PRINCIPAL:
-    1. Analizar el documento completo.
-    2. Extraer TODAS las transacciones visibles (Cargos y Abonos).
-    3. Clasificar cada transacción en la columna `ETIQUETA` usando las reglas del banco.
-
-    --- REGLAS DE CLASIFICACIÓN PARA '{banco}' ---
-    Si una transacción cumple CUALQUIERA de las siguientes condiciones estrictas, su `ETIQUETA` debe ser "TPV".
-    Si NO cumple ninguna, su `ETIQUETA` debe ser "GENERAL".
-
-    {pistas_especificas}
-    --------------------------------------------------
-
     {instrucciones_base}
     """
+    
     return prompt_final.strip()
 
 def crear_objeto_resultado(datos_dict: dict) -> AnalisisTPV.ResultadoExtraccion: # no estamos usandola (identificar si se usará o eliminar)

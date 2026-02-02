@@ -7,6 +7,7 @@ control_versiones
 
 # Las downloads
 downloads
+temp_uploads
 
 # Cache de los pytest
 .pytest_cache

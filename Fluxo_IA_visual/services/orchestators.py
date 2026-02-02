@@ -18,7 +18,7 @@ from ..utils.helpers_texto_csf import (
 )
 
 from .pdf_processor import (
-    extraer_movimientos_con_posiciones, extraer_texto_de_pdf, convertir_pdf_a_imagenes, leer_qr_de_imagenes
+    detectar_rangos_y_texto, extraer_texto_de_pdf, convertir_pdf_a_imagenes, leer_qr_de_imagenes, extraer_texto_con_crop
 )
 
 from ..utils.helpers import extraer_rfc_curp_por_texto
@@ -75,9 +75,9 @@ async def obtener_y_procesar_portada(prompt:str, pdf_bytes: bytes) -> Tuple[Dict
 
     # --- 1. PRIMERO: Extraer Texto Y Movimientos (Detectar cortes) ---
     # Esta función ya nos devuelve los puntos donde cambia de cuenta
-    movimientos_por_pagina, texto_por_pagina, rangos_cuentas = await loop.run_in_executor(
+    texto_por_pagina, rangos_cuentas = await loop.run_in_executor(
         None,
-        extraer_movimientos_con_posiciones,
+        detectar_rangos_y_texto,
         pdf_bytes
     )
 
@@ -163,12 +163,12 @@ async def obtener_y_procesar_portada(prompt:str, pdf_bytes: bytes) -> Tuple[Dict
 
     # Retornamos la lista de resultados y los datos globales
     # OJO: Ahora el primer elemento es una LISTA, no un Dict único.
-    return resultados_acumulados, es_documento_digital, texto_verificacion_global, movimientos_por_pagina, texto_por_pagina, rangos_cuentas
+    return resultados_acumulados, es_documento_digital, texto_verificacion_global, None, texto_por_pagina, rangos_cuentas
     
 async def procesar_documento_con_agentes_async(
     ia_data_cuenta: dict, 
     texto_total: Dict[int, str], 
-    movimientos_total: Dict[int, Any], 
+    movimientos_total: Optional[Dict[int, Any]],
     filename: str,
     rango_paginas: Tuple[int, int]
 ) -> Dict[str, Any]:
@@ -185,33 +185,31 @@ async def procesar_documento_con_agentes_async(
 
     # 1. FILTRAR INPUTS
     lista_paginas = list(range(start_pg, end_pg + 1))
+    
+    # Filtramos el texto (que sí tenemos)
     texto_subset = {k: v for k, v in texto_total.items() if k in lista_paginas}
-    movimientos_subset = {k: v for k, v in movimientos_total.items() if k in lista_paginas}
-    paginas_con_movimientos = [p for p, m in movimientos_subset.items() if m]
-
+    
+    # Lógica de Movimientos (Ahora es opcional/legacy)
+    if movimientos_total:
+        movimientos_subset = {k: v for k, v in movimientos_total.items() if k in lista_paginas}
+        paginas_con_movimientos = [p for p, m in movimientos_subset.items() if m]
+    else:
+        # Si no hay movimientos previos (nueva arquitectura), asumimos que todas las páginas
+        # del rango que tienen texto son válidas.
+        paginas_con_movimientos = list(texto_subset.keys())
+        
+    # Fallback si el filtrado por movimientos previos dejó vacío pero hay texto
     if not paginas_con_movimientos and texto_subset:
         logger.warning(
             f"{nombre_cuenta}: fallback a procesamiento por texto completo"
         )
         paginas_con_movimientos = list(texto_subset.keys())
-    
-    # if not paginas_con_movimientos:
-    #     logger.warning(f"La cuenta {nombre_cuenta} no tiene movimientos.")
-    #     return {
-    #         **ia_data_cuenta,
-    #         "nombre_archivo_virtual": nombre_cuenta,
-    #         "transacciones": [],
-    #         "depositos_en_efectivo": 0.0, "traspaso_entre_cuentas": 0.0,
-    #         "total_entradas_financiamiento": 0.0, "entradas_bmrcash": 0.0,
-    #         "total_moratorios": 0.0, "entradas_TPV_bruto": 0.0, "entradas_TPV_neto": 0.0,
-    #         "error_transacciones": "Sin movimientos detectados en el rango asignado."
-    #     }
 
     # 2. CHUNKING Y AGENTES
     chunks = crear_chunks_con_superposicion(
         texto_por_pagina=texto_subset,
         paginas_con_movimientos=paginas_con_movimientos,
-        tamano_chunk=5, superposicion=1
+        tamano_chunk=4, superposicion=1
     )
     
     tareas = [llamar_agente_tpv(banco, txt, pags) for txt, pags in chunks]
@@ -452,34 +450,63 @@ async def procesar_documento_escaneado_con_agentes_async(
 
 def procesar_digital_worker_sync(
     ia_data_inicial: dict, 
-    texto_por_pagina: Dict[int, str], 
+    texto_por_pagina_sucio: Dict[int, str], # Renombramos para ser explícitos 
     movimientos_por_pagina: Dict[int, Any], 
     filename: str,
+    file_path: str,
     rango_paginas: Tuple[int, int]
 ) -> Union[AnalisisTPV.ResultadoExtraccion, Exception]:
     try:
-        # Ejecutamos la función async que ahora devuelve UN solo dict
+        # 1. DETERMINAR PÁGINAS DEL RANGO
+        start, end = rango_paginas
+        lista_paginas = list(range(start, end + 1))
+        
+        # 2. APLICAR GEOMETRÍA: LEER TEXTO LIMPIO (SIN HEADER/FOOTER)
+        # Aquí definimos los márgenes. Podrías hacerlos dinámicos según el banco en el futuro.
+        # Por ahora, 15% arriba y 10% abajo es un estándar seguro para bancos MX.
+        texto_limpio_crop = extraer_texto_con_crop(
+            file_path, 
+            paginas=lista_paginas,
+            margen_superior_pct=0.12, 
+            margen_inferior_pct=0.06
+        )
+        
+        if not texto_limpio_crop:
+            # Fallback: Si el crop falló por algo, usamos el texto sucio original
+            logger.warning(f"Crop falló para {filename}, usando texto completo.")
+            texto_a_usar = texto_por_pagina_sucio
+        else:
+            texto_a_usar = texto_limpio_crop
+
+        # 3. PASAR EL TEXTO LIMPIO AL PROCESAMIENTO
         resultado_dict = asyncio.run(
             procesar_documento_con_agentes_async(
-                ia_data_inicial, texto_por_pagina, movimientos_por_pagina, 
-                filename, rango_paginas
+                ia_data_inicial, 
+                texto_a_usar, # <--- Usamos la versión limpia
+                movimientos_por_pagina, 
+                filename, 
+                rango_paginas
             )
         )
-        # Lo envolvemos en el objeto Pydantic esperado
         return crear_objeto_resultado(resultado_dict)
+        
     except Exception as e:
         logger.error(f"Error Worker Digital ({filename}): {e}", exc_info=True)
         return e
 
 def procesar_ocr_worker_sync(
     ia_data: dict, 
-    pdf_content: bytes, 
+    file_path: str, #Recibe ruta
     filename: str
 ) -> Union[List[AnalisisTPV.ResultadoExtraccion], Exception]:
     try:
+        # Leemos el archivo DESDE EL DISCO dentro del proceso worker
+        with open(file_path, "rb") as f:
+            pdf_bytes = f.read()
+
         lista_dicts = asyncio.run(
             procesar_documento_escaneado_con_agentes_async(
-                ia_data, pdf_content, filename
+                ia_data, pdf_bytes, filename
             )
         )
         return [crear_objeto_resultado(d) for d in lista_dicts]

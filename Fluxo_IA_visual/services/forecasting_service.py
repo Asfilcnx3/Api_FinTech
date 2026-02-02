@@ -15,12 +15,14 @@ class ForecastingService:
     def generate_forecast(
         self, 
         historical_map: Dict[str, float], 
-        horizon: int = 6
+        horizon: int = 12
     ) -> Forecast.SalesForecastResponse:
         """
         Genera un pronóstico de ventas basado en un mapa {fecha: monto}.
         Maneja automáticamente la escasez de datos.
         """
+        logger.info(f"Historical data received: {historical_map}")
+        logger.info(f"Generando forecast para {len(historical_map)} puntos históricos, horizonte {horizon} meses.")
         # 1. Validación de datos mínimos
         # Necesitamos al menos 3 puntos para trazar una línea decente
         if not historical_map or len(historical_map) < 3:
@@ -76,19 +78,22 @@ class ForecastingService:
                     values, 
                     trend='add', 
                     damped_trend=True, 
-                    seasonal=None
+                    seasonal=None,
+                    initialization_method="estimated"
                 ).fit()
                 forecast_vals = model.forecast(horizon).tolist()
 
             else:
                 # ESTRATEGIA C: Holt-Winters (Tendencia + Estacionalidad)
                 # Solo si tenemos 2 años completos (24 meses) para detectar ciclos anuales.
-                method = "Holt-Winters Seasonal"
+                method = "Holt-Winters Seasonal Damped"
                 model = ExponentialSmoothing(
                     values, 
                     trend='add', 
+                    damped_trend=True,     # Evita que la tendencia mate a la estacionalidad en 12 meses
                     seasonal='add', 
-                    seasonal_periods=12
+                    seasonal_periods=12,   # Ciclo anual
+                    initialization_method="estimated" # Fuerza a buscar los patrones estacionales explícitamente
                 ).fit()
                 forecast_vals = model.forecast(horizon).tolist()
 
@@ -116,9 +121,7 @@ class ForecastingService:
         for date, val in zip(future_dates, forecast_vals):
             points.append(Forecast.ForecastPoint(
                 date=date.strftime("%Y-%m-%d"),
-                predicted_revenue=round(max(0.0, float(val)), 2) #, # Evitar ventas negativas
-                # lower_bound_75=0.0, # Implementar intervalos requiere más CPU, lo dejamos simple por ahora
-                # upper_bound_75=0.0
+                predicted_revenue=round(max(0.0, float(val)), 2)
             ))
 
         return Forecast.SalesForecastResponse(

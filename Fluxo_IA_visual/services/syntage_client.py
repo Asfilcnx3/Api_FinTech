@@ -68,44 +68,27 @@ class SyntageClient:
         try:
             resp_risks = await client.get(f"{self.base_url}/insights/{rfc}/risks", headers=self.headers)
             if resp_risks.status_code == 200:
-                data = resp_risks.json()
+                json_body = resp_risks.json()
+                # DEBUG
+                logger.info(f"DEBUG RISKS: Response body: {str(json_body)}")
+                # Extraemos el diccionario 'data' completo. 
+                # Si no existe 'data', devolvemos el body entero por seguridad.
+                risks = json_body.get("data", json_body) if isinstance(json_body, dict) else {}
                 
-                # 1. Si es lista simple: ["Risk1", "Risk2"]
-                if isinstance(data, list):
-                    risks = [str(x) for x in data]
-                
-                # 2. Si es diccionario: {"taxCompliance": {"risky": false}}
-                elif isinstance(data, dict):
-                    # Si es formato hydra con "data": [...]
-                    if "data" in data and isinstance(data["data"], list):
-                        risks = [str(x) for x in data["data"]]
-                    else:
-                        # Formato Objeto de Riesgos
-                        for key, val in data.items():
-                            # Solo agregamos si 'risky' es True o si el valor es True
-                            if isinstance(val, dict) and val.get("risky") is True:
-                                risks.append(key)
-                            elif isinstance(val, bool) and val is True:
-                                risks.append(key)
-                            # Si no tiene flag 'risky' pero existe, lo agregamos por precaución 
-                            # (excepto si explícitamente es false)
-                            elif val and not (isinstance(val, dict) and val.get("risky") is False):
-                                risks.append(key)
-                        
         except Exception as e:
-            logger.warning(f"Error fetching risks: {e}")
-            risks = [] # Fallback seguro
+            logger.warning(f"Error fetching risks list: {e}")
         
         return name, risks
 
     # --- 2. RAW MONTHLY DATA ---
     async def get_raw_monthly_data(self, client: httpx.AsyncClient, rfc: str, endpoint: str) -> Dict[str, Any]:
         """
-        Obtiene los datos mensuales sin filtrar últimos 12 meses.
-        Devuelve el diccionario completo { '2024-01': ... }
+        Obtiene los datos mensuales sin filtrar últimos 3 años (~1100 días) para permitir que el modelo de predicción
+        detecte estacionalidad (ciclos anuales).
         """
         end_date = datetime.now()
-        start_date = end_date - timedelta(days=400) 
+        start_date = end_date - timedelta(days=1100) 
+        
         params = {
             "options[periodicity]": "monthly",
             "options[type]": "total",
@@ -135,6 +118,7 @@ class SyntageClient:
                         elif type_str == "outflow": result_map[norm_date]["out"] += val
                     else:
                         result_map[norm_date] = val
+        
         except Exception as e:
             logger.error(f"Error fetching {endpoint}: {e}")
             
@@ -195,103 +179,130 @@ class SyntageClient:
         return data
     
     # --- 5. CREDENCIALES (CIEC / BURÓ) ---
-    async def get_credentials_status(self, client: httpx.AsyncClient, rfc: str) -> Tuple[str, str, str]:
+    async def get_ciec_status(self, client: httpx.AsyncClient, rfc: str) -> Dict[str, Any]:
         """
-        Consulta CIEC y Buró.
+        Devuelve estatus y fecha de la última CIEC.
         """
-        ciec_stat = "unknown"
-        buro_stat = "unknown" # unknown, found, not_found
-        buro_score = "unknown"  # Score numérico si está disponible
-        
-        
-        # --- A. VERIFICACIÓN CIEC (Endpoint Correcto: /credentials) ---
+        result = {"status": "unknown", "date": None}
         try:
-            # Documentación dice: filtrar por type='ciec' y rfc={rfc}
-            params_ciec = {"type": "ciec", "rfc": rfc, "itemsPerPage": 1, "order[createdAt]": "desc"}
-            resp = await client.get(f"{self.base_url}/credentials", params=params_ciec, headers=self.headers)
+            params = {"type": "ciec", "rfc": rfc, "itemsPerPage": 1, "order[createdAt]": "desc"}
+            resp = await client.get(f"{self.base_url}/credentials", params=params, headers=self.headers)
+            
             if resp.status_code == 200:
                 data = resp.json()
-                # Syntage usa hydra:member para listas
-                items = data if isinstance(data, list) else data.get("hydra:member", []) or data.get("data", [])
+                # Lista vs Dict
+                items = data if isinstance(data, list) else data.get("hydra:member", [])
                 
                 if items:
-                    # Tomamos el status directo: pending, valid, invalid, error
-                    ciec_stat = items[0].get("status", "unknown")
+                    item = items[0]
+                    raw_status = item.get("status")
+                    result["status"] = "active" if raw_status == "valid" else "inactive"
+                    result["date"] = item.get("createdAt")
                 else:
-                    ciec_stat = "not_found"
-            else:
-                logger.warning(f"CIEC Check failed with status {resp.status_code}")
-
+                    result["status"] = "not_found"
         except Exception as e:
-            logger.error(f"Error fetching CIEC credential: {e}")
+            logger.error(f"Error CIEC: {e}")
+        return result
 
-        # --- B. VERIFICACIÓN BURÓ (Requiere Entity ID primero) ---
+    async def get_buro_report_status(self, client: httpx.AsyncClient, rfc: str) -> Dict[str, Any]:
+        """
+        Verifica reporte de Buró. Maneja correctamente el 404 cuando no hay reportes.
+        """
+        result = {"has_report": False, "status": "unknown", "score": None, "date": None}
+        
+        entity_id = await self._get_entity_id(client, rfc)
+        if not entity_id:
+            result["status"] = "entity_not_found"
+            return result
+
         try:
-            # 1. Get Entity ID
-            entity_id = await self._get_entity_id(client, rfc)
+            url = f"{self.base_url}/entities/{entity_id}/datasources/mx/buro-de-credito/reports"
+            params = {"itemsPerPage": 1, "order[createdAt]": "desc"}
             
-            if not entity_id:
-                logger.warning(f"DEBUG BURO: No se encontró entityId para el RFC {rfc}. No se puede consultar Buró.")
-                return ciec_stat, "entity_not_found", "unknown"
-
-            # 2. Get Report
-            params_buro = {
-                "itemsPerPage": 1,
-                "order[createdAt]": "desc"
-            }
-            # URL según documentación
-            url_buro = f"{self.base_url}/entities/{entity_id}/datasources/mx/buro-de-credito/reports"
+            resp = await client.get(url, params=params, headers=self.headers)
             
-            logger.info(f"DEBUG BURO URL: {url_buro}") # Confirmamos que la URL lleva el UUID
-            
-            resp_buro = await client.get(url_buro, params=params_buro, headers=self.headers)
-            
-            if resp_buro.status_code == 200:
-                data_buro = resp_buro.json()
-                items_buro = data_buro if isinstance(data_buro, list) else data_buro.get("hydra:member", []) or data_buro.get("data", [])
-
-                if items_buro:
-                    buro_stat = "active"
-                    first_item = items_buro[0]
-                    
-                    # Lógica de extracción de Score (Corregida)
-                    score_val = first_item.get("score")
-                    
-                    # Si no está en la raíz, buscamos en el objeto anidado
-                    if not score_val and "scoreBuroCredito" in first_item:
-                        sb = first_item["scoreBuroCredito"]
-                        if isinstance(sb, list) and sb:
-                            score_val = sb[0].get("valorScore")
-                    
-                    buro_score = str(score_val) if score_val else "not_found_in_json"
-                else:
-                    buro_stat = "not_found"
-                    buro_score = "empty_list"
-
-            elif resp_buro.status_code == 404:
-                buro_stat = "not_found"
-                logger.info("DEBUG BURO: Endpoint retornó 404 (Entidad sin reportes vinculados)")
-            else:
-                logger.warning(f"DEBUG BURO: Error {resp_buro.status_code} - {resp_buro.text}")
-                
-        except Exception as e:
-            logger.error(f"Error fetching Buro report status: {e}")
-            
-        return ciec_stat, buro_stat, buro_score
-    
-    async def _get_entity_id(self, client: httpx.AsyncClient, rfc: str) -> Optional[str]:
-        """Helper privado para obtener ID de entidad"""
-        try:
-            resp = await client.get(f"{self.base_url}/taxpayers/{rfc}", headers=self.headers)
             if resp.status_code == 200:
                 data = resp.json()
-                raw = data.get("entity")
-                if isinstance(raw, str) and "/entities/" in raw:
-                    return raw.split("/")[-1]
-                elif isinstance(raw, dict):
-                    return raw.get("id")
-        except Exception as e: 
-            logger.error(f"Error fetching entity ID: {e}")
+                items = data if isinstance(data, list) else data.get("hydra:member", [])
+                
+                if items:
+                    last_report = items[0]
+                    result["has_report"] = True
+                    result["status"] = "found"
+                    result["score"] = last_report.get("score")
+                    
+                    # Fecha
+                    date_val = last_report.get("createdAt")
+                    if not date_val:
+                        try:
+                            raw_d = last_report["data"]["respuesta"]["persona"]["cuentas"][0]["fechaReporte"]
+                            if raw_d and len(raw_d) == 8:
+                                date_val = f"{raw_d[4:]}-{raw_d[2:4]}-{raw_d[:2]}"
+                        except: pass
+                    result["date"] = date_val
+                else:
+                    result["status"] = "not_found"
+            elif resp.status_code == 404:
+                result["status"] = "not_found"
+                result["has_report"] = False
+                
+        except Exception as e:
+            logger.error(f"Error Buró: {e}")
+            
+        return result
+
+    async def get_compliance_opinion(self, client: httpx.AsyncClient, rfc: str) -> Dict[str, Any]:
+        """
+        Obtiene la Opinión de Cumplimiento. Busca fecha en niveles superiores si no está en el objeto.
+        """
+        result = {"status": "unknown", "date": None}
+        try:
+            resp = await client.get(f"{self.base_url}/insights/{rfc}/risks", headers=self.headers)
+            
+            if resp.status_code == 200:
+                json_body = resp.json()
+                
+                # Acceso seguro a data -> taxCompliance
+                data_node = json_body.get("data", json_body) if isinstance(json_body, dict) else {}
+                compliance = data_node.get("taxCompliance", {})
+                
+                if isinstance(compliance, dict) and compliance:
+                    is_risky = compliance.get("risky")
+                    if is_risky is False: result["status"] = "positive"
+                    elif is_risky is True: result["status"] = "negative"
+                    
+                    # Fecha (usualmente no viene aquí, pero por si acaso)
+                    result["date"] = compliance.get("updatedAt") or compliance.get("date")
+                else:
+                    result["status"] = "not_found"
+        except Exception as e:
+            logger.error(f"Error Compliance: {e}")
+            
+        return result
+    
+    async def _get_entity_id(self, client: httpx.AsyncClient, rfc: str) -> Optional[str]:
+        """
+        Busca el UUID de la Entidad asociado al RFC.
+        Maneja respuestas tipo lista directa o colección Hydra.
+        """
+        # 1. INTENTO PRINCIPAL: Buscar en la colección de Entidades
+        try:
+            params = {"rfc": rfc, "itemsPerPage": 1}
+            resp = await client.get(f"{self.base_url}/entities", params=params, headers=self.headers)
+            
+            if resp.status_code == 200:
+                data = resp.json()
+                
+                # Parseo robusto Lista vs Dict
+                items = []
+                if isinstance(data, list): items = data
+                elif isinstance(data, dict): items = data.get("hydra:member", []) or data.get("data", [])
+                
+                if items and isinstance(items[0], dict):
+                    return items[0].get("id")
+                    
+        except Exception as e:
+            logger.error(f"Error searching entity: {e}")
         return None
 
     # --- HELPERS DE PARSING ---

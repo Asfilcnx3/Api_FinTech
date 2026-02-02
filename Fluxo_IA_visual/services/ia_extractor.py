@@ -1,6 +1,7 @@
 from .pdf_processor import convertir_pdf_a_imagenes
 from ..core.config import settings
 from ..utils.helpers import _crear_prompt_agente_unificado, parsear_respuesta_toon
+from ..utils.helpers_texto_fluxo import PROMPT_FASE_3_AUDITOR_TEMPLATE, PROMPT_GENERICO, PROMPTS_POR_BANCO
 
 from fastapi import HTTPException
 from openai import AsyncOpenAI
@@ -242,10 +243,68 @@ async def _extraer_datos_con_ia(texto: str) -> Dict:
     try:
         client = get_fluxo_client()
         response = await client.chat.completions.create(
-            model="gpt-5",
+            model="gpt-5.2",
             messages=[{"role": "user", "content": prompt_ia}],
             # response_format={"type": "json_object"}
         )
         return json.loads(response.choices[0].message.content)
     except Exception as e:
         return e
+    
+async def clasificar_lote_con_ia(banco: str, transacciones: List[Any]) -> Dict[str, str]:
+    """
+    Fase 3: Envía un lote de descripciones a la IA para clasificación.
+    Inyecta dinámicamente las reglas del banco específico.
+    """
+    # 1. Preparar el payload
+    payload_input = []
+    for idx, tx in enumerate(transacciones):
+        if isinstance(tx, dict):
+            desc = tx.get("descripcion", "")
+            monto = tx.get("monto", "0")
+        else: 
+            desc = tx.descripcion
+            monto = tx.monto
+
+        payload_input.append({
+            "id": idx, # ID relativo (0 a BatchSize)
+            "desc": desc, 
+            "monto": monto
+        })
+    
+    # 2. SELECCIONAR LAS REGLAS ESPECÍFICAS (LA PIEZA FALTANTE)
+    banco_key = banco.lower().strip()
+    
+    # Buscamos las reglas en tu diccionario gigante. Si no está, usamos las genéricas.
+    reglas_a_usar = PROMPTS_POR_BANCO.get(banco_key, PROMPT_GENERICO)
+    
+    # 3. CONSTRUIR EL PROMPT FINAL
+    # Aquí inyectamos tanto el nombre del banco como sus reglas
+    prompt_sistema = PROMPT_FASE_3_AUDITOR_TEMPLATE.format(
+        banco=banco, 
+        reglas_especificas=reglas_a_usar
+    )
+    
+    prompt_usuario = json.dumps(payload_input)
+
+    try:
+        client = get_fluxo_client()
+        
+        # Usamos temperature=0 para que siga las reglas estrictamente
+        response = await client.chat.completions.create(
+            model="gpt-5.2", 
+            messages=[
+                {"role": "system", "content": prompt_sistema},
+                {"role": "user", "content": prompt_usuario}
+            ],
+            response_format={"type": "json_object"},
+            temperature=0 
+        )
+        
+        resultado_json = json.loads(response.choices[0].message.content)
+        return resultado_json
+
+    except Exception as e:
+        logger.error(f"Error en clasificación IA ({banco}): {e}")
+        # Fallback de seguridad
+        return {str(i): "GENERAL" for i in range(len(transacciones))}

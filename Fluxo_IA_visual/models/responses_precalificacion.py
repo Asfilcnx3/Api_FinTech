@@ -1,9 +1,19 @@
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import Any, Dict, Dict, List, Optional
 from .responses_forecasting import Forecast
 
 
 class PrequalificationResponse(BaseModel):
+
+    class CredentialInfo(BaseModel):
+        status: str # "active", "inactive", "not_found", "positive", "negative"
+        last_check_date: Optional[str] = None # "YYYY-MM-DD" o ISO format
+
+    class BuroInfo(BaseModel):
+        has_report: bool
+        status: str # "found", "not_found", "entity_not_found"
+        score: Optional[str] = None
+        last_check_date: Optional[str] = None # Fecha de la última corrida
     
     class Stats(BaseModel):
         mean: float
@@ -16,6 +26,15 @@ class PrequalificationResponse(BaseModel):
         nfcf_stats: "PrequalificationResponse.Stats"
         expenditures_stats: "PrequalificationResponse.Stats"  
         sales_revenue_stats: "PrequalificationResponse.Stats" 
+
+    class StatsWindows(BaseModel):
+        # Define los periodos de tiempo)
+        last_3_months: "PrequalificationResponse.CashflowMetrics"
+        last_6_months: "PrequalificationResponse.CashflowMetrics"
+        last_12_months: "PrequalificationResponse.CashflowMetrics"
+        last_16_months: "PrequalificationResponse.CashflowMetrics"
+        last_18_months: "PrequalificationResponse.CashflowMetrics"
+        last_24_months: "PrequalificationResponse.CashflowMetrics"
 
     class CurrentMonthMetrics(BaseModel):
         # Datos crudos del mes incompleto actual
@@ -74,16 +93,16 @@ class PrequalificationResponse(BaseModel):
         rfc: str
         business_name: str
 
-        # Credenciales
-        ciec_status: str = "unknown" # active, invalid, inactive
-        buro_status: str = "unknown"
-        buro_score_estimate: Optional[str] = None # Nuevo campo
-
         # Indicadores de riesgo (Lista de strings)
-        risk_indicators: List[str]
+        risk_indicators: Dict[str, Any]
+    
+        # Credenciales
+        ciec_info: "PrequalificationResponse.CredentialInfo"
+        buro_info: "PrequalificationResponse.BuroInfo"
+        compliance_opinion: "PrequalificationResponse.CredentialInfo" # Opinión de cumplimiento (32-D)
         
         # Cashflow histórico (12 meses cerrados)
-        cashflow_last_12m: "PrequalificationResponse.CashflowMetrics"
+        stats_last_months: "PrequalificationResponse.StatsWindows"
         
         # Mes actual (en curso)
         cashflow_current_month: Optional["PrequalificationResponse.CurrentMonthMetrics"]

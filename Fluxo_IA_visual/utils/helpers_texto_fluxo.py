@@ -18,7 +18,7 @@ PALABRAS_EFECTIVO = [
 ]
 
 PALABRAS_TRASPASO_ENTRE_CUENTAS = [
-    "traspaso entre cuentas", "traspaso cuentas propias", "traspaso entre cuentas propias"
+    "traspaso entre cuentas", "traspaso cuentas propias", "traspaso entre cuentas propias", "transferencia entre cuentas propias", "transferencia entre cuentas", "traspaso entre mis cuentas", "traspaso a cuenta propia", "transferencia a cuenta propia", "traspaso a mis cuentas", "transferencia a mis cuentas", "traspaso", "transferencia", "transferencia cuentas propias"
 ]   
 
 PALABRAS_TRASPASO_FINANCIAMIENTO = [
@@ -30,7 +30,7 @@ PALABRAS_BMRCASH = [
 ]
 
 PALABRAS_TRASPASO_MORATORIO = [ # Faltan ejemplos
-    "cargo por moratorio", "intereses moratorios", "recargo", "recargos", "penalización", "pena", "penalizaciones", "pena convencional", "penalizacion", "penalizaciones convencionales", "cargo por moratorios", "interes moratorio", "cargo por intereses moratorios", "recargo por intereses moratorios"
+    "cargo por moratorio", "intereses moratorios", "recargo", "recargos", "penalización", "penalizaciones", "pena convencional", "penalizacion", "penalizaciones convencionales", "cargo por moratorios", "interes moratorio", "cargo por intereses moratorios", "recargo por intereses moratorios"
 ]
 
 # Definimos los campos esperados y sus tipos (No funcionan aún)
@@ -42,6 +42,11 @@ CAMPOS_STR = [
 CAMPOS_FLOAT = [
     "comisiones", "depositos", "cargos", "saldo_promedio", "depositos_en_efectivo", "entradas_TPV_bruto", "entradas_TPV_neto"
 ]
+
+KEYWORDS_COLUMNAS = {
+    "cargo": ["retiros", "cargos", "debitos", "signo", "debe"],
+    "abono": ["depositos", "abonos", "creditos", "haber"]
+}
 
 # ==========================================
 # 1. CONFIGURACIÓN DE TERMINALES (REESTRUCTURADA)
@@ -232,11 +237,13 @@ TRIGGERS_CONFIG = {
     # Palabras que indican INEQUÍVOCAMENTE que empieza una cuenta
     "inicio": [
         'la gat real es el rendimiento que obtendría después de descontar la inflación estimada"',
-        'detalle de la cuenta'
+        'detalle de la cuenta',
+        'detalle de movimientos realizados'
     ],
     # Palabras que indican el FINAL (generalmente pies de página legales o timbres SAT)
     "fin": [
-        "este documento es una representación impresa de un cfdi",
+        'este documento es una representación impresa de un cfdi',
+        'total de movimientos'
     ]
 }
 
@@ -286,54 +293,136 @@ REGLAS IMPORTANTES:
 - Si hay varios RFC, el válido es el que aparece junto al nombre y dirección del cliente.
 """
 
-PROMPT_TEXTO_INSTRUCCIONES_BASE = """
-INSTRUCCIONES DE FORMATO (TOON):
-1.  NO USES JSON. Genera una salida de texto plano ultra-compacta.
-2.  Una línea por transacción.
-3.  Delimitador: Usa el caracter `|` (pipe) para separar los campos.
-4.  Estructura: `FECHA | DESCRIPCION COMPLETA | MONTO | TIPO | ETIQUETA`
-    * `FECHA`: ÚNICAMENTE EL NÚMERO DEL DÍA DE LA FECHA (ej. '02').
-    * `DESCRIPCION`: Todo el texto del concepto.
-    * `MONTO`: Solo números y puntos (ej. 1500.50).
-    * `TIPO`: "cargo" o "abono".
-    * `ETIQUETA`: "TPV" (si cumple las reglas) o "GENERAL" (si es cualquier otro movimiento).
+PROMPT_FASE_2_ESCRIBA_TEXTO = """
+TU OBJETIVO:
+Eres un transcriptor financiero especializado en estados de cuenta bancarios. Tu ÚNICA tarea será convertir el texto en transacciones estructuradas en formato TOON.
+No clasifiques, solo transcribe los movimientos que encuentres. Para mejorar la precisión, tu entrada es texto estructurado en líneas horizontales, cada línea representa una fila del estado de cuenta.
 
-INSTRUCCIONES CLAVE DE PROCESAMIENTO:
-1. Ignora el inicio si está incompleto: Si el texto comienza a mitad de una transacción (por ejemplo, sin una fecha o referencia clara), ignora esa primera transacción incompleta. El fragmento anterior ya la procesó.
-2. Extrae todo hasta el final: Procesa todas las transacciones que puedas identificar completamente. Si la *última* transacción del texto parece estar cortada o incompleta, extráela también. El siguiente fragmento se encargará de completarla y el sistema la deduplicará.
-3.  Extrae TODOS los movimientos (gastos, cheques, comisiones, depósitos).
-4.  Para la columna `ETIQUETA`, revisa minuciosamente las reglas del banco.
-    * Si es un cargo, la etiqueta siempre es "GENERAL".
-    * Si es un abono y cumple las reglas de palabras clave o multilínea, es "TPV".
-5. Precisión Absoluta: Sé meticuloso con los montos y las fechas. No alucines información. Si un dato no está, déjalo como null.
+FORMATO DE SALIDA (TOON):
+1. Una línea por transacción.
+2. Separador obligatorio: `|` (pipe).
+3. Estructura EXACTA:
+    FECHA | DESCRIPCION | MONTO
 
-EJEMPLO DE SALIDA, SIEMPRE EN MINUSCULAS:
-05 | VENTAS TARJETAS 123456 | 15200.50 | abono | GENERAL
-06 | COMISION POR APERTURA | 500.00 | cargo | TPV
-"""
+    - FECHA: solo el número del día (dos dígitos, ej. 05).
+    - DESCRIPCION: solo el texto del concepto unido en UNA sola línea.
+    - MONTO: número decimal limpio (sin comas, sin símbolo $).
 
-PROMPT_OCR_INSTRUCCIONES_BASE = """
-INSTRUCCIONES DE FORMATO (TOON):
-1.  NO USES JSON. Genera una salida de texto plano ultra-compacta.
-2.  Una línea por transacción.
-3.  Delimitador: Usa el caracter `|` (pipe) para separar los campos.
-4.  Estructura: `FECHA | DESCRIPCION COMPLETA | MONTO | TIPO | ETIQUETA`
-    * `FECHA`: ÚNICAMENTE EL NÚMERO DEL DÍA DE LA FECHA (ej. '02').
-    * `DESCRIPCION`: Todo el texto del concepto.
-    * `MONTO`: Solo números y puntos (ej. 1500.50).
-    * `TIPO`: "cargo" o "abono".
-    * `ETIQUETA`: "TPV" (si cumple las reglas) o "GENERAL" (si es cualquier otro movimiento).
+REGLAS DE IDENTIFICACIÓN DE TRANSACCIONES:
+1. Una transacción puede ocupar VARIAS líneas consecutivas.
+2. La transacción comienza cuando aparece una línea con una o varias fechas visibles (ej. 05/ago o '05 05').
+3. Todas las líneas siguientes SIN FECHA pertenecen a la MISMA transacción hasta que aparezca otra fecha.
+4. La fecha válida es SIEMPRE la PRIMERA fecha que aparece en la línea, descarta la segunda si existe.
+5. Pueden haber varios movimientos similares o iguales en el mismo día, cada uno es una transacción separada, siempre y cuando tenga una fecha.
 
-INSTRUCCIONES CLAVE DE PROCESAMIENTO:
-1.  Analizarás las imágenes en forma de líneas horizontales: Las siguientes imágenes son páginas de un estado de cuenta escaneado. Tu tarea es actuar como un OCR experto y un analista financiero analizano línea por línea los estados.
-2. Extrae todo hasta el final: Procesa todas las transacciones que puedas identificar completamente. Si la *última* transacción del texto parece estar cortada o incompleta, extráela también. El siguiente fragmento se encargará de completarla y el sistema la deduplicará.
-3.  Precisión Absoluta: Sé meticuloso con los montos y las fechas. No alucines información, si no ves campos es porque no los hay, dejalos como null.
-4.  procesamiento secuencial obligatorio: Estás recibiendo solo una imagen. Debes extraer los datos de la Imagen 1. Hasta terminar con todas. NO TE SALTES NINGUNA transacción. Tu objetivo es transcribir CADA transacción visible. Si hay 50 transacciones en una página, debes generar 50 objetos toon. No resumas.
-5. para definir si es cargo o abono, usa las columnas de montos visibles en la imagen. Si el monto está en la columna de abonos o depósitos, es un abono. Si está en la columna de cargos, es un cargo.
+REGLAS PARA DESCRIPCION:
+- Une TODAS las líneas del concepto de la transacción en una sola descripción.
+- Respeta el orden del texto.
+- No elimines palabras.
+- Si el texto está cortado después de tener el monto, déjalo cortado.
+- si el texto está cortado sin tener el monto, ignora la transacción.
+- No inventes información.
+
+REGLAS CRÍTICAS PARA MONTO:
+1. Una transacción puede contener UNO, DOS o TRES montos en la misma línea.
+2. El MONTO REAL de la operación es SIEMPRE:
+    - EL PRIMER MONTO NUMÉRICO QUE APARECE DE IZQUIERDA A DERECHA EN LA TRANSACCIÓN y no es parte de la descripción.
+3. Ignora TODOS los montos que aparezcan DESPUÉS de ese primer monto. (estos suelen ser saldos o montos de liquidación).
+4. Nunca uses montos de columnas de saldo ni de la descripción.
+5. SI NO PUEDES IDENTIFICAR CLARAMENTE UN MONTO DE OPERACIÓN, IGNORA LA TRANSACCIÓN.
+
+REGLAS DE FILTRADO:
+- Ignora encabezados, pies de página, totales y saldos.
+- Ignora filas sin monto válido.
+- No dupliques transacciones.
+- No generes líneas vacías.
 
 EJEMPLO DE SALIDA:
-05 | DEPOSITO EFECTIVO SUC 02 | 5000.00 | abono | GENERAL
-05 | CHEQUE PAGADO 001 | 2000.00 | cargo | GENERAL
+05 | t20 spei recibidobanregio 0050825 traspaso a cf moto mty ref 0173214373 058 00058580094678400183 058-05/08/2025/05-009roqb077 cfmoto monterrey s.a. de c.v. | 1060000.00
+05 | n06 pago cuenta de tercero bnet 1551474581 manuel alanis ref 0031589758 | 2050.00
+"""
+
+PROMPT_FASE_2_ESCRIBA_VISION = """
+TU OBJETIVO:
+Eres un sistema OCR financiero experto en leer tablas de estados de cuenta bancarios. Tu ÚNICA tarea será convertir el texto en transacciones estructuradas en formato TOON.
+No clasifiques, solo transcribe los movimientos que encuentres siguiendo las reglas visuales estrictas a continuación.
+
+FORMATO DE SALIDA (TOON):
+1. Una línea por transacción.
+2. Separador obligatorio: `|` (pipe).
+3. Estructura EXACTA:
+FECHA | DESCRIPCION | MONTO | TIPO
+
+- FECHA: solo el número del día (dos dígitos, ej. 05).
+- DESCRIPCION: todo el texto del concepto unido en UNA sola línea.
+- MONTO: número decimal limpio (sin comas, sin símbolo $).
+- TIPO: "abono" o "cargo" según la columna visual a la que pertenece el movimiento.
+    Posibles columnas:
+    Abonos = depósitos / entradas / abonos
+    Cargos = retiros / salidas / cargos
+
+REGLAS VISUALES DE TRANSACCIÓN:
+1. Cada transacción comienza en una fila donde aparece una o varias fechas.
+2. Una sola transaccion puede ocupar VARIAS líneas consecutivas.
+3. Las líneas debajo sin fecha pertenecen a la MISMA transacción hasta que aparezca otra fecha.
+4. Une todas las líneas hasta encontrar otra linea con fechas.
+5. La fecha válida es SIEMPRE la PRIMERA fecha que aparece en la línea, descarta la segunda si existe.
+6. Pueden haber varios movimientos similares o iguales en el mismo día, cada uno es una transacción separada, siempre y cuando tenga una fecha.
+
+REGLAS CRÍTICAS PARA MONTO:
+1. Una fila puede mostrar VARIOS montos (operación + saldos).
+2. El MONTO REAL es:
+    - EL PRIMER MONTO NUMÉRICO DE IZQUIERDA A DERECHA EN LA TRANSACCIÓN QUE ESTÉ ALINEADO CON LA COLUMNA DEPÓSITOS O RETIROS.
+3. Ignora montos alineados con columnas de SALDO.
+4. Si aparecen 2 o 3 montos:
+    - Usa SOLO que pertenezca a la columna de depósitos o retiros.
+    - Ignora los demás.
+    - Si ninguno pertenece a esas columnas, ignora la transacción.
+5. SI NO PUEDES IDENTIFICAR CLARAMENTE UN MONTO DE OPERACIÓN, IGNORA LA TRANSACCIÓN.
+
+REGLAS PARA TIPO:
+- Si el monto está bajo la columna "depósitos" / "abonos" / "entradas":
+    → TIPO = "abono"
+- Si el monto está bajo "retiros" / "cargos" / "salidas":
+    → TIPO = "cargo"
+
+REGLAS DE PRECISIÓN:
+- Sé extremadamente preciso con los números.
+- Ignora encabezados, pies de página, totales y saldos.
+- No cambies decimales.
+- No inventes montos.
+- Ignora filas sin monto válido.
+- No dupliques transacciones.
+- No generes transacciones falsas ni lineas vacías.
+
+EJEMPLO DE SALIDA:
+05 | n06 pago cuenta de tercero bnet 1551474581 manuel alanis ref 0031589758 | 2050.00 | abono
+05 | comision manejo cuenta | 50.00 | cargo
+"""
+
+PROMPT_FASE_3_AUDITOR_TEMPLATE = """
+TU ROL: Eres un Analista de Riesgos y Fraude especializado en TPVs (Terminales Punto de Venta).
+TU OBJETIVO: Clasificar una lista de transacciones bancarias basándote estrictamente en las reglas proporcionadas.
+
+CONTEXTO:
+Banco del documento: {banco}
+
+--------------------------------------------------
+REGLAS DE CLASIFICACIÓN APLICABLES (CRÍTICO):
+
+{reglas_especificas}
+
+--------------------------------------------------
+INSTRUCCIONES DE SALIDA:
+Recibirás una lista JSON: [{{"id": 1, "desc": "..."}}]
+Devuelve ÚNICAMENTE un JSON válido mapeando ID a ETIQUETA.
+Las etiquetas permitidas son: "TPV", "GENERAL", "EFECTIVO".
+
+EJEMPLO OUTPUT:
+{{
+    "0": "TPV",
+    "1": "GENERAL"
+}}
 """
 
 PROMPT_GENERICO = """
@@ -383,49 +472,93 @@ PROMPT_GENERICO = """
 
 PROMPTS_POR_BANCO = {
     "bbva": """ 
-    CRITERIO DE ACEPTACIÓN EXCLUSIVO:
-    Una transacción SOLO es válida si su descripción contiene alguna de estas frases exactas: 
-        Reglas de la extracción de una línea: 
-            - venta tarjetas
-            - venta tdc inter
-            - ventas crédito
-            - ventas débito 
-            - financiamiento # si aparece esta palabra, colocala en la salida
-            - credito # si aparece esta palabra, colocala en la salida
-            - ventas nal. amex
-        Reglas de la extracción multilinea, para que sea válida debe cumplir con ambas condiciones en la misma transacción:
-            la primer línea debe contener:
-            - t20 spei recibido santander, banorte, stp, afirme, hsbc, citi mexico
-            - spei recibido banorte
-            - t20 spei recibidostp
-            - w02 spei recibidosantander
-            - traspaso ntre cuentas
-            - deposito de tercero
-            - t20 spei recibido jpmorgan
-            - traspaso entre cuentas propias
-            - traspaso cuentas propias
-            las demás líneas deben contener:
-            - deposito bpu
-            - mp agregador s de rl de cv 
-            - anticipo {nombre comercial}
-            - 0000001af
-            - 0000001sq
-            - trans sr pago
-            - dispersion sihay ref
-            - net pay sapi de cv
-            - getnet mexico servicios de adquirencia s
-            - payclip s de rl de cv
-            - pocket de latinoamerica sapi de cv
-            - cobra online sapi de cv
-            - kiwi bop sa de cv
-            - kiwi international payment technologies
-            - traspaso entre cuentas
-            - deposito de tercero
-            - bmrcash ref # si aparece esta palabra, colocala en la salida
-            - zettle by paypal
-            - pw online mexico sapi de cv
-            - liquidacion wuzi
-    IMPORTANTE: Cualquier otro tipo de depósito SPEI, transferencias de otros bancos o pagos de nómina que no coincidan con las frases de arriba de forma exacta, son tratados como 'GENERALES'.
+REGLAS EXCLUSIVAS DE CLASIFICACIÓN TPV - BANCO BBVA
+
+IMPORTANTE:
+- Estas reglas SOLO aplican para decidir la columna `ETIQUETA`.
+- NUNCA dejes de extraer una transacción por no cumplir estas reglas.
+- SOLO las transacciones con TIPO = "abono" pueden ser etiquetadas como "tpv".
+- CUALQUIER transacción con TIPO = "cargo" debe ser "general".
+
+--------------------------------------------------
+CRITERIOS PARA ETIQUETA = "TPV"
+
+Una transacción (abono) debe marcarse como "tpv" SI Y SOLO SI cumple AL MENOS UNO de los siguientes criterios:
+
+--------------------------------------------------
+A) REGLAS DE UNA SOLA LÍNEA (DESCRIPCIÓN CONTIENE FRASE EXACTA)
+
+La descripción debe contener EXACTAMENTE alguna de las siguientes frases (ignorando mayúsculas/minúsculas):
+
+- venta tarjetas
+- venta tdc inter
+- ventas crédito
+- ventas debito
+- ventas nal. amex
+
+Además, si la descripción contiene cualquiera de estas palabras clave:
+- financiamiento
+- credito
+
+también debe marcarse como "tpv".
+
+--------------------------------------------------
+B) REGLAS MULTILÍNEA (TRANSACCIÓN COMPUESTA)
+
+Una transacción multilínea debe marcarse como "tpv" SI Y SOLO SI:
+
+1) La PRIMERA línea de la transacción contiene EXACTAMENTE alguna de estas frases:
+
+- t20 spei recibido banorte
+- t20 spei recibido santander
+- t20 spei recibido afirme
+- t20 spei recibido hsbc
+- t20 spei recibido citi mexico
+- spei recibido banorte
+- t20 spei recibidostp
+- w02 spei recibidosantander
+- traspaso ntre cuentas
+- deposito de tercero
+- t20 spei recibido jpmorgan
+
+Y ADEMÁS
+
+2) AL MENOS UNA de las líneas siguientes de LA MISMA TRANSACCIÓN contiene alguna de estas frases:
+
+- deposito bpu
+- mp agregador s de rl de cv
+- anticipo {nombre comercial}
+- 7 dígitos y 'af'
+- 7 dígitos y 'sq'
+- trans sr pago
+- dispersion sihay ref
+- net pay sapi de cv
+- getnet mexico servicios de adquirencia s
+- payclip s de rl de cv
+- pocket de latinoamerica sapi de cv
+- cobra online sapi de cv
+- kiwi bop sa de cv
+- kiwi international payment technologies
+- traspaso entre cuentas
+- deposito de tercero
+- bmrcash ref
+- zettle by paypal
+- pw online mexico sapi de cv
+- liquidacion wuzi
+
+--------------------------------------------------
+REGLA DE EXCLUSIÓN ABSOLUTA:
+
+- Cualquier otro depósito SPEI
+- Transferencias de otros bancos
+- Pagos de nómina
+- Traspasos que NO cumplan exactamente las reglas anteriores
+
+DEBEN ser etiquetados como "general".
+--------------------------------------------------
+REGLA DE SEGURIDAD:
+- Si existe cualquier duda, ambigüedad o conflicto, usa siempre "general".
+- Nunca marques "tpv" si no estás completamente seguro.
     """,
 
     "banbajío": """ 
