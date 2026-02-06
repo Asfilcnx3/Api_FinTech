@@ -15,6 +15,11 @@ class PrequalificationResponse(BaseModel):
         score: Optional[str] = None
         last_check_date: Optional[str] = None # Fecha de la última corrida
     
+    class EconomicActivity(BaseModel):
+        name: str
+        percentage: float
+        start_date: Optional[str] = None # "YYYY-MM-DD"
+    
     class Stats(BaseModel):
         mean: float
         median: float
@@ -27,14 +32,35 @@ class PrequalificationResponse(BaseModel):
         expenditures_stats: "PrequalificationResponse.Stats"  
         sales_revenue_stats: "PrequalificationResponse.Stats" 
 
+    class AdvancedPeriodMetrics(BaseModel):
+        """
+        Nuevas métricas solicitadas por auditoría.
+        Se calcularán para: Revenue, Expenses, Inflows, Outflows, NFCF
+        """
+        mean: float               # Promedio
+        median_growth_rate: Optional[float] = None # Crecimiento vs periodo anterior (Opción A)
+        linear_slope: float       # Pendiente (Slope) de regresión lineal
+        cagr_cmgr: float          # Compound Growth Rate (Annual or Monthly)
+    
+    class PeriodGroup(BaseModel):
+        """
+        Agrupa las 5 verticales financieras para un periodo de tiempo (ej. Last 3 Months)
+        """
+        revenue: "PrequalificationResponse.AdvancedPeriodMetrics"
+        expenditures: "PrequalificationResponse.AdvancedPeriodMetrics"
+        inflows: "PrequalificationResponse.AdvancedPeriodMetrics"
+        outflows: "PrequalificationResponse.AdvancedPeriodMetrics"
+        nfcf: "PrequalificationResponse.AdvancedPeriodMetrics"
+
     class StatsWindows(BaseModel):
-        # Define los periodos de tiempo)
-        last_3_months: "PrequalificationResponse.CashflowMetrics"
-        last_6_months: "PrequalificationResponse.CashflowMetrics"
-        last_12_months: "PrequalificationResponse.CashflowMetrics"
-        last_16_months: "PrequalificationResponse.CashflowMetrics"
-        last_18_months: "PrequalificationResponse.CashflowMetrics"
-        last_24_months: "PrequalificationResponse.CashflowMetrics"
+        """
+        Contenedor para las métricas financieras en varias ventanas de tiempo.
+        """
+        last_24_months: Optional["PrequalificationResponse.PeriodGroup"]
+        last_12_months: Optional["PrequalificationResponse.PeriodGroup"]
+        last_9_months: Optional["PrequalificationResponse.PeriodGroup"]
+        last_6_months: Optional["PrequalificationResponse.PeriodGroup"]
+        last_3_months: Optional["PrequalificationResponse.PeriodGroup"]
 
     class CurrentMonthMetrics(BaseModel):
         # Datos crudos del mes incompleto actual
@@ -92,22 +118,25 @@ class PrequalificationResponse(BaseModel):
     class PrequalificationFinalResponse(BaseModel):
         rfc: str
         business_name: str
+        
+        # Nuevos campos
+        tax_registration_date: Optional[str] = None
+        economic_activities: List["PrequalificationResponse.EconomicActivity"] = []
 
-        # Indicadores de riesgo (Lista de strings)
-        risk_indicators: Dict[str, Any]
-    
-        # Credenciales
+        risk_indicators: List[Dict[str, Any]] = []
         ciec_info: "PrequalificationResponse.CredentialInfo"
         buro_info: "PrequalificationResponse.BuroInfo"
-        compliance_opinion: "PrequalificationResponse.CredentialInfo" # Opinión de cumplimiento (32-D)
+        compliance_opinion: "PrequalificationResponse.CredentialInfo"
         
-        # Cashflow histórico (12 meses cerrados)
         stats_last_months: "PrequalificationResponse.StatsWindows"
         
         # Mes actual (en curso)
-        cashflow_current_month: Optional["PrequalificationResponse.CurrentMonthMetrics"]
-        concentration_last_12m: "PrequalificationResponse.ConcentrationMetrics"
+        cashflow_current_month: Optional["PrequalificationResponse.CurrentMonthMetrics"] = None
         
-        # Razones financieras por año (Lista de objetos por año disponible)
+        concentration_last_12m: "PrequalificationResponse.ConcentrationMetrics"
         financial_ratios_history: List["PrequalificationResponse.FinancialRatioYear"]
-        sales_forecast: Optional["Forecast.SalesForecastResponse"] = None
+        
+        # Forecast y descarga
+        financial_predictions: Optional[Any] = None
+        job_id: Optional[str] = None
+        download_url: Optional[str] = None

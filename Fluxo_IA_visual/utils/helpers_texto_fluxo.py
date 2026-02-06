@@ -475,576 +475,1010 @@ PROMPTS_POR_BANCO = {
 REGLAS EXCLUSIVAS DE CLASIFICACIÓN TPV - BANCO BBVA
 
 IMPORTANTE:
+    - Estas reglas SOLO aplican para decidir la columna `ETIQUETA`.
+    - SOLO las transacciones con TIPO = "abono" pueden ser etiquetadas como "tpv".
+    - CUALQUIER transacción con TIPO = "cargo" debe ser "general".
+
+CRITERIOS PARA ETIQUETA = "TPV"
+Una transacción (abono) debe marcarse como "tpv" SI Y SOLO SI cumple AL MENOS UNO de los siguientes criterios:
+
+A) REGLAS DE UNA SOLA LÍNEA (DESCRIPCIÓN CONTIENE FRASE EXACTA)
+La descripción debe contener EXACTAMENTE alguna de las siguientes frases (ignorando mayúsculas/minúsculas):
+
+    - venta tarjetas
+    - venta tdc inter
+    - ventas crédito
+    - ventas debito
+    - ventas nal. amex
+
+Si la descripción contiene cualquiera de estas palabras clave:
+    - financiamiento
+    - credito
+    - traspaso entre cuentas
+
+Deberá marcarse con la misma palabra clave, traspaso entre cuentas es "traspaso entre cuentas", credito es "crédito" y financiamiento es "financiamiento".
+
+B) REGLAS MULTILÍNEA (TRANSACCIÓN COMPUESTA)
+Una transacción multilínea debe marcarse como "tpv" SI Y SOLO SI:
+1) La PRIMERA línea de la transacción contiene EXACTAMENTE alguna de estas frases:
+    - t20 spei recibido banorte
+    - t20 spei recibido santander
+    - t20 spei recibido afirme
+    - t20 spei recibido hsbc
+    - t20 spei recibido citi mexico
+    - spei recibido banorte
+    - t20 spei recibidostp
+    - w02 spei recibidosantander
+    - deposito de tercero
+    - t20 spei recibido jpmorgan
+
+Y ADEMÁS
+2) AL MENOS UNA de las líneas siguientes de LA MISMA TRANSACCIÓN contiene alguna de estas frases:
+    - deposito bpu
+    - mp agregador s de rl de cv
+    - anticipo {nombre comercial}
+    - 7 dígitos y 'af'
+    - 7 dígitos y 'sq'
+    - trans sr pago
+    - dispersion sihay ref
+    - net pay sapi de cv
+    - getnet mexico servicios de adquirencia s
+    - payclip s de rl de cv
+    - pocket de latinoamerica sapi de cv
+    - cobra online sapi de cv
+    - kiwi bop sa de cv
+    - kiwi international payment technologies
+    - traspaso entre cuentas
+    - deposito de tercero
+    - bmrcash ref
+    - zettle by paypal
+    - pw online mexico sapi de cv
+    - liquidacion wuzi
+
+REGLA DE EXCLUSIÓN ABSOLUTA:
+    - Cualquier otro depósito SPEI
+    - Transferencias de otros bancos
+    - Pagos de nómina
+    - Traspasos que NO cumplan exactamente las reglas anteriores
+DEBEN ser etiquetados como "general".
+
+REGLA DE SEGURIDAD:
+    - Si existe cualquier duda, ambigüedad o conflicto, usa siempre "general".
+    - Nunca marques "tpv" si no estás completamente seguro.
+""",
+
+    "banbajío": """ 
+REGLAS EXCLUSIVAS DE CLASIFICACIÓN TPV - BANCO BANBAJÍO
+
+IMPORTANTE:
 - Estas reglas SOLO aplican para decidir la columna `ETIQUETA`.
-- NUNCA dejes de extraer una transacción por no cumplir estas reglas.
 - SOLO las transacciones con TIPO = "abono" pueden ser etiquetadas como "tpv".
 - CUALQUIER transacción con TIPO = "cargo" debe ser "general".
 
---------------------------------------------------
 CRITERIOS PARA ETIQUETA = "TPV"
-
 Una transacción (abono) debe marcarse como "tpv" SI Y SOLO SI cumple AL MENOS UNO de los siguientes criterios:
 
---------------------------------------------------
 A) REGLAS DE UNA SOLA LÍNEA (DESCRIPCIÓN CONTIENE FRASE EXACTA)
-
 La descripción debe contener EXACTAMENTE alguna de las siguientes frases (ignorando mayúsculas/minúsculas):
 
-- venta tarjetas
-- venta tdc inter
-- ventas crédito
-- ventas debito
-- ventas nal. amex
+    - deposito negocios afiliados 
+    - deposito negocios afiliados adquiriente
+    - deposito negocios afiliados adquiriente optblue amex
 
-Además, si la descripción contiene cualquiera de estas palabras clave:
-- financiamiento
-- credito
+Si la descripción contiene cualquiera de estas palabras clave:
+    - financiamiento
+    - credito
+    - traspaso entre cuentas
 
-también debe marcarse como "tpv".
+Deberá marcarse con la misma palabra clave, traspaso entre cuentas es "traspaso entre cuentas", credito es "crédito" y financiamiento es "financiamiento".
 
---------------------------------------------------
 B) REGLAS MULTILÍNEA (TRANSACCIÓN COMPUESTA)
-
 Una transacción multilínea debe marcarse como "tpv" SI Y SOLO SI:
-
 1) La PRIMERA línea de la transacción contiene EXACTAMENTE alguna de estas frases:
-
-- t20 spei recibido banorte
-- t20 spei recibido santander
-- t20 spei recibido afirme
-- t20 spei recibido hsbc
-- t20 spei recibido citi mexico
-- spei recibido banorte
-- t20 spei recibidostp
-- w02 spei recibidosantander
-- traspaso ntre cuentas
-- deposito de tercero
-- t20 spei recibido jpmorgan
+    - deposito spei
 
 Y ADEMÁS
-
 2) AL MENOS UNA de las líneas siguientes de LA MISMA TRANSACCIÓN contiene alguna de estas frases:
+    - cobra online sapi de cv
+    - bn-nts 6 digitos
+    - pw online mexico sapi de cv
+    - liquidacion wuzi
+    - mp agregador s de rl de cv
+    - trans sr pago
+    - net pay sapi de cv
+    - getnet mexico servicios de adquirencia s
+    - payclip s de rl de cv
+    - pocket de latinoamerica sapi de cv
+    - kiwi bop sa de cv
+    - kiwi international payment technologies
+    - zettle by paypal
+    - gananciasclip
 
-- deposito bpu
-- mp agregador s de rl de cv
-- anticipo {nombre comercial}
-- 7 dígitos y 'af'
-- 7 dígitos y 'sq'
-- trans sr pago
-- dispersion sihay ref
-- net pay sapi de cv
-- getnet mexico servicios de adquirencia s
-- payclip s de rl de cv
-- pocket de latinoamerica sapi de cv
-- cobra online sapi de cv
-- kiwi bop sa de cv
-- kiwi international payment technologies
-- traspaso entre cuentas
-- deposito de tercero
-- bmrcash ref
-- zettle by paypal
-- pw online mexico sapi de cv
-- liquidacion wuzi
-
---------------------------------------------------
 REGLA DE EXCLUSIÓN ABSOLUTA:
-
-- Cualquier otro depósito SPEI
-- Transferencias de otros bancos
-- Pagos de nómina
-- Traspasos que NO cumplan exactamente las reglas anteriores
-
+    - Cualquier otro depósito SPEI
+    - Transferencias de otros bancos
+    - Pagos de nómina
+    - Traspasos que NO cumplan exactamente las reglas anteriores
 DEBEN ser etiquetados como "general".
---------------------------------------------------
+
 REGLA DE SEGURIDAD:
 - Si existe cualquier duda, ambigüedad o conflicto, usa siempre "general".
 - Nunca marques "tpv" si no estás completamente seguro.
     """,
 
-    "banbajío": """ 
-    CRITERIO DE ACEPTACIÓN EXCLUSIVO:
-    Una transacción SOLO es válida si su descripción contiene alguna de estas frases exactas:
-        Reglas de la extracción de una línea: 
-            - deposito negocios afiliados 
-            - deposito negocios afiliados adquiriente
-            - deposito negocios afiliados adquiriente optblue amex
-        
-        Reglas de la extracción multilinea, para que sea válida debe cumplir ambas:
-            la primer línea debe contener:
-            - deposito spei
-            
-            alguna de las demás líneas deben contener:
-            - cobra online sapi de cv
-            - bn-nts 6 digitos
-            - pw online mexico sapi de cv
-            - liquidacion wuzi
-            - mp agregador s de rl de cv
-            - trans sr pago
-            - net pay sapi de cv
-            - getnet mexico servicios de adquirencia s
-            - payclip s de rl de cv
-            - pocket de latinoamerica sapi de cv
-            - kiwi bop sa de cv
-            - kiwi international payment technologies
-            - zettle by paypal
-            - gananciasclip
-    
-    IMPORTANTE: Cualquier otro tipo de depósito SPEI, transferencias de otros bancos o pagos de nómina que no coincidan con las frases de arriba, son tratados como 'generales'.
-    """,
-
     "banorte": """ 
-    CRITERIO DE ACEPTACIÓN EXCLUSIVO:
-    Una transacción SOLO es válida si su descripción contiene alguna de estas frases exactas:
-        Reglas de la extracción de una línea: 
-            - 8 numeros y luego una c
-            - 8 numeros y luego una d
-            - dep. efectivo
-        Reglas de la extracción multilinea, para que sea válida debe cumplir ambas:
-            la primer línea debe contener:
-            - spei recibido
-            - traspaso de cta
-            - spei recibido del cliente red amigo
-            - pago recibido de banorte por
-            - deposito spei
-            las demás líneas deben contener:
-            - ganancias clip
-            - clip
-            - amexco
-            - orden de netpay sapi de cv
-            - dal sapi de cv
-            - cobra online sapi de cv
-            - bn-nts 6 digitos
-            - pw online mexico sapi de cv
-            - liquidacion wuzi
-            - deposito bpu
-            - mp agregador s de rl de cv
-            - trans sr pago
-            - net pay sapi de cv
-            - getnet mexico servicios de adquirencia s
-            - payclip s de rl de cv
-            - pocket de latinoamerica sapi de cv
-            - kiwi bop sa de cv
-            - kiwi international payment technologies
-            - zettle by paypal
-            - gananciasclip
-    IMPORTANTE: Cualquier otro tipo de depósito SPEI, transferencias de otros bancos o pagos de nómina que no coincidan con las frases de arriba, son tratados como 'generales'.
+REGLAS EXCLUSIVAS DE CLASIFICACIÓN TPV - BANCO BANORTE
+
+IMPORTANTE:
+    - Estas reglas SOLO aplican para decidir la columna `ETIQUETA`.
+    - SOLO las transacciones con TIPO = "abono" pueden ser etiquetadas como "tpv".
+    - CUALQUIER transacción con TIPO = "cargo" debe ser "general".
+
+CRITERIOS PARA ETIQUETA = "TPV"
+Una transacción (abono) debe marcarse como "tpv" SI Y SOLO SI cumple AL MENOS UNO de los siguientes criterios:
+
+A) REGLAS DE UNA SOLA LÍNEA (DESCRIPCIÓN CONTIENE FRASE EXACTA)
+La descripción debe contener EXACTAMENTE alguna de las siguientes frases (ignorando mayúsculas/minúsculas):
+    - 8 numeros y luego una c
+    - 8 numeros y luego una d
+    - dep. efectivo
+
+Si la descripción contiene cualquiera de estas palabras clave:
+    - financiamiento
+    - credito
+    - traspaso entre cuentas
+
+Deberá marcarse con la misma palabra clave, traspaso entre cuentas es "traspaso entre cuentas", credito es "crédito" y financiamiento es "financiamiento".
+
+B) REGLAS MULTILÍNEA (TRANSACCIÓN COMPUESTA)
+Una transacción multilínea debe marcarse como "tpv" SI Y SOLO SI:
+1) La PRIMERA línea de la transacción contiene EXACTAMENTE alguna de estas frases:
+
+    - spei recibido
+    - traspaso de cta
+    - spei recibido del cliente red amigo
+    - pago recibido de banorte por
+    - deposito spei
+
+Y ADEMÁS
+2) AL MENOS UNA de las líneas siguientes de LA MISMA TRANSACCIÓN contiene alguna de estas frases:
+    - ganancias clip
+    - clip
+    - amexco
+    - orden de netpay sapi de cv
+    - dal sapi de cv
+    - cobra online sapi de cv
+    - bn-nts 6 digitos
+    - pw online mexico sapi de cv
+    - liquidacion wuzi
+    - deposito bpu
+    - mp agregador s de rl de cv
+    - trans sr pago
+    - net pay sapi de cv
+    - getnet mexico servicios de adquirencia s
+    - payclip s de rl de cv
+    - pocket de latinoamerica sapi de cv
+    - kiwi bop sa de cv
+    - kiwi international payment technologies
+    - zettle by paypal
+    - gananciasclip
+
+REGLA DE EXCLUSIÓN ABSOLUTA:
+    - Cualquier otro depósito SPEI
+    - Transferencias de otros bancos
+    - Pagos de nómina
+    - Traspasos que NO cumplan exactamente las reglas anteriores
+DEBEN ser etiquetados como "general".
+
+REGLA DE SEGURIDAD:
+    - Si existe cualquier duda, ambigüedad o conflicto, usa siempre "general".
+    - Nunca marques "tpv" si no estás completamente seguro.
     """,
 
     "afirme": """ 
-    CRITERIO DE ACEPTACIÓN EXCLUSIVO:
-    Una transacción SOLO es válida si su descripción contiene alguna de estas frases exactas:
-        Reglas de la extracción de una línea: 
-            - venta tpv cr
-            - venta tpv db
-            - venta tpvcr
-            - venta tpvdb
-            - deposito efectivo
-            - deposito en efectivo
-            - dep.efectivo
-        Reglas de la extracción multilinea, para que sea válida debe cumplir ambas:
-        la primer línea debe contener:
-            - deposito spei
-            
-            alguna de las demás líneas deben contener:
-            - cobra online sapi de cv
-            - bn-nts 6 digitos
-            - pw online mexico sapi de cv
-            - liquidacion wuzi
-            - mp agregador s de rl de cv
-            - trans sr pago
-            - net pay sapi de cv
-            - getnet mexico servicios de adquirencia s
-            - payclip s de rl de cv
-            - pocket de latinoamerica sapi de cv
-            - kiwi bop sa de cv
-            - kiwi international payment technologies
-            - zettle by paypal
-            - gananciasclip
-    IMPORTANTE: Cualquier otro tipo de depósito SPEI, transferencias de otros bancos o pagos de nómina que no coincidan con las frases de arriba, son tratados como 'generales'.
+REGLAS EXCLUSIVAS DE CLASIFICACIÓN TPV - BANCO AFIRME
+
+IMPORTANTE:
+    - Estas reglas SOLO aplican para decidir la columna `ETIQUETA`.
+    - SOLO las transacciones con TIPO = "abono" pueden ser etiquetadas como "tpv".
+    - CUALQUIER transacción con TIPO = "cargo" debe ser "general".
+
+CRITERIOS PARA ETIQUETA = "TPV"
+Una transacción (abono) debe marcarse como "tpv" SI Y SOLO SI cumple AL MENOS UNO de los siguientes criterios:
+
+A) REGLAS DE UNA SOLA LÍNEA (DESCRIPCIÓN CONTIENE FRASE EXACTA)
+La descripción debe contener EXACTAMENTE alguna de las siguientes frases (ignorando mayúsculas/minúsculas): 
+
+    - venta tpv cr
+    - venta tpv db
+    - venta tpvcr
+    - venta tpvdb
+    - deposito efectivo
+    - deposito en efectivo
+    - dep.efectivo
+
+Si la descripción contiene cualquiera de estas palabras clave:
+    - financiamiento
+    - credito
+    - traspaso entre cuentas
+
+Deberá marcarse con la misma palabra clave, traspaso entre cuentas es "traspaso entre cuentas", credito es "crédito" y financiamiento es "financiamiento".
+
+B) REGLAS MULTILÍNEA (TRANSACCIÓN COMPUESTA)
+Una transacción multilínea debe marcarse como "tpv" SI Y SOLO SI:
+1) La PRIMERA línea de la transacción contiene EXACTAMENTE alguna de estas frases:
+    - deposito spei
+
+Y ADEMÁS
+2) AL MENOS UNA de las líneas siguientes de LA MISMA TRANSACCIÓN contiene alguna de estas frases:
+    - cobra online sapi de cv
+    - bn-nts 6 digitos
+    - pw online mexico sapi de cv
+    - liquidacion wuzi
+    - mp agregador s de rl de cv
+    - trans sr pago
+    - net pay sapi de cv
+    - getnet mexico servicios de adquirencia s
+    - payclip s de rl de cv
+    - pocket de latinoamerica sapi de cv
+    - kiwi bop sa de cv
+    - kiwi international payment technologies
+    - zettle by paypal
+    - gananciasclip
+
+REGLA DE EXCLUSIÓN ABSOLUTA:
+    - Cualquier otro depósito SPEI
+    - Transferencias de otros bancos
+    - Pagos de nómina
+    - Traspasos que NO cumplan exactamente las reglas anteriores
+DEBEN ser etiquetados como "general".
+
+REGLA DE SEGURIDAD:
+    - Si existe cualquier duda, ambigüedad o conflicto, usa siempre "general".
+    - Nunca marques "tpv" si no estás completamente seguro.
     """,
 
     "hsbc": """ 
-    CRITERIO DE ACEPTACIÓN EXCLUSIVO:
-    Una transacción SOLO es válida si su descripción contiene alguna de estas frases exactas:
-        Reglas de la extracción de una línea: 
-            - transf rec hsbcnet tpv db
-            - transf rec hsbcnet tpv cr
-            - transf rec hsbcnet dep tpv
-            - deposito bpu y 10 numeros
-            - transf rec hsbcnet dep tpv (comnibaciones de numeros)
-            - deposito bpu (varias combinaciones)
+REGLAS EXCLUSIVAS DE CLASIFICACIÓN TPV - BANCO HSBC
 
-        Reglas de la extracción multilinea, para que sea válida debe cumplir ambas:
-        la primer línea debe contener:
-            - deposito spei
-            
-            alguna de las demás líneas deben contener:
-            - cobra online sapi de cv
-            - bn-nts 6 digitos
-            - pw online mexico sapi de cv
-            - liquidacion wuzi
-            - mp agregador s de rl de cv
-            - trans sr pago
-            - net pay sapi de cv
-            - getnet mexico servicios de adquirencia s
-            - payclip s de rl de cv
-            - pocket de latinoamerica sapi de cv
-            - kiwi bop sa de cv
-            - kiwi international payment technologies
-            - zettle by paypal
-            - gananciasclip
-    IMPORTANTE: Cualquier otro tipo de depósito SPEI, transferencias de otros bancos o pagos de nómina que no coincidan con las frases de arriba, son tratados como 'generales'.
+IMPORTANTE:
+    - Estas reglas SOLO aplican para decidir la columna `ETIQUETA`.
+    - SOLO las transacciones con TIPO = "abono" pueden ser etiquetadas como "tpv".
+    - CUALQUIER transacción con TIPO = "cargo" debe ser "general".
+
+CRITERIOS PARA ETIQUETA = "TPV"
+Una transacción (abono) debe marcarse como "tpv" SI Y SOLO SI cumple AL MENOS UNO de los siguientes criterios:
+
+A) REGLAS DE UNA SOLA LÍNEA (DESCRIPCIÓN CONTIENE FRASE EXACTA)
+La descripción debe contener EXACTAMENTE alguna de las siguientes frases (ignorando mayúsculas/minúsculas):
+
+    - transf rec hsbcnet tpv db
+    - transf rec hsbcnet tpv cr
+    - transf rec hsbcnet dep tpv
+    - deposito bpu y 10 numeros
+    - transf rec hsbcnet dep tpv (comnibaciones de numeros)
+    - deposito bpu (varias combinaciones)
+
+Si la descripción contiene cualquiera de estas palabras clave:
+    - financiamiento
+    - credito
+    - traspaso entre cuentas
+
+Deberá marcarse con la misma palabra clave, traspaso entre cuentas es "traspaso entre cuentas", credito es "crédito" y financiamiento es "financiamiento".
+
+B) REGLAS MULTILÍNEA (TRANSACCIÓN COMPUESTA)
+Una transacción multilínea debe marcarse como "tpv" SI Y SOLO SI:
+1) La PRIMERA línea de la transacción contiene EXACTAMENTE alguna de estas frases:
+    - deposito spei
+
+Y ADEMÁS
+2) AL MENOS UNA de las líneas siguientes de LA MISMA TRANSACCIÓN contiene alguna de estas frases:
+    - cobra online sapi de cv
+    - bn-nts 6 digitos
+    - pw online mexico sapi de cv
+    - liquidacion wuzi
+    - mp agregador s de rl de cv
+    - trans sr pago
+    - net pay sapi de cv
+    - getnet mexico servicios de adquirencia s
+    - payclip s de rl de cv
+    - pocket de latinoamerica sapi de cv
+    - kiwi bop sa de cv
+    - kiwi international payment technologies
+    - zettle by paypal
+    - gananciasclip
+
+REGLA DE EXCLUSIÓN ABSOLUTA:
+    - Cualquier otro depósito SPEI
+    - Transferencias de otros bancos
+    - Pagos de nómina
+    - Traspasos que NO cumplan exactamente las reglas anteriores
+DEBEN ser etiquetados como "general".
+
+REGLA DE SEGURIDAD:
+    - Si existe cualquier duda, ambigüedad o conflicto, usa siempre "general".
+    - Nunca marques "tpv" si no estás completamente seguro.
     """,
 
     "mifel": """ 
-    CRITERIO DE ACEPTACIÓN EXCLUSIVO:
-    Una transacción SOLO es válida si su descripción contiene alguna de estas frases exactas:
-        Reglas de la extracción de una línea:
-            - vta. cre y 2 secciones de numeros
-            - vta. deb y 2 secciones de numeros
-            - vta cre y 2 secciones de numeros
-            - vta deb y 2 secciones de numeros
-        Reglas de la extracción multilinea, para que sea válida debe cumplir ambas:
-            la primer línea debe contener:
-            - vta deb
-            - vta cre
-            - transferencia spei
-            - transferencia spei bn
-            - transferencia spei entre
-            - deposito spei
-            las demás líneas deben contener:
-            - dispersion de fondos
-            - cuentas
-            - cobra online sapi de cv
-            - bn-nts 6 digitos
-            - pw online mexico sapi de cv
-            - liquidacion wuzi
-            - deposito bpu
-            - mp agregador s de rl de cv
-            - trans sr pago
-            - net pay sapi de cv
-            - getnet mexico servicios de adquirencia s
-            - payclip s de rl de cv
-            - pocket de latinoamerica sapi de cv
-            - kiwi bop sa de cv
-            - kiwi international payment technologies
-            - zettle by paypal
-            - gananciasclip
-    IMPORTANTE: Cualquier otro tipo de depósito SPEI, transferencias de otros bancos o pagos de nómina que no coincidan con las frases de arriba, son tratados como 'generales'.
+REGLAS EXCLUSIVAS DE CLASIFICACIÓN TPV - BANCO MIFEL
+
+IMPORTANTE:
+    - Estas reglas SOLO aplican para decidir la columna `ETIQUETA`.
+    - SOLO las transacciones con TIPO = "abono" pueden ser etiquetadas como "tpv".
+    - CUALQUIER transacción con TIPO = "cargo" debe ser "general".
+
+CRITERIOS PARA ETIQUETA = "TPV"
+Una transacción (abono) debe marcarse como "tpv" SI Y SOLO SI cumple AL MENOS UNO de los siguientes criterios:
+
+A) REGLAS DE UNA SOLA LÍNEA (DESCRIPCIÓN CONTIENE FRASE EXACTA)
+La descripción debe contener EXACTAMENTE alguna de las siguientes frases (ignorando mayúsculas/minúsculas):
+    - vta. cre y 2 secciones de numeros
+    - vta. deb y 2 secciones de numeros
+    - vta cre y 2 secciones de numeros
+    - vta deb y 2 secciones de numeros
+
+Si la descripción contiene cualquiera de estas palabras clave:
+    - financiamiento
+    - credito
+    - traspaso entre cuentas
+
+Deberá marcarse con la misma palabra clave, traspaso entre cuentas es "traspaso entre cuentas", credito es "crédito" y financiamiento es "financiamiento".
+
+B) REGLAS MULTILÍNEA (TRANSACCIÓN COMPUESTA)
+Una transacción multilínea debe marcarse como "tpv" SI Y SOLO SI:
+1) La PRIMERA línea de la transacción contiene EXACTAMENTE alguna de estas frases:
+    - vta deb
+    - vta cre
+    - transferencia spei
+    - transferencia spei bn
+    - transferencia spei entre
+    - deposito spei
+
+Y ADEMÁS
+2) AL MENOS UNA de las líneas siguientes de LA MISMA TRANSACCIÓN contiene alguna de estas frases:
+    - dispersion de fondos
+    - cuentas
+    - cobra online sapi de cv
+    - bn-nts 6 digitos
+    - pw online mexico sapi de cv
+    - liquidacion wuzi
+    - deposito bpu
+    - mp agregador s de rl de cv
+    - trans sr pago
+    - net pay sapi de cv
+    - getnet mexico servicios de adquirencia s
+    - payclip s de rl de cv
+    - pocket de latinoamerica sapi de cv
+    - kiwi bop sa de cv
+    - kiwi international payment technologies
+    - zettle by paypal
+    - gananciasclip
+
+REGLA DE EXCLUSIÓN ABSOLUTA:
+    - Cualquier otro depósito SPEI
+    - Transferencias de otros bancos
+    - Pagos de nómina
+    - Traspasos que NO cumplan exactamente las reglas anteriores
+DEBEN ser etiquetados como "general".
+
+REGLA DE SEGURIDAD:
+    - Si existe cualquier duda, ambigüedad o conflicto, usa siempre "general".
+    - Nunca marques "tpv" si no estás completamente seguro.
     """,
 
     "scotiabank": """ 
-    CRITERIO DE ACEPTACIÓN EXCLUSIVO:
-    Una transacción SOLO es válida si su descripción contiene alguna de estas frases exactas:
-        Reglas de la extracción multilinea, para que sea válida debe cumplir ambas:
-            la primer línea debe contener:
-            - transf interbancaria spei
-            - deposito spei
-            la segunda línea deben contener:
-            - transf interbancaria spei
-            - deposito bpu
-            - amexco se
-            - dep
-            la tercera línea deben contener:
-            - pocket de latinoamerica sapi
-            - first data merchant services m
-            - american express company mexico
+REGLAS EXCLUSIVAS DE CLASIFICACIÓN TPV - BANCO SCOTIABANK
 
-            alguna de las demás líneas deben contener:
-            - cobra online sapi de cv
-            - bn-nts 6 digitos
-            - pw online mexico sapi de cv
-            - liquidacion wuzi
-            - mp agregador s de rl de cv
-            - trans sr pago
-            - net pay sapi de cv
-            - getnet mexico servicios de adquirencia s
-            - payclip s de rl de cv
-            - kiwi bop sa de cv
-            - kiwi international payment technologies
-            - zettle by paypal
-            - gananciasclip
-    IMPORTANTE: Cualquier otro tipo de depósito SPEI, transferencias de otros bancos o pagos de nómina que no coincidan con las frases de arriba, son tratados como 'generales'.
+IMPORTANTE:
+    - Estas reglas SOLO aplican para decidir la columna `ETIQUETA`.
+    - SOLO las transacciones con TIPO = "abono" pueden ser etiquetadas como "tpv".
+    - CUALQUIER transacción con TIPO = "cargo" debe ser "general".
+
+CRITERIOS PARA ETIQUETA = "TPV"
+Una transacción (abono) debe marcarse como "tpv" SI Y SOLO SI cumple AL MENOS UNO de los siguientes criterios:
+
+A) REGLAS DE UNA SOLA LÍNEA 
+Si la descripción contiene cualquiera de estas palabras clave:
+    - financiamiento
+    - credito
+    - traspaso entre cuentas
+
+Deberá marcarse con la misma palabra clave, traspaso entre cuentas es "traspaso entre cuentas", credito es "crédito" y financiamiento es "financiamiento"
+
+B) REGLAS MULTILÍNEA (TRANSACCIÓN COMPUESTA)
+Una transacción multilínea debe marcarse como "tpv" SI Y SOLO SI:
+1) La PRIMERA línea de la transacción contiene EXACTAMENTE alguna de estas frases:
+    - transf interbancaria spei
+    - deposito spei
+
+Y ADEMÁS
+2) AL MENOS UNA de las líneas siguientes de LA MISMA TRANSACCIÓN contiene alguna de estas frases:
+    - transf interbancaria spei
+    - deposito bpu
+    - amexco se
+    - dep
+    - pocket de latinoamerica sapi
+    - first data merchant services m
+    - american express company mexico
+    - cobra online sapi de cv
+    - bn-nts 6 digitos
+    - pw online mexico sapi de cv
+    - liquidacion wuzi
+    - mp agregador s de rl de cv
+    - trans sr pago
+    - net pay sapi de cv
+    - getnet mexico servicios de adquirencia s
+    - payclip s de rl de cv
+    - kiwi bop sa de cv
+    - kiwi international payment technologies
+    - zettle by paypal
+    - gananciasclip
+
+REGLA DE EXCLUSIÓN ABSOLUTA:
+    - Cualquier otro depósito SPEI
+    - Transferencias de otros bancos
+    - Pagos de nómina
+    - Traspasos que NO cumplan exactamente las reglas anteriores
+DEBEN ser etiquetados como "general".
+
+REGLA DE SEGURIDAD:
+    - Si existe cualquier duda, ambigüedad o conflicto, usa siempre "general".
+    - Nunca marques "tpv" si no estás completamente seguro.
     """,
 
     "banregio": """ 
-    CRITERIO DE ACEPTACIÓN EXCLUSIVO:
-    Una transacción SOLO es válida como TPV si su descripción contiene alguna de estas frases exactas:
-        Reglas de la extracción de una línea:
-            - abono ventas tdd 
-            - abono ventas tdc
-        Reglas de la extracción multilinea, para que sea válida debe cumplir ambas:
-            la primer línea debe contener:
-            - billpocket
-            - deposito spei
-            - spei banorte
-            la segunda línea deben contener:
-            - pocket de latinoamerica sapi de cv
-            - net pay sapi de cv
-            la tercera línea deben contener:
-            - deposito bpu y 10 numeros
-            - bn-nts y 6 digitos
+REGLAS EXCLUSIVAS DE CLASIFICACIÓN TPV - BANCO BANREGIO
 
-            algunas líneas pueden contener:
-            - cobra online sapi de cv
-            - pw online mexico sapi de cv
-            - liquidacion wuzi
-            - mp agregador s de rl de cv
-            - trans sr pago
-            - net pay sapi de cv
-            - getnet mexico servicios de adquirencia s
-            - payclip s de rl de cv
-            - kiwi bop sa de cv
-            - kiwi international payment technologies
-            - zettle by paypal
-            - gananciasclip
-    IMPORTANTE: Cualquier otro tipo de depósito SPEI, transferencias de otros bancos o pagos de nómina que no coincidan con las frases de arriba, son tratados como 'generales'.
+IMPORTANTE:
+    - Estas reglas SOLO aplican para decidir la columna `ETIQUETA`.
+    - SOLO las transacciones con TIPO = "abono" pueden ser etiquetadas como "tpv".
+    - CUALQUIER transacción con TIPO = "cargo" debe ser "general".
+
+CRITERIOS PARA ETIQUETA = "TPV"
+Una transacción (abono) debe marcarse como "tpv" SI Y SOLO SI cumple AL MENOS UNO de los siguientes criterios:
+
+A) REGLAS DE UNA SOLA LÍNEA (DESCRIPCIÓN CONTIENE FRASE EXACTA)
+La descripción debe contener EXACTAMENTE alguna de las siguientes frases (ignorando mayúsculas/minúsculas):
+    - abono ventas tdd 
+    - abono ventas tdc
+
+Si la descripción contiene cualquiera de estas palabras clave:
+    - financiamiento
+    - credito
+    - traspaso entre cuentas
+
+Deberá marcarse con la misma palabra clave, traspaso entre cuentas es "traspaso entre cuentas", credito es "crédito" y financiamiento es "financiamiento".
+
+B) REGLAS MULTILÍNEA (TRANSACCIÓN COMPUESTA)
+Una transacción multilínea debe marcarse como "tpv" SI Y SOLO SI:
+1) La PRIMERA línea de la transacción contiene EXACTAMENTE alguna de estas frases:
+    - billpocket
+    - deposito spei
+    - spei banorte
+
+Y ADEMÁS
+2) AL MENOS UNA de las líneas siguientes de LA MISMA TRANSACCIÓN contiene alguna de estas frases:
+    - pocket de latinoamerica sapi de cv
+    - net pay sapi de cv
+    - deposito bpu y 10 numeros
+    - bn-nts y 6 digitos
+    - cobra online sapi de cv
+    - pw online mexico sapi de cv
+    - liquidacion wuzi
+    - mp agregador s de rl de cv
+    - trans sr pago
+    - net pay sapi de cv
+    - getnet mexico servicios de adquirencia s
+    - payclip s de rl de cv
+    - kiwi bop sa de cv
+    - kiwi international payment technologies
+    - zettle by paypal
+    - gananciasclip
+
+REGLA DE EXCLUSIÓN ABSOLUTA:
+    - Cualquier otro depósito SPEI
+    - Transferencias de otros bancos
+    - Pagos de nómina
+    - Traspasos que NO cumplan exactamente las reglas anteriores
+DEBEN ser etiquetados como "general".
+
+REGLA DE SEGURIDAD:
+    - Si existe cualquier duda, ambigüedad o conflicto, usa siempre "general".
+    - Nunca marques "tpv" si no estás completamente seguro.
     """,
 
     "santander": """ 
-    CRITERIO DE ACEPTACIÓN EXCLUSIVO:
-    Una transacción SOLO es válida si su descripción contiene alguna de estas frases exactas:
-        Reglas de la extracción de una línea:
-            - deposito ventas del dia afil
-        Reglas de la extracción multilinea, para que sea válida debe cumplir ambas:
-            la primer línea debe contener:
-            - abono transferencia spei hora
-            la segunda línea deben contener:
-            - de la cuenta
-            - recibido de stp
-            - deposito spei
-            las demás líneas deben contener:
-            - deposito bpu
-            - cobra online sapi de cv
-            - bn-nts 6 digitos
-            - pw online mexico sapi de cv
-            - liquidacion wuzi
-            - mp agregador s de rl de cv
-            - trans sr pago
-            - net pay sapi de cv
-            - getnet mexico servicios de adquirencia s
-            - payclip s de rl de cv
-            - pocket de latinoamerica sapi de cv
-            - kiwi bop sa de cv
-            - kiwi international payment technologies
-            - zettle by paypal
-            - gananciasclip
-    IMPORTANTE: Cualquier otro tipo de depósito SPEI, transferencias de otros bancos o pagos de nómina que no coincidan con las frases de arriba, son tratados como 'generales'.
+REGLAS EXCLUSIVAS DE CLASIFICACIÓN TPV - BANCO SANTANDER
+
+IMPORTANTE:
+    - Estas reglas SOLO aplican para decidir la columna `ETIQUETA`.
+    - SOLO las transacciones con TIPO = "abono" pueden ser etiquetadas como "tpv".
+    - CUALQUIER transacción con TIPO = "cargo" debe ser "general".
+
+CRITERIOS PARA ETIQUETA = "TPV"
+Una transacción (abono) debe marcarse como "tpv" SI Y SOLO SI cumple AL MENOS UNO de los siguientes criterios:
+
+A) REGLAS DE UNA SOLA LÍNEA (DESCRIPCIÓN CONTIENE FRASE EXACTA)
+La descripción debe contener EXACTAMENTE alguna de las siguientes frases (ignorando mayúsculas/minúsculas):
+
+    - deposito ventas del dia afil
+
+Si la descripción contiene cualquiera de estas palabras clave:
+    - financiamiento
+    - credito
+    - traspaso entre cuentas
+
+Deberá marcarse con la misma palabra clave, traspaso entre cuentas es "traspaso entre cuentas", credito es "crédito" y financiamiento es "financiamiento".
+
+B) REGLAS MULTILÍNEA (TRANSACCIÓN COMPUESTA)
+Una transacción multilínea debe marcarse como "tpv" SI Y SOLO SI:
+1) La PRIMERA línea de la transacción contiene EXACTAMENTE alguna de estas frases:
+    - abono transferencia spei hora
+
+Y ADEMÁS
+2) AL MENOS UNA de las líneas siguientes de LA MISMA TRANSACCIÓN contiene alguna de estas frases:
+    - de la cuenta
+    - recibido de stp
+    - deposito spei
+    - deposito bpu
+    - cobra online sapi de cv
+    - bn-nts 6 digitos
+    - pw online mexico sapi de cv
+    - liquidacion wuzi
+    - mp agregador s de rl de cv
+    - trans sr pago
+    - net pay sapi de cv
+    - getnet mexico servicios de adquirencia s
+    - payclip s de rl de cv
+    - pocket de latinoamerica sapi de cv
+    - kiwi bop sa de cv
+    - kiwi international payment technologies
+    - zettle by paypal
+    - gananciasclip
+
+REGLA DE EXCLUSIÓN ABSOLUTA:
+    - Cualquier otro depósito SPEI
+    - Transferencias de otros bancos
+    - Pagos de nómina
+    - Traspasos que NO cumplan exactamente las reglas anteriores
+DEBEN ser etiquetados como "general".
+
+REGLA DE SEGURIDAD:
+    - Si existe cualquier duda, ambigüedad o conflicto, usa siempre "general".
+    - Nunca marques "tpv" si no estás completamente seguro.
     """,
 
     "multiva": """ 
-    CRITERIO DE ACEPTACIÓN EXCLUSIVO:
-    Una transacción SOLO es válida si su descripción contiene alguna de estas frases exactas:
-        Reglas de la extracción de una línea:
-            - ventas tpvs 
-            - venta tdd
-            - venta tdc
-            - ventas tarjetas
-            - ventas tdc inter
-            - ventas credito 
-            - ventas debito
-        Reglas de la extracción multilinea, para que sea válida debe cumplir ambas:
-            la primer línea debe contener:
-            - spei recibido stp
-            - deposito spei
-            las demás líneas deben contener:
-            - latinoamerica sapi de cv
-            - deposito bpu y 10 numeros
-            - cobra online sapi de cv
-            - bn-nts 6 digitos
-            - pw online mexico sapi de cv
-            - liquidacion wuzi
-            - mp agregador s de rl de cv
-            - trans sr pago
-            - net pay sapi de cv
-            - getnet mexico servicios de adquirencia s
-            - payclip s de rl de cv
-            - pocket de latinoamerica sapi de cv
-            - kiwi bop sa de cv
-            - kiwi international payment technologies
-            - zettle by paypal
-            - gananciasclip
-    IMPORTANTE: Cualquier otro tipo de depósito SPEI, transferencias de otros bancos o pagos de nómina que no coincidan con las frases de arriba, son tratados como 'generales'.
+REGLAS EXCLUSIVAS DE CLASIFICACIÓN TPV - BANCO MULTIVA
+
+IMPORTANTE:
+    - Estas reglas SOLO aplican para decidir la columna `ETIQUETA`.
+    - SOLO las transacciones con TIPO = "abono" pueden ser etiquetadas como "tpv".
+    - CUALQUIER transacción con TIPO = "cargo" debe ser "general".
+
+CRITERIOS PARA ETIQUETA = "TPV"
+Una transacción (abono) debe marcarse como "tpv" SI Y SOLO SI cumple AL MENOS UNO de los siguientes criterios:
+
+A) REGLAS DE UNA SOLA LÍNEA (DESCRIPCIÓN CONTIENE FRASE EXACTA)
+La descripción debe contener EXACTAMENTE alguna de las siguientes frases (ignorando mayúsculas/minúsculas):
+
+    - ventas tpvs 
+    - venta tdd
+    - venta tdc
+    - ventas tarjetas
+    - ventas tdc inter
+    - ventas credito 
+    - ventas debito
+
+Si la descripción contiene cualquiera de estas palabras clave:
+    - financiamiento
+    - credito
+    - traspaso entre cuentas
+
+Deberá marcarse con la misma palabra clave, traspaso entre cuentas es "traspaso entre cuentas", credito es "crédito" y financiamiento es "financiamiento".
+
+B) REGLAS MULTILÍNEA (TRANSACCIÓN COMPUESTA)
+Una transacción multilínea debe marcarse como "tpv" SI Y SOLO SI:
+1) La PRIMERA línea de la transacción contiene EXACTAMENTE alguna de estas frases:
+    - spei recibido stp
+    - deposito spei
+
+Y ADEMÁS
+2) AL MENOS UNA de las líneas siguientes de LA MISMA TRANSACCIÓN contiene alguna de estas frases:
+    - latinoamerica sapi de cv
+    - deposito bpu y 10 numeros
+    - cobra online sapi de cv
+    - bn-nts 6 digitos
+    - pw online mexico sapi de cv
+    - liquidacion wuzi
+    - mp agregador s de rl de cv
+    - trans sr pago
+    - net pay sapi de cv
+    - getnet mexico servicios de adquirencia s
+    - payclip s de rl de cv
+    - pocket de latinoamerica sapi de cv
+    - kiwi bop sa de cv
+    - kiwi international payment technologies
+    - zettle by paypal
+    - gananciasclip
+
+REGLA DE EXCLUSIÓN ABSOLUTA:
+    - Cualquier otro depósito SPEI
+    - Transferencias de otros bancos
+    - Pagos de nómina
+    - Traspasos que NO cumplan exactamente las reglas anteriores
+DEBEN ser etiquetados como "general".
+
+REGLA DE SEGURIDAD:
+    - Si existe cualquier duda, ambigüedad o conflicto, usa siempre "general".
+    - Nunca marques "tpv" si no estás completamente seguro.
     """,
 
     "citibanamex": """ 
-    CRITERIO DE ACEPTACIÓN EXCLUSIVO:
-    Una transacción SOLO es válida si su descripción contiene alguna de estas frases exactas:
-        Reglas de la extracción de una línea:
-            - deposito ventas netas por evopaymx
-            - deposito ventas netas
-        Reglas de la extracción multilinea, para que sea válida debe cumplir ambas:
-            la primer línea debe contener:
-            - deposito ventas netas d tar
-            - deposito ventas netas d amex
-            - deposito spei
-            las demás líneas deben contener:
-            - por evopay
-            - suc
-            - cobra online sapi de cv
-            - bn-nts 6 digitos
-            - pw online mexico sapi de cv
-            - liquidacion wuzi
-            - deposito bpu
-            - mp agregador s de rl de cv
-            - trans sr pago
-            - net pay sapi de cv
-            - getnet mexico servicios de adquirencia s
-            - payclip s de rl de cv
-            - pocket de latinoamerica sapi de cv
-            - kiwi bop sa de cv
-            - kiwi international payment technologies
-            - zettle by paypal
-            - gananciasclip
-    IMPORTANTE: Cualquier otro tipo de depósito SPEI, transferencias de otros bancos o pagos de nómina que no coincidan con las frases de arriba, son tratados como 'generales'.
+REGLAS EXCLUSIVAS DE CLASIFICACIÓN TPV - BANCO CITIBANAMEX
+
+IMPORTANTE:
+    - Estas reglas SOLO aplican para decidir la columna `ETIQUETA`.
+    - SOLO las transacciones con TIPO = "abono" pueden ser etiquetadas como "tpv".
+    - CUALQUIER transacción con TIPO = "cargo" debe ser "general".
+
+CRITERIOS PARA ETIQUETA = "TPV"
+Una transacción (abono) debe marcarse como "tpv" SI Y SOLO SI cumple AL MENOS UNO de los siguientes criterios:
+
+A) REGLAS DE UNA SOLA LÍNEA (DESCRIPCIÓN CONTIENE FRASE EXACTA)
+La descripción debe contener EXACTAMENTE alguna de las siguientes frases (ignorando mayúsculas/minúsculas):
+
+    - deposito ventas netas por evopaymx
+    - deposito ventas netas
+
+Si la descripción contiene cualquiera de estas palabras clave:
+    - financiamiento
+    - credito
+    - traspaso entre cuentas
+
+Deberá marcarse con la misma palabra clave, traspaso entre cuentas es "traspaso entre cuentas", credito es "crédito" y financiamiento es "financiamiento".
+
+B) REGLAS MULTILÍNEA (TRANSACCIÓN COMPUESTA)
+Una transacción multilínea debe marcarse como "tpv" SI Y SOLO SI:
+1) La PRIMERA línea de la transacción contiene EXACTAMENTE alguna de estas frases:
+    - deposito ventas netas d tar
+    - deposito ventas netas d amex
+    - deposito spei
+
+Y ADEMÁS
+2) AL MENOS UNA de las líneas siguientes de LA MISMA TRANSACCIÓN contiene alguna de estas frases:
+
+    - por evopay
+    - suc
+    - cobra online sapi de cv
+    - bn-nts 6 digitos
+    - pw online mexico sapi de cv
+    - liquidacion wuzi
+    - deposito bpu
+    - mp agregador s de rl de cv
+    - trans sr pago
+    - net pay sapi de cv
+    - getnet mexico servicios de adquirencia s
+    - payclip s de rl de cv
+    - pocket de latinoamerica sapi de cv
+    - kiwi bop sa de cv
+    - kiwi international payment technologies
+    - zettle by paypal
+    - gananciasclip
+
+REGLA DE EXCLUSIÓN ABSOLUTA:
+    - Cualquier otro depósito SPEI
+    - Transferencias de otros bancos
+    - Pagos de nómina
+    - Traspasos que NO cumplan exactamente las reglas anteriores
+DEBEN ser etiquetados como "general".
+
+REGLA DE SEGURIDAD:
+    - Si existe cualquier duda, ambigüedad o conflicto, usa siempre "general".
+    - Nunca marques "tpv" si no estás completamente seguro.
     """,
 
     "banamex": """ 
-    CRITERIO DE ACEPTACIÓN EXCLUSIVO:
-    Una transacción SOLO es válida si su descripción contiene alguna de estas frases exactas:
-        Reglas de la extracción de una línea:
-            - deposito ventas netas por evopaymx
-            - deposito ventas netas
-            - BN-NTS029220
-        Reglas de la extracción multilinea, para que sea válida debe cumplir ambas:
-            la primer línea debe contener:
-            - deposito ventas netas d tar
-            - deposito ventas netas d amex
-            - deposito spei
-            las demás líneas deben contener:
-            - por evopay
-            - suc
-            - cobra online sapi de cv
-            - bn-nts 6 digitos
-            - pw online mexico sapi de cv
-            - liquidacion wuzi
-            - deposito bpu
-            - mp agregador s de rl de cv
-            - trans sr pago
-            - net pay sapi de cv
-            - getnet mexico servicios de adquirencia s
-            - payclip s de rl de cv
-            - pocket de latinoamerica sapi de cv
-            - kiwi bop sa de cv
-            - kiwi international payment technologies
-            - zettle by paypal
-            - gananciasclip
-    IMPORTANTE: Cualquier otro tipo de depósito SPEI, transferencias de otros bancos o pagos de nómina que no coincidan con las frases de arriba, son tratados como 'generales'.
+REGLAS EXCLUSIVAS DE CLASIFICACIÓN TPV - BANCO BANAMEX
+
+IMPORTANTE:
+    - Estas reglas SOLO aplican para decidir la columna `ETIQUETA`.
+    - SOLO las transacciones con TIPO = "abono" pueden ser etiquetadas como "tpv".
+    - CUALQUIER transacción con TIPO = "cargo" debe ser "general".
+
+CRITERIOS PARA ETIQUETA = "TPV"
+Una transacción (abono) debe marcarse como "tpv" SI Y SOLO SI cumple AL MENOS UNO de los siguientes criterios:
+
+A) REGLAS DE UNA SOLA LÍNEA (DESCRIPCIÓN CONTIENE FRASE EXACTA)
+La descripción debe contener EXACTAMENTE alguna de las siguientes frases (ignorando mayúsculas/minúsculas):
+
+    - deposito ventas netas por evopaymx
+    - deposito ventas netas
+    - BN-NTS y 6 digitos
+
+Si la descripción contiene cualquiera de estas palabras clave:
+    - financiamiento
+    - credito
+    - traspaso entre cuentas
+
+Deberá marcarse con la misma palabra clave, traspaso entre cuentas es "traspaso entre cuentas", credito es "crédito" y financiamiento es "financiamiento".
+
+B) REGLAS MULTILÍNEA (TRANSACCIÓN COMPUESTA)
+Una transacción multilínea debe marcarse como "tpv" SI Y SOLO SI:
+1) La PRIMERA línea de la transacción contiene EXACTAMENTE alguna de estas frases:
+
+    - deposito ventas netas d tar
+    - deposito ventas netas d amex
+    - deposito spei
+
+Y ADEMÁS
+2) AL MENOS UNA de las líneas siguientes de LA MISMA TRANSACCIÓN contiene alguna de estas frases:
+    - por evopay
+    - suc
+    - cobra online sapi de cv
+    - bn-nts 6 digitos
+    - pw online mexico sapi de cv
+    - liquidacion wuzi
+    - deposito bpu
+    - mp agregador s de rl de cv
+    - trans sr pago
+    - net pay sapi de cv
+    - getnet mexico servicios de adquirencia s
+    - payclip s de rl de cv
+    - pocket de latinoamerica sapi de cv
+    - kiwi bop sa de cv
+    - kiwi international payment technologies
+    - zettle by paypal
+    - gananciasclip
+
+REGLA DE EXCLUSIÓN ABSOLUTA:
+    - Cualquier otro depósito SPEI
+    - Transferencias de otros bancos
+    - Pagos de nómina
+    - Traspasos que NO cumplan exactamente las reglas anteriores
+DEBEN ser etiquetados como "general".
+
+REGLA DE SEGURIDAD:
+    - Si existe cualquier duda, ambigüedad o conflicto, usa siempre "general".
+    - Nunca marques "tpv" si no estás completamente seguro.
     """,
 
     "azteca": """ 
-    CRITERIO DE ACEPTACIÓN EXCLUSIVO:
-    Una transacción SOLO es válida si su descripción contiene alguna de estas frases exactas:
-        Reglas de la extracción multilinea:
-            la primer línea puede contener:
-            - transferencia spei a su favor
-            - deposito spei
-            las demás líneas pueden contener:
-            - emisor: banorte
-            - emisor: santander
-            - payclip s de rl decv
-            - gananciasclip
-            - cobra online sapi de cv
-            - bn-nts 6 digitos
-            - pw online mexico sapi de cv
-            - liquidacion wuzi
-            - deposito bpu
-            - mp agregador s de rl de cv
-            - trans sr pago
-            - net pay sapi de cv
-            - getnet mexico servicios de adquirencia s
-            - pocket de latinoamerica sapi de cv
-            - kiwi bop sa de cv
-            - kiwi international payment technologies
-            - zettle by paypal
-            - gananciasclip
-    IMPORTANTE: Cualquier otro tipo de depósito SPEI, transferencias de otros bancos o pagos de nómina que no coincidan con las frases de arriba, son tratados como 'generales'.
+REGLAS EXCLUSIVAS DE CLASIFICACIÓN TPV - BANCO AZTECA
+
+IMPORTANTE:
+    - Estas reglas SOLO aplican para decidir la columna `ETIQUETA`.
+    - SOLO las transacciones con TIPO = "abono" pueden ser etiquetadas como "tpv".
+    - CUALQUIER transacción con TIPO = "cargo" debe ser "general".
+
+CRITERIOS PARA ETIQUETA = "TPV"
+Una transacción (abono) debe marcarse como "tpv" SI Y SOLO SI cumple AL MENOS UNO de los siguientes criterios:
+
+A) REGLAS DE UNA SOLA LÍNEA 
+Si la descripción contiene cualquiera de estas palabras clave:
+    - financiamiento
+    - credito
+    - traspaso entre cuentas
+
+Deberá marcarse con la misma palabra clave, traspaso entre cuentas es "traspaso entre cuentas", credito es "crédito" y financiamiento es "financiamiento".
+
+B) REGLAS MULTILÍNEA (TRANSACCIÓN COMPUESTA)
+Una transacción multilínea debe marcarse como "tpv" SI Y SOLO SI:
+1) La PRIMERA línea de la transacción contiene EXACTAMENTE alguna de estas frases:
+
+    - transferencia spei a su favor
+    - deposito spei
+
+Y ADEMÁS
+2) AL MENOS UNA de las líneas siguientes de LA MISMA TRANSACCIÓN contiene alguna de estas frases:
+    - emisor: banorte
+    - emisor: santander
+    - payclip s de rl decv
+    - gananciasclip
+    - cobra online sapi de cv
+    - bn-nts 6 digitos
+    - pw online mexico sapi de cv
+    - liquidacion wuzi
+    - deposito bpu
+    - mp agregador s de rl de cv
+    - trans sr pago
+    - net pay sapi de cv
+    - getnet mexico servicios de adquirencia s
+    - pocket de latinoamerica sapi de cv
+    - kiwi bop sa de cv
+    - kiwi international payment technologies
+    - zettle by paypal
+    - gananciasclip
+
+REGLA DE EXCLUSIÓN ABSOLUTA:
+    - Cualquier otro depósito SPEI
+    - Transferencias de otros bancos
+    - Pagos de nómina
+    - Traspasos que NO cumplan exactamente las reglas anteriores
+DEBEN ser etiquetados como "general".
+
+REGLA DE SEGURIDAD:
+    - Si existe cualquier duda, ambigüedad o conflicto, usa siempre "general".
+    - Nunca marques "tpv" si no estás completamente seguro.
     """,
 
     "inbursa": """ 
-    CRITERIO DE ACEPTACIÓN EXCLUSIVO:
-    Una transacción SOLO es válida si su descripción contiene alguna de estas frases exactas:
-        Reglas de la extracción multilinea, para que sea válida debe cumplir ambas:
-            la primer línea debe contener:
-            - deposito spei
-            alguna de las demás líneas deben contener:
-            - kiwi international payment technologies
-            - cobra online sapi de cv
-            - operadora paypal de mexico s de rl
-            - bn-nts 6 digitos
-            - pw online mexico sapi de cv
-            - liquidacion wuzi
-            - deposito bpu
-            - mp agregador s de rl de cv
-            - trans sr pago
-            - net pay sapi de cv
-            - getnet mexico servicios de adquirencia s
-            - payclip s de rl de cv
-            - pocket de latinoamerica sapi de cv
-            - kiwi bop sa de cv
-            - zettle by paypal
-            - payclip s de rl decv
-            - gananciasclip
-    IMPORTANTE: Cualquier otro tipo de depósito SPEI, transferencias de otros bancos o pagos de nómina que no coincidan con las frases de arriba, son tratados como 'generales'.
+REGLAS EXCLUSIVAS DE CLASIFICACIÓN TPV - BANCO INBURSA
+
+IMPORTANTE:
+    - Estas reglas SOLO aplican para decidir la columna `ETIQUETA`.
+    - SOLO las transacciones con TIPO = "abono" pueden ser etiquetadas como "tpv".
+    - CUALQUIER transacción con TIPO = "cargo" debe ser "general".
+
+CRITERIOS PARA ETIQUETA = "TPV"
+Una transacción (abono) debe marcarse como "tpv" SI Y SOLO SI cumple AL MENOS UNO de los siguientes criterios:
+
+A) REGLAS DE UNA SOLA LÍNEA 
+Si la descripción contiene cualquiera de estas palabras clave:
+    - financiamiento
+    - credito
+    - traspaso entre cuentas
+
+Deberá marcarse con la misma palabra clave, traspaso entre cuentas es "traspaso entre cuentas", credito es "crédito" y financiamiento es "financiamiento".
+
+B) REGLAS MULTILÍNEA (TRANSACCIÓN COMPUESTA)
+Una transacción multilínea debe marcarse como "tpv" SI Y SOLO SI:
+1) La PRIMERA línea de la transacción contiene EXACTAMENTE alguna de estas frases:
+
+    - deposito spei
+
+Y ADEMÁS
+2) AL MENOS UNA de las líneas siguientes de LA MISMA TRANSACCIÓN contiene alguna de estas frases:
+
+    - kiwi international payment technologies
+    - cobra online sapi de cv
+    - operadora paypal de mexico s de rl
+    - bn-nts 6 digitos
+    - pw online mexico sapi de cv
+    - liquidacion wuzi
+    - deposito bpu
+    - mp agregador s de rl de cv
+    - trans sr pago
+    - net pay sapi de cv
+    - getnet mexico servicios de adquirencia s
+    - payclip s de rl de cv
+    - pocket de latinoamerica sapi de cv
+    - kiwi bop sa de cv
+    - zettle by paypal
+    - payclip s de rl decv
+    - gananciasclip
+
+REGLA DE EXCLUSIÓN ABSOLUTA:
+    - Cualquier otro depósito SPEI
+    - Transferencias de otros bancos
+    - Pagos de nómina
+    - Traspasos que NO cumplan exactamente las reglas anteriores
+DEBEN ser etiquetados como "general".
+
+REGLA DE SEGURIDAD:
+    - Si existe cualquier duda, ambigüedad o conflicto, usa siempre "general".
+    - Nunca marques "tpv" si no estás completamente seguro.
     """,
 
     "intercam": """ 
-    CRITERIO DE ACEPTACIÓN EXCLUSIVO:
-    Una transacción SOLO es válida si su descripción contiene alguna de estas frases exactas:
-        Reglas de la extracción multilinea, para que sea válida debe cumplir ambas:
-            la primer línea debe contener:
-            - recepcion spei jp morgan
-            - recepcion spei santander
-            - recepcion spei banorte
-            - deposito spei
-            la última línea deben contener:
-            - 136180018635900157
-            - cobra online sapi de cv
-            - bn-nts 6 digitos
-            - pw online mexico sapi de cv
-            - liquidacion wuzi
-            - deposito bpu
-            - mp agregador s de rl de cv
-            - trans sr pago
-            - net pay sapi de cv
-            - getnet mexico servicios de adquirencia s
-            - payclip s de rl de cv
-            - pocket de latinoamerica sapi de cv
-            - kiwi bop sa de cv
-            - kiwi international payment technologies
-            - zettle by paypal
-            - payclip s de rl decv
-            - gananciasclip
-    IMPORTANTE: Cualquier otro tipo de depósito SPEI, transferencias de otros bancos o pagos de nómina que no coincidan con las frases de arriba, son tratados como 'generales'.
+REGLAS EXCLUSIVAS DE CLASIFICACIÓN TPV - BANCO INTERCAM
+
+IMPORTANTE:
+    - Estas reglas SOLO aplican para decidir la columna `ETIQUETA`.
+    - SOLO las transacciones con TIPO = "abono" pueden ser etiquetadas como "tpv".
+    - CUALQUIER transacción con TIPO = "cargo" debe ser "general".
+
+CRITERIOS PARA ETIQUETA = "TPV"
+Una transacción (abono) debe marcarse como "tpv" SI Y SOLO SI cumple AL MENOS UNO de los siguientes criterios:
+
+A) REGLAS DE UNA SOLA LÍNEA 
+Si la descripción contiene cualquiera de estas palabras clave:
+    - financiamiento
+    - credito
+    - traspaso entre cuentas
+
+Deberá marcarse con la misma palabra clave, traspaso entre cuentas es "traspaso entre cuentas", credito es "crédito" y financiamiento es "financiamiento".
+
+B) REGLAS MULTILÍNEA (TRANSACCIÓN COMPUESTA)
+Una transacción multilínea debe marcarse como "tpv" SI Y SOLO SI:
+1) La PRIMERA línea de la transacción contiene EXACTAMENTE alguna de estas frases:
+
+    - recepcion spei jp morgan
+    - recepcion spei santander
+    - recepcion spei banorte
+    - deposito spei
+
+Y ADEMÁS
+2) AL MENOS UNA de las líneas siguientes de LA MISMA TRANSACCIÓN contiene alguna de estas frases:
+    - 136180018635900157
+    - cobra online sapi de cv
+    - bn-nts 6 digitos
+    - pw online mexico sapi de cv
+    - liquidacion wuzi
+    - deposito bpu
+    - mp agregador s de rl de cv
+    - trans sr pago
+    - net pay sapi de cv
+    - getnet mexico servicios de adquirencia s
+    - payclip s de rl de cv
+    - pocket de latinoamerica sapi de cv
+    - kiwi bop sa de cv
+    - kiwi international payment technologies
+    - zettle by paypal
+    - payclip s de rl decv
+    - gananciasclip
+
+REGLA DE EXCLUSIÓN ABSOLUTA:
+    - Cualquier otro depósito SPEI
+    - Transferencias de otros bancos
+    - Pagos de nómina
+    - Traspasos que NO cumplan exactamente las reglas anteriores
+DEBEN ser etiquetados como "general".
+
+REGLA DE SEGURIDAD:
+    - Si existe cualquier duda, ambigüedad o conflicto, usa siempre "general".
+    - Nunca marques "tpv" si no estás completamente seguro.
     """,
 
     "vepormas": """ 
-    CRITERIO DE ACEPTACIÓN EXCLUSIVO:
-    Una transacción SOLO es válida si su descripción contiene alguna de estas frases exactas:
-        Reglas de la extracción multilinea, para que sea válida debe cumplir ambas:
-            la primer línea debe contener:
-            - recepcion spei jp morgan
-            - recepcion spei santander
-            - recepcion spei banorte
-            - deposito spei
-            la última línea deben contener:
-            - 136180018635900157
-            - cobra online sapi de cv
-            - bn-nts 6 digitos
-            - pw online mexico sapi de cv
-            - liquidacion wuzi
-            - deposito bpu
-            - mp agregador s de rl de cv
-            - trans sr pago
-            - net pay sapi de cv
-            - getnet mexico servicios de adquirencia s
-            - payclip s de rl de cv
-            - pocket de latinoamerica sapi de cv
-            - kiwi bop sa de cv
-            - kiwi international payment technologies
-            - zettle by paypal
-            - payclip s de rl decv
-            - gananciasclip
-    IMPORTANTE: Cualquier otro tipo de depósito SPEI, transferencias de otros bancos o pagos de nómina que no coincidan con las frases de arriba, son tratados como 'generales'.
+REGLAS EXCLUSIVAS DE CLASIFICACIÓN TPV - BANCO AZTECA
+
+IMPORTANTE:
+    - Estas reglas SOLO aplican para decidir la columna `ETIQUETA`.
+    - SOLO las transacciones con TIPO = "abono" pueden ser etiquetadas como "tpv".
+    - CUALQUIER transacción con TIPO = "cargo" debe ser "general".
+
+CRITERIOS PARA ETIQUETA = "TPV"
+Una transacción (abono) debe marcarse como "tpv" SI Y SOLO SI cumple AL MENOS UNO de los siguientes criterios:
+
+A) REGLAS DE UNA SOLA LÍNEA 
+Si la descripción contiene cualquiera de estas palabras clave:
+    - financiamiento
+    - credito
+    - traspaso entre cuentas
+
+Deberá marcarse con la misma palabra clave, traspaso entre cuentas es "traspaso entre cuentas", credito es "crédito" y financiamiento es "financiamiento".
+
+B) REGLAS MULTILÍNEA (TRANSACCIÓN COMPUESTA)
+Una transacción multilínea debe marcarse como "tpv" SI Y SOLO SI:
+1) La PRIMERA línea de la transacción contiene EXACTAMENTE alguna de estas frases:
+
+    - recepcion spei jp morgan
+    - recepcion spei santander
+    - recepcion spei banorte
+    - deposito spei
+
+Y ADEMÁS
+2) AL MENOS UNA de las líneas siguientes de LA MISMA TRANSACCIÓN contiene alguna de estas frases:
+
+    - 136180018635900157
+    - cobra online sapi de cv
+    - bn-nts 6 digitos
+    - pw online mexico sapi de cv
+    - liquidacion wuzi
+    - deposito bpu
+    - mp agregador s de rl de cv
+    - trans sr pago
+    - net pay sapi de cv
+    - getnet mexico servicios de adquirencia s
+    - payclip s de rl de cv
+    - pocket de latinoamerica sapi de cv
+    - kiwi bop sa de cv
+    - kiwi international payment technologies
+    - zettle by paypal
+    - payclip s de rl decv
+    - gananciascliP
+
+REGLA DE EXCLUSIÓN ABSOLUTA:
+    - Cualquier otro depósito SPEI
+    - Transferencias de otros bancos
+    - Pagos de nómina
+    - Traspasos que NO cumplan exactamente las reglas anteriores
+DEBEN ser etiquetados como "general".
+
+REGLA DE SEGURIDAD:
+    - Si existe cualquier duda, ambigüedad o conflicto, usa siempre "general".
+    - Nunca marques "tpv" si no estás completamente seguro.
     """,
 }
