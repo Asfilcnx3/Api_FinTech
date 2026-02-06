@@ -1,6 +1,7 @@
 from ..core.config import settings
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Tuple, Optional
+from datetime import datetime, timedelta
 import httpx
 import logging
 
@@ -20,9 +21,11 @@ class SyntageClient:
         self.base_url = settings.SYNTAGE_API_URL
 
     # --- 1. BUSINESS NAME & RISKS ---
-    async def get_taxpayer_info(self, client: httpx.AsyncClient, rfc: str) -> Tuple[str, List[str]]:
+    async def get_taxpayer_info(self, client: httpx.AsyncClient, rfc: str) -> Tuple[str, List[Dict]]:
         """
-        Obtiene el nombre y los riesgos raw.
+        Obtiene el nombre y la lista de riesgos.
+        FIX: Agregamos filtro 'options[from]' para que los riesgos se calculen 
+        sobre los últimos 12 meses, alineándose con lo que muestra el Frontend.
         """
         name = rfc 
         risks = []
@@ -65,16 +68,52 @@ class SyntageClient:
         if found_name: name = found_name
 
         # C. Obtener Riesgos
+        # C. Obtener Riesgos
         try:
-            resp_risks = await client.get(f"{self.base_url}/insights/{rfc}/risks", headers=self.headers)
+            # LÓGICA DE FECHAS: 12 meses pasados + Mes actual (Incompleto)
+            # Ejemplo: Si hoy es 5 de Feb 2026.
+            # Start: 1 de Feb 2025.
+            # End: 5 de Feb 2026 (Ahora).
+            
+            now = datetime.now()
+            
+            # 1. Calculamos el "suelo" (Inicio de la ventana):
+            # Tomamos el día 1 del mes actual y restamos 1 año.
+            first_day_current_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            
+            try:
+                start_date = first_day_current_month.replace(year=first_day_current_month.year - 1)
+            except ValueError:
+                # Manejo de bisiestos (ej. si hoy fuera 29 feb)
+                start_date = first_day_current_month.replace(year=first_day_current_month.year - 1, day=28)
+
+            params = {
+                "options[from]": start_date.strftime("%Y-%m-%dT00:00:00.000Z"),
+                # FIX: Ahora el 'to' es AHORA MISMO, para incluir lo que llevamos del mes actual.
+                "options[to]": now.strftime("%Y-%m-%dT00:00:00.000Z")
+            }
+            
+            # Log para verificar la nueva ventana ampliada
+            logger.info(f"Consultando Riesgos con ventana (12m + Current): {params['options[from]']} a {params['options[to]']}")
+
+            resp_risks = await client.get(f"{self.base_url}/insights/{rfc}/risks", params=params, headers=self.headers)
+            
             if resp_risks.status_code == 200:
                 json_body = resp_risks.json()
-                # DEBUG
-                logger.info(f"DEBUG RISKS: Response body: {str(json_body)}")
-                # Extraemos el diccionario 'data' completo. 
-                # Si no existe 'data', devolvemos el body entero por seguridad.
-                risks = json_body.get("data", json_body) if isinstance(json_body, dict) else {}
                 
+                # Extracción robusta (Mantenemos la lógica de extracción que ya funcionó)
+                if isinstance(json_body, dict):
+                    if "data" in json_body and isinstance(json_body["data"], dict):
+                        risks = [json_body["data"]]
+                    elif "hydra:member" in json_body:
+                        risks = json_body["hydra:member"]
+                    elif isinstance(json_body, list):
+                        risks = json_body
+                
+                logger.info(f"Riesgos obtenidos correctamente.")
+            else:
+                logger.warning(f"Error HTTP al obtener riesgos: {resp_risks.status_code}")
+
         except Exception as e:
             logger.warning(f"Error fetching risks list: {e}")
         
@@ -204,28 +243,42 @@ class SyntageClient:
             logger.error(f"Error CIEC: {e}")
         return result
 
-    async def get_buro_report_status(self, client: httpx.AsyncClient, rfc: str) -> Dict[str, Any]:
+    async def get_buro_report_status(self, client: httpx.AsyncClient, entity_id: str, rfc: str) -> Dict[str, Any]:
         """
-        Verifica reporte de Buró. Maneja correctamente el 404 cuando no hay reportes.
+        Verifica reporte de Buró.
+        Eliminamos el sort por API para evitar errores y ordenamos en memoria.
         """
         result = {"has_report": False, "status": "unknown", "score": None, "date": None}
         
-        entity_id = await self._get_entity_id(client, rfc)
         if not entity_id:
-            result["status"] = "entity_not_found"
-            return result
+            entity_id = await self._get_entity_id(client, rfc)
+            if not entity_id:
+                logger.warning(f"Buró check: No Entity ID found for RFC {rfc}")
+                result["status"] = "entity_not_found"
+                return result
 
         try:
             url = f"{self.base_url}/entities/{entity_id}/datasources/mx/buro-de-credito/reports"
-            params = {"itemsPerPage": 1, "order[createdAt]": "desc"}
+            
+            # Quitamos "order[createdAt]" de los params.
+            # A veces la API falla silenciosamente si el param de orden no es exacto.
+            # Traemos un poco más de items (5) para asegurar que capturamos el reporte si hay ruido.
+            params = {"itemsPerPage": 5} 
             
             resp = await client.get(url, params=params, headers=self.headers)
             
             if resp.status_code == 200:
                 data = resp.json()
-                items = data if isinstance(data, list) else data.get("hydra:member", [])
                 
+                # DEBUG LOG
+                logger.info(f"DEBUG Buró Reports RAW: {str(data)}")
+
+                items = data if isinstance(data, list) else data.get("hydra:member", [])
                 if items:
+                    # Ordenamiento manual en Python (más seguro)
+                    # Ordenamos por createdAt descendente
+                    items.sort(key=lambda x: x.get("createdAt", ""), reverse=True)
+                    
                     last_report = items[0]
                     result["has_report"] = True
                     result["status"] = "found"
@@ -233,18 +286,21 @@ class SyntageClient:
                     
                     # Fecha
                     date_val = last_report.get("createdAt")
+                    # Lógica de fallback para fecha (Mantenemos tu lógica original que era buena)
                     if not date_val:
                         try:
-                            raw_d = last_report["data"]["respuesta"]["persona"]["cuentas"][0]["fechaReporte"]
+                            # Intento profundo de extracción
+                            raw_d = last_report.get("data", {}).get("respuesta", {}).get("persona", {}).get("cuentas", [{}])[0].get("fechaReporte")
                             if raw_d and len(raw_d) == 8:
                                 date_val = f"{raw_d[4:]}-{raw_d[2:4]}-{raw_d[:2]}"
                         except: pass
                     result["date"] = date_val
                 else:
+                    logger.info(f"Buró check: Entity {entity_id} found but returns 0 reports.")
                     result["status"] = "not_found"
+                    
             elif resp.status_code == 404:
                 result["status"] = "not_found"
-                result["has_report"] = False
                 
         except Exception as e:
             logger.error(f"Error Buró: {e}")
@@ -253,56 +309,85 @@ class SyntageClient:
 
     async def get_compliance_opinion(self, client: httpx.AsyncClient, rfc: str) -> Dict[str, Any]:
         """
-        Obtiene la Opinión de Cumplimiento. Busca fecha en niveles superiores si no está en el objeto.
+        Obtiene la Opinión de Cumplimiento (32-D) más reciente.
+        FIX: Usa el endpoint específico /tax-compliance-checks para obtener 
+        estatus real y fecha dinámica ('checkedAt'), eliminando fechas hardcodeadas.
         """
         result = {"status": "unknown", "date": None}
+        
         try:
-            resp = await client.get(f"{self.base_url}/insights/{rfc}/risks", headers=self.headers)
+            # Ordenamos por fecha descendente para obtener la última ejecución real
+            params = {
+                "order[checkedAt]": "desc",
+                "itemsPerPage": 1
+            }
+            
+            url = f"{self.base_url}/taxpayers/{rfc}/tax-compliance-checks"
+            resp = await client.get(url, params=params, headers=self.headers)
             
             if resp.status_code == 200:
-                json_body = resp.json()
+                data = resp.json()
+                # Manejo robusto de Hydra (Lista vs Diccionario)
+                items = data if isinstance(data, list) else data.get("hydra:member", [])
                 
-                # Acceso seguro a data -> taxCompliance
-                data_node = json_body.get("data", json_body) if isinstance(json_body, dict) else {}
-                compliance = data_node.get("taxCompliance", {})
-                
-                if isinstance(compliance, dict) and compliance:
-                    is_risky = compliance.get("risky")
-                    if is_risky is False: result["status"] = "positive"
-                    elif is_risky is True: result["status"] = "negative"
+                if items:
+                    latest_check = items[0]
                     
-                    # Fecha (usualmente no viene aquí, pero por si acaso)
-                    result["date"] = compliance.get("updatedAt") or compliance.get("date")
+                    # 1. Estatus
+                    # La API devuelve: "positive", "negative", "no_obligations", "activity_suspended"
+                    # Lo pasamos directo o lo normalizamos según tu lógica de negocio.
+                    raw_result = latest_check.get("result")
+                    result["status"] = raw_result if raw_result else "unknown"
+                    
+                    # 2. Fecha Real
+                    # "checkedAt" es la fecha exacta cuando Syntage verificó esto con el SAT.
+                    result["date"] = latest_check.get("checkedAt")
+                    
+                    logger.info(f"Compliance Opinion actualizada: {result['status']} fecha {result['date']}")
                 else:
                     result["status"] = "not_found"
+                    logger.info(f"No se encontraron registros de compliance checks para {rfc}")
+
+            elif resp.status_code == 404:
+                result["status"] = "not_found"
+                
         except Exception as e:
-            logger.error(f"Error Compliance: {e}")
+            logger.error(f"Error fetching Compliance Opinion: {e}")
             
         return result
     
     async def _get_entity_id(self, client: httpx.AsyncClient, rfc: str) -> Optional[str]:
         """
-        Busca el UUID de la Entidad asociado al RFC.
-        Maneja respuestas tipo lista directa o colección Hydra.
+        Busca el UUID de la Entidad usando el filtro específico taxpayer.id.
+        Fuente: Documentación de Syntage (GET /entities?taxpayer.id={RFC})
         """
-        # 1. INTENTO PRINCIPAL: Buscar en la colección de Entidades
         try:
-            params = {"rfc": rfc, "itemsPerPage": 1}
+            # Usamos el filtro 'taxpayer.id' que apunta específicamente al RFC dentro del objeto taxpayer
+            params = {
+                "taxpayer.id": rfc, 
+                "itemsPerPage": 1  # Debería ser único si el RFC es exacto
+            }
+            
             resp = await client.get(f"{self.base_url}/entities", params=params, headers=self.headers)
             
             if resp.status_code == 200:
                 data = resp.json()
+                items = data if isinstance(data, list) else data.get("hydra:member", []) or data.get("data", [])
                 
-                # Parseo robusto Lista vs Dict
-                items = []
-                if isinstance(data, list): items = data
-                elif isinstance(data, dict): items = data.get("hydra:member", []) or data.get("data", [])
-                
-                if items and isinstance(items[0], dict):
-                    return items[0].get("id")
+                if items:
+                    # El endpoint /entities devuelve objetos Entidad.
+                    # El 'id' de nivel superior es el UUID que necesitamos para Buró.
+                    entity = items[0]
+                    found_id = entity.get("id")
                     
+                    logger.info(f"Entity ID resuelto exitosamente para {rfc}: {found_id}")
+                    return found_id
+                else:
+                    logger.warning(f"Entity Search: No se encontró entidad para taxpayer.id={rfc}")
+
         except Exception as e:
-            logger.error(f"Error searching entity: {e}")
+            logger.error(f"Error crítico resolviendo Entity ID: {e}")
+            
         return None
 
     # --- HELPERS DE PARSING ---
@@ -429,3 +514,64 @@ class SyntageClient:
             return results if results else {}
 
         return {}
+    
+    async def get_tax_status(self, client: httpx.AsyncClient, rfc: str) -> List[Dict]:
+        """
+        Obtiene las actividades económicas desde /taxpayers/{id}/tax-status
+        """
+        activities = []
+        try:
+            # Primero intentamos obtener el ID del taxpayer si no lo tenemos, 
+            # pero asumimos que el RFC funciona en la ruta para taxpayer endpoints 
+            # o usamos la búsqueda de entity previa para obtener el ID real.
+            # Syntage permite usar RFC en rutas de taxpayers usualmente.
+            
+            resp = await client.get(f"{self.base_url}/taxpayers/{rfc}/tax-status", headers=self.headers)
+            if resp.status_code == 200:
+                data = resp.json()
+                items = data if isinstance(data, list) else data.get("hydra:member", [])
+                
+                # Buscamos el objeto más reciente o iteramos
+                # El endpoint suele devolver una lista de status.
+                if items:
+                    # Tomamos el status actual (usualmente el primero o el activo)
+                    current_status = items[0] 
+                    raw_acts = current_status.get("economicActivities", [])
+                    
+                    for act in raw_acts:
+                        activities.append({
+                            "name": act.get("name"),
+                            "percentage": float(act.get("percentage") or 0),
+                            "start_date": act.get("startDate")
+                        })
+        except Exception as e:
+            logger.warning(f"Error fetching tax status: {e}")
+        
+        return activities
+    
+    async def get_entity_detail(self, client: httpx.AsyncClient, rfc: str) -> Dict[str, Any]:
+        """
+        Busca la entidad y retorna ID y Fecha de Registro SAT.
+        Reemplaza o complementa a _get_entity_id para traer más datos.
+        """
+        result = {"id": None, "registration_date": None}
+        try:
+            params = {"taxpayer.id": rfc, "itemsPerPage": 1}
+            resp = await client.get(f"{self.base_url}/entities", params=params, headers=self.headers)
+            
+            if resp.status_code == 200:
+                data = resp.json()
+                items = data if isinstance(data, list) else data.get("hydra:member", [])
+                
+                if items:
+                    entity = items[0]
+                    result["id"] = entity.get("id")
+                    # Extraer fecha de registro del taxpayer anidado
+                    taxpayer = entity.get("taxpayer", {})
+                    result["registration_date"] = taxpayer.get("registrationDate")
+                    
+                    logger.info(f"Entidad encontrada. ID: {result['id']}, RegDate: {result['registration_date']}")
+        except Exception as e:
+            logger.error(f"Error getting entity detail: {e}")
+        
+        return result

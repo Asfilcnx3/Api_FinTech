@@ -8,6 +8,7 @@ from typing import List, Dict, Any, Tuple
 import httpx
 import statistics
 import logging
+import math # <--- Necesario para el CAGR
 
 logger = logging.getLogger(__name__)
 
@@ -21,11 +22,8 @@ class PrequalificationService:
         # 1. Configuración de dependencias
         api_key = settings.SYNTAGE_API_KEY.get_secret_value()
         
-        # Inyectamos los servicios auxiliares
         self.client_repo = SyntageClient(api_key)
         self.calculator = FinancialCalculatorService()
-
-        # Iniciamos el servicio de forecasting
         self.forecaster = ForecastingService()
 
     async def analyze_taxpayer(self, rfc: str) -> PrequalificationResponse.PrequalificationFinalResponse:
@@ -34,62 +32,80 @@ class PrequalificationService:
         """
         async with httpx.AsyncClient() as client:
             # --- FASE 1: RECOLECCIÓN DE DATOS (I/O Bound) ---
-            # Delegamos al cliente la tarea de ir a buscar los datos crudos
             
-            # 1. Identidad y Riesgos
+            # 1. Datos básicos y Entidad (para ID y Fecha Registro)
+            entity_details = await self.client_repo.get_entity_detail(client, rfc)
+            entity_id = entity_details["id"] 
+            reg_date = entity_details["registration_date"]
+            
+            # 2. Actividades Económicas
+            activities = await self.client_repo.get_tax_status(client, rfc)
+
+            # 3. Identidad y Riesgos (Usando tu lógica corregida de fecha)
             taxpayer_name, risks = await self.client_repo.get_taxpayer_info(client, rfc)
             
-            # 2. Series de Tiempo (Ingresos, Egresos, Ventas)
+            # 4. Series de Tiempo
             raw_cashflow = await self.client_repo.get_raw_monthly_data(client, rfc, "cash-flow")
             raw_sales = await self.client_repo.get_raw_monthly_data(client, rfc, "sales-revenue")
             raw_expenditures = await self.client_repo.get_raw_monthly_data(client, rfc, "expenditures")
             
-            # 3. Concentración (Clientes/Proveedores)
+            # 5. Concentración
             raw_clients, raw_suppliers = await self.client_repo.get_concentration_data(client, rfc)
             
-            # 4. Estados Financieros (Árbol JSON)
+            # 6. Estados Financieros
             financial_tree = await self.client_repo.get_financial_statements_tree(client, rfc)
             
-            # 5. Credenciales y Cumplimiento (CIEC, Buró, Opinión 32-D)
-            # Ejecutamos las 3 llamadas en paralelo para velocidad
+            # 7. Credenciales
             ciec_data = await self.client_repo.get_ciec_status(client, rfc) 
-            buro_data = await self.client_repo.get_buro_report_status(client, rfc)
+            # IMPORTANTE: Pasar entity_id si tu lógica de buró ya lo usa (sino rfc)
+            buro_data = await self.client_repo.get_buro_report_status(client, entity_id, rfc) 
             compliance_data = await self.client_repo.get_compliance_opinion(client, rfc)
 
         # --- FASE 2: PROCESAMIENTO DE LÓGICA DE NEGOCIO (CPU Bound) ---
         
-        # A. Procesamiento Temporal (Separar Mes Actual vs Histórico y calcular Stats)
-        cashflow_metrics, current_month_metrics = self._process_temporal_data(
+        # A. Procesamiento Temporal AVANZADO (AQUÍ ESTABA EL ERROR)
+        # Reemplazamos _process_temporal_data con _calculate_advanced_stats
+        stats_windows = self._calculate_advanced_stats(
             raw_cashflow, raw_sales, raw_expenditures
         )
 
-        # B. Procesamiento de Concentración (Convertir dicts a Modelos)
+        # B. Procesamiento de Concentración
         concentration_metrics = self._process_concentration(raw_clients, raw_suppliers)
 
-        # C. Procesamiento Financiero (Parsing de árbol y cálculo de ratios)
+        # C. Procesamiento Financiero
         financial_ratios = self._process_financial_statements(financial_tree)
 
-        # --- FASE 3: PRONÓSTICO DE VENTAS (CPU Bound) ---
-        # Usamos los datos crudos de ventas ("sales-revenue")
-        # El forecaster se encarga de ordenarlos y rellenar huecos.
-        sales_forecast = self.forecaster.generate_forecast(
-            historical_map=raw_sales,
-            horizon=12  # Confirmamos horizonte de 12 meses
-        )
+        # --- FASE 3: PRONÓSTICO FINANCIERO INTEGRAL ---
+        
+        # Preparar mapas planos para Inflows/Outflows
+        inflows_map = {}
+        outflows_map = {}
+        for date_key, vals in raw_cashflow.items():
+            if isinstance(vals, dict):
+                inflows_map[date_key] = vals.get("in", 0.0)
+                outflows_map[date_key] = vals.get("out", 0.0)
 
-        # Si la API no devolvió fecha de cumplimiento, usamos la fecha de la CIEC
-        final_compliance_date = compliance_data["date"]
-        if not final_compliance_date and compliance_data["status"] != "not_found":
-            # Asumimos: Si tenemos opinión (positiva/negativa), se generó cuando corrió la CIEC.
-            final_compliance_date = ciec_data["date"]
+        full_forecast = self.forecaster.generate_complete_forecast(
+            revenue_map=raw_sales,
+            expenditure_map=raw_expenditures,
+            inflow_map=inflows_map,
+            outflow_map=outflows_map,
+            horizon=12
+        )
 
         # --- FASE 4: CONSTRUCCIÓN DE RESPUESTA FINAL ---
         return PrequalificationResponse.PrequalificationFinalResponse(
             rfc=rfc,
             business_name=taxpayer_name,
+            
+            # Nuevos campos de perfil
+            tax_registration_date=reg_date,
+            economic_activities=[
+                PrequalificationResponse.EconomicActivity(**act) for act in activities
+            ],
+            
             risk_indicators=risks,
 
-            # Mapeo de credenciales (ciec, buro y opinión de cumplimiento)
             ciec_info=PrequalificationResponse.CredentialInfo(
                 status=ciec_data["status"],
                 last_check_date=ciec_data["date"]
@@ -100,106 +116,153 @@ class PrequalificationService:
                 score=buro_data["score"],
                 last_check_date=buro_data["date"]
             ),
-            
             compliance_opinion=PrequalificationResponse.CredentialInfo(
                 status=compliance_data["status"],
-                last_check_date=final_compliance_date
+                last_check_date=compliance_data["date"]
             ),
 
-            stats_last_months=cashflow_metrics,
-            cashflow_current_month=current_month_metrics,
+            # AQUÍ ENTRA LA NUEVA ESTRUCTURA COMPLEJA
+            stats_last_months=stats_windows,
+            
+            # Nota: Eliminé cashflow_current_month porque ya no lo usamos en el nuevo modelo
+            # si aún lo necesitas, avísame, pero stats_windows cubre todo.
+            
             concentration_last_12m=concentration_metrics,
             financial_ratios_history=financial_ratios,
-            sales_forecast=sales_forecast
+            financial_predictions=full_forecast
         )
 
     # ==========================================
-    #      MÉTODOS PRIVADOS (LÓGICA PURA)
+    # MÉTODOS PRIVADOS
     # ==========================================
 
-    def _process_temporal_data(
-        self, 
-        cashflow_map: Dict[str, Any], 
-        sales_map: Dict[str, float], 
-        exp_map: Dict[str, float]
-    ) -> Tuple[PrequalificationResponse.StatsWindows, PrequalificationResponse.CurrentMonthMetrics]:
+    def _calculate_advanced_stats(self, cashflow_map, sales_map, exp_map) -> PrequalificationResponse.StatsWindows:
         """
-        Lógica para separar el mes en curso (incompleto) de los 12 meses históricos cerrados.
-        Calcula estadísticas (media/mediana) sobre los meses cerrados.
+        Calcula las métricas complejas (Mean, Slope, Median Growth, CAGR)
+        para los periodos de auditoría: 3, 6, 9, 12, 24 meses.
         """
-        current_month_key = datetime.now().strftime("%Y-%m")
+        # 1. Aplanar y ordenar datos
+        sorted_keys = sorted(cashflow_map.keys()) # Ascendente cronológico
         
-        # Listas para almacenar historia (Ahora soportan hasta 24+ meses)
-        history = { "in": [], "out": [], "nfcf": [], "sales": [], "exp": [] }
-        curr = { "in": 0.0, "out": 0.0, "nfcf": 0.0, "sales": 0.0, "exp": 0.0 }
-
-        sorted_keys = sorted(cashflow_map.keys(), reverse=True)
-        count_closed = 0
-
-        for date_key in sorted_keys:
-            # Los datos ya vienen normalizados del cliente (YYYY-MM), no hace falta normalizar aquí de nuevo
-            # a menos que el cliente fallara, pero asumimos contrato limpio.
+        data_points = []
+        for k in sorted_keys:
+            cf = cashflow_map[k]
+            # Extraemos valores seguros
+            rev = sales_map.get(k, 0.0)
+            exp = exp_map.get(k, 0.0)
+            inf = cf.get("in", 0.0) if isinstance(cf, dict) else 0.0
+            out = cf.get("out", 0.0) if isinstance(cf, dict) else 0.0
+            nfcf = inf - out
             
-            # Extraemos valores cashflow
-            cf_node = cashflow_map[date_key]
-            val_in = cf_node["in"]
-            val_out = cf_node["out"]
-            val_nfcf = val_in - val_out
+            data_points.append({
+                "date": k, "revenue": rev, "expenditures": exp, 
+                "inflows": inf, "outflows": out, "nfcf": nfcf
+            })
+
+        # Excluir mes actual (Regla de meses cerrados)
+        current_month = datetime.now().strftime("%Y-%m")
+        history = [d for d in data_points if d["date"] != current_month]
+
+        # Helper interno para calcular un bloque
+        def calc_group(months_count):
+            if len(history) == 0:
+                return None # O devolver objeto vacío
             
-            # Buscamos valores correspondientes en sales/exp (si existen para esa fecha)
-            val_sales = sales_map.get(date_key, 0.0)
-            val_exp = exp_map.get(date_key, 0.0)
+            # Tomamos la ventana (ej. últimos 3)
+            # Si hay menos datos que 'months_count', tomamos lo que haya
+            window = history[-months_count:] if len(history) >= months_count else history
+            
+            # Ventana Previa (para Median Growth)
+            # ej. Si pides last_3, comparamos con los 3 anteriores a esos.
+            prev_window = []
+            if len(history) >= (len(window) * 2):
+                start_prev = -(len(window) * 2)
+                end_prev = -len(window)
+                prev_window = history[start_prev:end_prev]
+            
+            # Función para calcular las 4 métricas de UNA métrica (ej. Revenue)
+            def get_metrics(key):
+                vals_curr = [x[key] for x in window]
+                vals_prev = [x[key] for x in prev_window] if prev_window else []
+                
+                # A. MEAN
+                mean_val = statistics.mean(vals_curr) if vals_curr else 0.0
+                
+                # B. MEDIAN GROWTH (Opción A: Median(Curr) vs Median(Prev))
+                med_curr = statistics.median(vals_curr) if vals_curr else 0.0
+                # Manejo de datos insuficientes
+                # Si no hay ventana previa (porque el historial es corto), devolvemos None
+                # en lugar de 0.0, para que el Excel no pinte "0.00%".
+                med_growth = None 
+                
+                if prev_window: # Solo calculamos si EXISTE historia previa
+                    med_prev = statistics.median(vals_prev)
+                    if med_prev != 0:
+                        med_growth = (med_curr - med_prev) / abs(med_prev)
+                    else:
+                        # Si el periodo anterior fue 0 absoluto y ahora tenemos ventas,
+                        # matemáticamente es crecimiento infinito (1.0 = 100% como placeholder o None)
+                        med_growth = 1.0 if med_curr > 0 else 0.0
+                
+                # C. SLOPE (Regresión Lineal Simple)
+                slope = 0.0
+                if len(vals_curr) > 1:
+                    n = len(vals_curr)
+                    xs = range(n)
+                    ys = vals_curr
+                    sum_x = sum(xs)
+                    sum_y = sum(ys)
+                    sum_xy = sum(x*y for x,y in zip(xs, ys))
+                    sum_xx = sum(x*x for x in xs)
+                    denominator = (n * sum_xx - sum_x * sum_x)
+                    if denominator != 0:
+                        slope = (n * sum_xy - sum_x * sum_y) / denominator
 
-            if date_key == current_month_key:
-                # Es el mes actual
-                curr["in"], curr["out"], curr["nfcf"] = val_in, val_out, val_nfcf
-                curr["sales"], curr["exp"] = val_sales, val_exp
-            else:
-                # Aumentamos el buffer de memoria a 24 meses
-                if count_closed < 24: 
-                    history["in"].append(val_in)
-                    history["out"].append(val_out)
-                    history["nfcf"].append(val_nfcf)
-                    history["sales"].append(val_sales)
-                    history["exp"].append(val_exp)
-                    count_closed += 1
+                # D. CAGR / CMGR
+                cagr = 0.0
+                if len(vals_curr) >= 2:
+                    start_val = vals_curr[0]
+                    end_val = vals_curr[-1]
+                    
+                    # Si start_val es 0 o negativo, CAGR se rompe o es engañoso.
+                    # Manejo seguro:
+                    if start_val > 0 and end_val > 0:
+                        try:
+                            periods = len(vals_curr)
+                            # Si periodo < 12 meses -> CMGR (mensual) -> exponente 1/n
+                            # Si periodo >= 12 meses -> CAGR (anual) -> exponente 1/(n/12)
+                            years = periods / 12.0
+                            exponent = 1.0 / periods if periods < 12 else 1.0 / years
+                            
+                            cagr = (end_val / start_val) ** exponent - 1
+                        except: 
+                            cagr = 0.0
+                median_growth_rate=round(med_growth, 4) if med_growth is not None else None
+                return PrequalificationResponse.AdvancedPeriodMetrics(
+                    mean=round(mean_val, 2),
+                    median_growth_rate=median_growth_rate,
+                    linear_slope=round(slope, 2),
+                    cagr_cmgr=round(cagr, 4)
+                )
 
-        # Helper reutilizable (sin cambios, la magia del slicing lo hace todo)
-        def calculate_metrics_for_window(months_limit: int) -> PrequalificationResponse.CashflowMetrics:
-            # Si pedimos 24 meses y solo hay 14, Python usa los 14 disponibles automáticamente.
-            return PrequalificationResponse.CashflowMetrics(
-                inflows_stats=self._calculate_stats(history["in"][:months_limit]),
-                outflows_stats=self._calculate_stats(history["out"][:months_limit]),
-                nfcf_stats=self._calculate_stats(history["nfcf"][:months_limit]),
-                expenditures_stats=self._calculate_stats(history["exp"][:months_limit]),
-                sales_revenue_stats=self._calculate_stats(history["sales"][:months_limit])
+            return PrequalificationResponse.PeriodGroup(
+                revenue=get_metrics("revenue"),
+                expenditures=get_metrics("expenditures"),
+                inflows=get_metrics("inflows"),
+                outflows=get_metrics("outflows"),
+                nfcf=get_metrics("nfcf")
             )
 
-        # Construcción del objeto expandido
-        stats_windows = PrequalificationResponse.StatsWindows(
-            last_3_months=calculate_metrics_for_window(3),
-            last_6_months=calculate_metrics_for_window(6),
-            last_12_months=calculate_metrics_for_window(12),
-            last_16_months=calculate_metrics_for_window(16),
-            last_18_months=calculate_metrics_for_window(18),
-            last_24_months=calculate_metrics_for_window(24)
+        return PrequalificationResponse.StatsWindows(
+            last_24_months=calc_group(24),
+            last_12_months=calc_group(12),
+            last_9_months=calc_group(9),
+            last_6_months=calc_group(6),
+            last_3_months=calc_group(3)
         )
 
-        current_metrics = PrequalificationResponse.CurrentMonthMetrics(
-            month=current_month_key,
-            inflows=round(curr["in"], 2),
-            outflows=round(curr["out"], 2),
-            nfcf=round(curr["nfcf"], 2),
-            sales_revenue=round(curr["sales"], 2),
-            expenditures=round(curr["exp"], 2)
-        ) if current_month_key in cashflow_map else None
-
-        return stats_windows, current_metrics
-
     def _process_concentration(self, clients: List[Dict], suppliers: List[Dict]) -> PrequalificationResponse.ConcentrationMetrics:
-        """
-        Transforma diccionarios crudos en modelos Pydantic.
-        """
+        """Transfoma datos crudos a modelos."""
         def to_model(items):
             return [
                 PrequalificationResponse.ConcentrationItem(
@@ -283,12 +346,3 @@ class PrequalificationService:
             results.append(ratios)
 
         return results
-
-    def _calculate_stats(self, values: List[float]) -> PrequalificationResponse.Stats:
-        """Helper para calcular media y mediana."""
-        if not values:
-            return PrequalificationResponse.Stats(mean=0.0, median=0.0)
-        return PrequalificationResponse.Stats(
-            mean=round(statistics.mean(values), 2),
-            median=round(statistics.median(values), 2)
-        )
