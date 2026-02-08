@@ -245,10 +245,18 @@ class SyntageClient:
 
     async def get_buro_report_status(self, client: httpx.AsyncClient, entity_id: str, rfc: str) -> Dict[str, Any]:
         """
-        Verifica reporte de Buró.
-        Eliminamos el sort por API para evitar errores y ordenamos en memoria.
+        Verifica reporte de Buró y extrae datos soportando estructuras de 
+        Persona Física (cuentas) y Persona Moral (creditoFinanciero).
         """
-        result = {"has_report": False, "status": "unknown", "score": None, "date": None}
+        # Estructura base de retorno
+        result = {
+            "has_report": False, 
+            "status": "unknown", 
+            "score": None, 
+            "date": None,
+            "credit_lines": [],
+            "inquiries": []
+        }
         
         if not entity_id:
             entity_id = await self._get_entity_id(client, rfc)
@@ -259,11 +267,8 @@ class SyntageClient:
 
         try:
             url = f"{self.base_url}/entities/{entity_id}/datasources/mx/buro-de-credito/reports"
-            
-            # Quitamos "order[createdAt]" de los params.
-            # A veces la API falla silenciosamente si el param de orden no es exacto.
-            # Traemos un poco más de items (5) para asegurar que capturamos el reporte si hay ruido.
-            params = {"itemsPerPage": 5} 
+            # Pedimos itemsPerPage=1 porque solo nos interesa el reporte MÁS RECIENTE completo
+            params = {"itemsPerPage": 1} 
             
             resp = await client.get(url, params=params, headers=self.headers)
             
@@ -274,36 +279,117 @@ class SyntageClient:
                 logger.info(f"DEBUG Buró Reports RAW: {str(data)}")
 
                 items = data if isinstance(data, list) else data.get("hydra:member", [])
+                
                 if items:
-                    # Ordenamiento manual en Python (más seguro)
-                    # Ordenamos por createdAt descendente
+                    # Ordenar por fecha reciente
                     items.sort(key=lambda x: x.get("createdAt", ""), reverse=True)
-                    
                     last_report = items[0]
+                    data_node = last_report.get("data", {})
+                    
                     result["has_report"] = True
                     result["status"] = "found"
-                    result["score"] = last_report.get("score")
                     
-                    # Fecha
-                    date_val = last_report.get("createdAt")
-                    # Lógica de fallback para fecha (Mantenemos tu lógica original que era buena)
-                    if not date_val:
-                        try:
-                            # Intento profundo de extracción
-                            raw_d = last_report.get("data", {}).get("respuesta", {}).get("persona", {}).get("cuentas", [{}])[0].get("fechaReporte")
-                            if raw_d and len(raw_d) == 8:
-                                date_val = f"{raw_d[4:]}-{raw_d[2:4]}-{raw_d[:2]}"
-                        except: pass
-                    result["date"] = date_val
+                    # Score (Manejo de lista vs valor directo)
+                    score_node = data_node.get("score")
+                    if isinstance(score_node, list) and score_node:
+                        result["score"] = str(score_node[0].get("valorScore", "N/A"))
+                    else:
+                        result["score"] = str(data_node.get("score", "N/A"))
+                        
+                    result["date"] = last_report.get("createdAt")
+
+                    # --- EXTRACCIÓN HÍBRIDA (PERSONA vs EMPRESA) ---
+                    try:
+                        # 1. Identificar Listas de Créditos
+                        # Persona Física: data -> respuesta -> persona -> cuentas
+                        # Empresa: data -> creditoFinanciero
+                        raw_cuentas = []
+                        persona_node = data_node.get("respuesta", {}).get("persona", {})
+                        
+                        if "creditoFinanciero" in data_node:
+                            raw_cuentas = data_node["creditoFinanciero"] # Estructura Empresa
+                        elif "cuentas" in persona_node:
+                            raw_cuentas = persona_node["cuentas"] # Estructura Persona
+
+                        # 2. Identificar Consultas
+                        raw_consultas = []
+                        if "historialConsultas" in data_node:
+                            raw_consultas = data_node["historialConsultas"] # Empresa
+                        elif "consultaEfectuadas" in persona_node:
+                            raw_consultas = persona_node["consultaEfectuadas"] # Persona
+                        
+                        # Fix: A veces historialConsultas es un dict único en vez de lista
+                        if isinstance(raw_consultas, dict):
+                            raw_consultas = [raw_consultas]
+
+                        # --- PROCESAMIENTO UNIFICADO ---
+                        
+                        # A. LÍNEAS DE CRÉDITO
+                        for c in raw_cuentas:
+                            # Mapeo de campos (Prioridad Persona -> Prioridad Empresa)
+                            
+                            # Institución
+                            inst = c.get("nombreOtorgante") or c.get("tipoUsuario") or "N/A"
+                            
+                            # Tipo Contrato
+                            tipo = c.get("tipoContrato") or c.get("tipoCredito") or "N/A"
+                            
+                            # Límite (Puede ser limiteCredito, creditoMaximo, o creditoMaximoUtilizado)
+                            limite = (c.get("limiteCredito") or 
+                                      c.get("creditoMaximo") or 
+                                      c.get("creditoMaximoUtilizado"))
+                            
+                            # Fechas
+                            apertura = c.get("fechaAperturaCuenta") or c.get("apertura")
+                            ultimo_pago = c.get("fechaUltimoPago") # Suele llamarse igual
+                            
+                            # Saldo Vencido (Empresas lo tienen desglosado, calculamos suma si no existe total)
+                            saldo_vencido = c.get("saldoVencido")
+                            if saldo_vencido is None:
+                                # Sumar buckets de empresa (1-29, 30-59, etc.)
+                                s1 = self._parse_buro_amount(c.get("saldoVencidoDe1a29Dias"))
+                                s2 = self._parse_buro_amount(c.get("saldoVencidoDe30a59Dias"))
+                                s3 = self._parse_buro_amount(c.get("saldoVencidoDe60a89Dias"))
+                                s4 = self._parse_buro_amount(c.get("saldoVencidoDe90a119Dias"))
+                                s5 = self._parse_buro_amount(c.get("saldoVencidoDe120a179Dias"))
+                                s6 = self._parse_buro_amount(c.get("saldoVencidoDe180DiasOMas"))
+                                saldo_vencido = s1 + s2 + s3 + s4 + s5 + s6
+
+                            result["credit_lines"].append({
+                                "institution": inst,
+                                "account_type": str(tipo),
+                                "credit_limit": self._parse_buro_amount(limite),
+                                "current_balance": self._parse_buro_amount(c.get("saldoActual") or c.get("saldoVigente")),
+                                "past_due_balance": self._parse_buro_amount(saldo_vencido),
+                                "payment_frequency": c.get("frecuenciaPagos", "N/A"),
+                                "opening_date": self._parse_buro_date(apertura),
+                                "last_payment_date": self._parse_buro_date(ultimo_pago),
+                                "payment_history": c.get("historicoPagos", "")
+                            })
+
+                        # B. CONSULTAS
+                        for cons in raw_consultas:
+                            # Institución
+                            inst_cons = cons.get("nombreOtorgante") or cons.get("tipoUsuario") or "N/A"
+                            
+                            result["inquiries"].append({
+                                "institution": inst_cons,
+                                "inquiry_date": self._parse_buro_date(cons.get("fechaConsulta")),
+                                "contract_type": cons.get("tipoContrato", "N/A"),
+                                "amount": self._parse_buro_amount(cons.get("importeContrato"))
+                            })
+                                
+                    except Exception as e:
+                        logger.error(f"Error parseando detalle profundo de Buró: {e}")
+
                 else:
-                    logger.info(f"Buró check: Entity {entity_id} found but returns 0 reports.")
                     result["status"] = "not_found"
                     
             elif resp.status_code == 404:
                 result["status"] = "not_found"
                 
         except Exception as e:
-            logger.error(f"Error Buró: {e}")
+            logger.error(f"Error general Buró: {e}")
             
         return result
 
@@ -575,3 +661,26 @@ class SyntageClient:
             logger.error(f"Error getting entity detail: {e}")
         
         return result
+    
+    @staticmethod
+    def _parse_buro_amount(val_str: Any) -> float:
+        """Limpia montos de buró (ej: '0001200+' -> 1200.0)"""
+        if not val_str: return 0.0
+        try:
+            # Eliminar símbolos no numéricos comunes en Buró (+, -)
+            clean = str(val_str).replace("+", "").replace("-", "").strip()
+            return float(clean)
+        except:
+            return 0.0
+
+    @staticmethod
+    def _parse_buro_date(date_str: str) -> str:
+        """Convierte DDMMYYYY a YYYY-MM-DD"""
+        if not date_str or len(str(date_str)) != 8:
+            return str(date_str)
+        try:
+            d = str(date_str)
+            # Formato Buró: 31122023 (DDMMYYYY)
+            return f"{d[4:]}-{d[2:4]}-{d[:2]}" # YYYY-MM-DD
+        except:
+            return date_str

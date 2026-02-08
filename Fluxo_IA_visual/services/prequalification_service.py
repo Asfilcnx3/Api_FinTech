@@ -56,8 +56,7 @@ class PrequalificationService:
             financial_tree = await self.client_repo.get_financial_statements_tree(client, rfc)
             
             # 7. Credenciales
-            ciec_data = await self.client_repo.get_ciec_status(client, rfc) 
-            # IMPORTANTE: Pasar entity_id si tu lógica de buró ya lo usa (sino rfc)
+            ciec_data = await self.client_repo.get_ciec_status(client, rfc)
             buro_data = await self.client_repo.get_buro_report_status(client, entity_id, rfc) 
             compliance_data = await self.client_repo.get_compliance_opinion(client, rfc)
 
@@ -114,7 +113,9 @@ class PrequalificationService:
                 has_report=buro_data["has_report"],
                 status=buro_data["status"],
                 score=buro_data["score"],
-                last_check_date=buro_data["date"]
+                last_check_date=buro_data["date"],
+                credit_lines=buro_data["credit_lines"], 
+                inquiries=buro_data["inquiries"]        
             ),
             compliance_opinion=PrequalificationResponse.CredentialInfo(
                 status=compliance_data["status"],
