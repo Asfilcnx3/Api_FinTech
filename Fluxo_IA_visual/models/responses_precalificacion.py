@@ -8,12 +8,45 @@ class PrequalificationResponse(BaseModel):
     class CredentialInfo(BaseModel):
         status: str # "active", "inactive", "not_found", "positive", "negative"
         last_check_date: Optional[str] = None # "YYYY-MM-DD" o ISO format
+    
+    class BuroCreditLine(BaseModel):
+        """
+        Docstring for BuroCreditLine
+
+        :var para: Description
+        :vartype para: Revenue
+        """
+        institution: str       # nombreOtorgante
+        account_type: str      # tipoContrato / tipoCuenta
+        credit_limit: float    # limiteCredito / creditoMaximo
+        current_balance: float # saldoActual
+        past_due_balance: float # saldoVencido
+        payment_frequency: str # frecuenciaPagos
+        opening_date: Optional[str] # fechaAperturaCuenta
+        last_payment_date: Optional[str] # fechaUltimoPago
+        payment_history: str   # historicoPagos (ej. "111000")
+
+    class BuroInquiry(BaseModel):
+        """
+        Docstring for BuroInquiry
+        
+        :var para: Description
+        :vartype para: Revenue
+        """
+        institution: str       # nombreOtorgante
+        inquiry_date: str      # fechaConsulta
+        contract_type: str     # tipoContrato (ej. CC, CL)
+        amount: float          # importeContrato
 
     class BuroInfo(BaseModel):
         has_report: bool
         status: str # "found", "not_found", "entity_not_found"
         score: Optional[str] = None
         last_check_date: Optional[str] = None # Fecha de la última corrida
+
+        # Detalles del reporte
+        credit_lines: List["PrequalificationResponse.BuroCreditLine"] = []
+        inquiries: List["PrequalificationResponse.BuroInquiry"] = []
     
     class EconomicActivity(BaseModel):
         name: str

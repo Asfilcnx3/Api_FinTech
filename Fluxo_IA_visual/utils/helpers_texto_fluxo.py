@@ -18,7 +18,7 @@ PALABRAS_EFECTIVO = [
 ]
 
 PALABRAS_TRASPASO_ENTRE_CUENTAS = [
-    "traspaso entre cuentas", "traspaso cuentas propias", "traspaso entre cuentas propias", "transferencia entre cuentas propias", "transferencia entre cuentas", "traspaso entre mis cuentas", "traspaso a cuenta propia", "transferencia a cuenta propia", "traspaso a mis cuentas", "transferencia a mis cuentas", "traspaso", "transferencia", "transferencia cuentas propias"
+    "traspaso entre cuentas", "traspaso cuentas propias", "traspaso entre cuentas propias", "transferencia entre cuentas propias", "transferencia entre cuentas", "traspaso entre mis cuentas", "traspaso a cuenta propia", "transferencia a cuenta propia", "traspaso a mis cuentas", "transferencia a mis cuentas", "transferencia cuentas propias"
 ]   
 
 PALABRAS_TRASPASO_FINANCIAMIENTO = [

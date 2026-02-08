@@ -226,6 +226,100 @@ def generar_excel_syntage(data: dict) -> bytes:
             if isinstance(cell.value, (int, float)):
                 cell.style = currency_style
 
+    # ==========================================
+    # HOJA 4: DETALLE DE BURÓ (NUEVA)
+    # ==========================================
+    ws4 = wb.create_sheet("Detalle de Buró")
+    
+    buro_info = data.get("buro_info", {})
+    
+    # --- TABLA 1: LÍNEAS DE CRÉDITO ---
+    ws4.append(["LÍNEAS DE CRÉDITO ACTIVAS E HISTÓRICAS"])
+    ws4.merge_cells('A1:I1')
+    estilo_header(ws4, 1, 1, 9)
+    
+    headers_lines = [
+        "Institución", "Tipo Cuenta", "Límite Crédito", "Saldo Actual", 
+        "Saldo Vencido", "Frecuencia Pago", "Fecha Apertura", "Último Pago", "Histórico Pagos"
+    ]
+    ws4.append(headers_lines)
+    # Sub-header style
+    for col in range(1, 10):
+        cell = ws4.cell(row=2, column=col)
+        cell.font = header_font
+        cell.fill = sub_header_fill # Azul claro definido antes
+        cell.alignment = Alignment(horizontal='center')
+
+    lines = buro_info.get("credit_lines", [])
+    if not lines:
+        ws4.append(["No se encontró información de créditos."])
+    else:
+        for line in lines:
+            ws4.append([
+                line.get("institution"),
+                line.get("account_type"),
+                line.get("credit_limit"),
+                line.get("current_balance"),
+                line.get("past_due_balance"),
+                line.get("payment_frequency"),
+                line.get("opening_date"),
+                line.get("last_payment_date"),
+                line.get("payment_history")
+            ])
+            
+            # Alerta visual si hay saldo vencido > 0
+            saldo_vencido = line.get("past_due_balance", 0)
+            if saldo_vencido > 0:
+                row_idx = ws4.max_row
+                ws4.cell(row=row_idx, column=5).font = Font(color="FF0000", bold=True)
+
+    # Formato moneda para columnas C, D, E
+    for row in ws4.iter_rows(min_row=3, min_col=3, max_col=5):
+        for cell in row: cell.style = currency_style
+
+    ws4.append([""]) # Separador
+
+    # --- TABLA 2: HISTORIAL DE CONSULTAS (CREDIT PULLS) ---
+    ws4.append(["HISTORIAL DE CONSULTAS (CREDIT PULLS)"])
+    start_row_inq = ws4.max_row
+    ws4.merge_cells(f'A{start_row_inq}:D{start_row_inq}')
+    estilo_header(ws4, start_row_inq, 1, 4)
+    
+    headers_inq = ["Institución Solicitante", "Fecha Consulta", "Tipo Contrato", "Importe Solicitado"]
+    ws4.append(headers_inq)
+    # Sub-header style
+    sub_head_row = ws4.max_row
+    for col in range(1, 5):
+        cell = ws4.cell(row=sub_head_row, column=col)
+        cell.font = header_font
+        cell.fill = sub_header_fill
+        cell.alignment = Alignment(horizontal='center')
+
+    inquiries = buro_info.get("inquiries", [])
+    if not inquiries:
+        ws4.append(["No hay consultas recientes registradas."])
+    else:
+        for inq in inquiries:
+            ws4.append([
+                inq.get("institution"),
+                inq.get("inquiry_date"),
+                inq.get("contract_type"),
+                inq.get("amount")
+            ])
+
+    # Formato moneda columna D
+    for row in ws4.iter_rows(min_row=sub_head_row+1, min_col=4, max_col=4):
+        for cell in row: cell.style = currency_style
+
+    # Ajuste anchos
+    ws4.column_dimensions['A'].width = 35
+    ws4.column_dimensions['B'].width = 15
+    ws4.column_dimensions['C'].width = 15
+    ws4.column_dimensions['D'].width = 15
+    ws4.column_dimensions['G'].width = 15
+    ws4.column_dimensions['H'].width = 15
+    ws4.column_dimensions['I'].width = 20
+
     output = io.BytesIO()
     wb.save(output)
     return output.getvalue()
