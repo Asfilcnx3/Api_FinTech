@@ -149,7 +149,7 @@ CONFIGURACION_BANCOS = {
         "depositos_pattern": [r"(?:dep.{0,10}sitos)\s*\$?([\d,]+\.\d{2})"]
     },
     "banamex": {
-        "alias": ["banco nacional de mexico", "banco nacional de méxico"],
+        "alias": ["banco nacional de mexico", "banco nacional de méxico", "domiciliación banamex"],
         "rfc_pattern": [r"rfc\s*([a-zñ&]{3,4}\d{6}[a-z0-9]{2,3})",r"registro federal de contribuyentes:\s*([a-zñ&]{3,4}\d{6}[a-z0-9]{2,3})"],
         "comisiones_pattern": [r"comisiones efectivamente cobradas\s*\$\s*([\d,]+\.\d{2})"],
         "depositos_pattern": [r"dep[oó]sitos\s*([\d,]+\.\d{2})"]
