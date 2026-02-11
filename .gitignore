@@ -17,3 +17,8 @@ __pycache__
 
 # Cosas que no usamos
 deprecated
+
+prueba1.pdf
+prueba_dc.py
+
+*.json

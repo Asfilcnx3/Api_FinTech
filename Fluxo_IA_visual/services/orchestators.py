@@ -1,11 +1,11 @@
 from ..utils.helpers import (
     es_escaneado_o_no, extraer_datos_por_banco, extraer_json_del_markdown, limpiar_monto, sanitizar_datos_ia, 
-    reconciliar_resultados_ia, detectar_tipo_contribuyente, crear_chunks_con_superposicion, crear_objeto_resultado,
+    reconciliar_resultados_ia, detectar_tipo_contribuyente, crear_objeto_resultado,
     construir_fecha_completa
     
 )
 from .ia_extractor import (
-    analizar_gpt_fluxo, analizar_gemini_fluxo, analizar_gpt_nomi, _extraer_datos_con_ia, llamar_agente_tpv, llamar_agente_ocr_vision
+    analizar_gpt_fluxo, analizar_gemini_fluxo, analizar_gpt_nomi, _extraer_datos_con_ia, llamar_agente_ocr_vision
 )
 from ..utils.helpers_texto_fluxo import (
     PALABRAS_BMRCASH, PALABRAS_EXCLUIDAS, PALABRAS_EFECTIVO, PALABRAS_TRASPASO_ENTRE_CUENTAS, PALABRAS_TRASPASO_FINANCIAMIENTO, PALABRAS_TRASPASO_MORATORIO
@@ -19,6 +19,12 @@ from ..utils.helpers_texto_csf import (
 
 from .pdf_processor import (
     detectar_rangos_y_texto, extraer_texto_de_pdf, convertir_pdf_a_imagenes, leer_qr_de_imagenes, extraer_texto_con_crop
+)
+
+from ..utils.logic_helpers import (
+    segmentar_por_fechas, 
+    generar_mapa_montos_geometrico, 
+    reconciliar_geometria_con_bloques
 )
 
 from ..utils.helpers import extraer_rfc_curp_por_texto
@@ -165,69 +171,23 @@ async def obtener_y_procesar_portada(prompt:str, pdf_bytes: bytes) -> Tuple[Dict
     # OJO: Ahora el primer elemento es una LISTA, no un Dict único.
     return resultados_acumulados, es_documento_digital, texto_verificacion_global, None, texto_por_pagina, rangos_cuentas
     
-async def procesar_documento_con_agentes_async(
+def clasificar_transacciones_extraidas(
     ia_data_cuenta: dict, 
-    texto_total: Dict[int, str], 
-    movimientos_total: Optional[Dict[int, Any]],
+    transacciones_raw: List[Dict],
     filename: str,
     rango_paginas: Tuple[int, int]
 ) -> Dict[str, Any]:
     
     start_pg, end_pg = rango_paginas
     nombre_cuenta = f"{filename} (Págs {start_pg}-{end_pg})"
+    logger.info(f"Clasificando {len(transacciones_raw)} movs para: {nombre_cuenta}")
     
-    logger.info(f"Worker iniciando para: {nombre_cuenta}")
-    banco = ia_data_cuenta.get("banco", "generico").lower()
-    
-    # --- METADATA FECHAS PARA RECONSTRUCCIÓN ---
+    # Metadata Fechas
     p_inicio = ia_data_cuenta.get("periodo_inicio")
     p_fin = ia_data_cuenta.get("periodo_fin")
 
-    # 1. FILTRAR INPUTS
-    lista_paginas = list(range(start_pg, end_pg + 1))
-    
-    # Filtramos el texto (que sí tenemos)
-    texto_subset = {k: v for k, v in texto_total.items() if k in lista_paginas}
-    
-    # Lógica de Movimientos (Ahora es opcional/legacy)
-    if movimientos_total:
-        movimientos_subset = {k: v for k, v in movimientos_total.items() if k in lista_paginas}
-        paginas_con_movimientos = [p for p, m in movimientos_subset.items() if m]
-    else:
-        # Si no hay movimientos previos (nueva arquitectura), asumimos que todas las páginas
-        # del rango que tienen texto son válidas.
-        paginas_con_movimientos = list(texto_subset.keys())
-        
-    # Fallback si el filtrado por movimientos previos dejó vacío pero hay texto
-    if not paginas_con_movimientos and texto_subset:
-        logger.warning(
-            f"{nombre_cuenta}: fallback a procesamiento por texto completo"
-        )
-        paginas_con_movimientos = list(texto_subset.keys())
-
-    # 2. CHUNKING Y AGENTES
-    chunks = crear_chunks_con_superposicion(
-        texto_por_pagina=texto_subset,
-        paginas_con_movimientos=paginas_con_movimientos,
-        tamano_chunk=4, superposicion=1
-    )
-    
-    tareas = [llamar_agente_tpv(banco, txt, pags) for txt, pags in chunks]
-    res_chunks = await asyncio.gather(*tareas, return_exceptions=True)
-    
-    # 3. CONSOLIDACIÓN
-    transacciones_totales = []
-    ids_unicos = set()
-    for res in res_chunks:
-        if not isinstance(res, Exception):
-            for trx in res:
-                # Usamos el día crudo para el ID único temporalmente
-                id_trx = f"{trx.get('fecha')}-{trx.get('monto')}-{trx.get('descripcion', '')[:15]}"
-                if id_trx not in ids_unicos:
-                    transacciones_totales.append(trx)
-                    ids_unicos.add(id_trx)
-    
-    if not transacciones_totales:
+    # 1. SI NO HAY TRANSACCIONES (La POC no encontró nada)
+    if not transacciones_raw:
         return {
             **ia_data_cuenta,
             "nombre_archivo_virtual": nombre_cuenta,
@@ -235,10 +195,12 @@ async def procesar_documento_con_agentes_async(
             "depositos_en_efectivo": 0.0, "traspaso_entre_cuentas": 0.0,
             "total_entradas_financiamiento": 0.0, "entradas_bmrcash": 0.0,
             "total_moratorios": 0.0, "entradas_TPV_bruto": 0.0, "entradas_TPV_neto": 0.0,
-            "error_transacciones": "Agentes LLM no encontraron transacciones TPV."
+            "error_transacciones": "Geometría no detectó transacciones válidas."
         }
+
+    # 2. PROCESAMIENTO DE REGLAS DE NEGOCIO (Keywords)
+    # No limpiamos montos con IA ni regex, se confía en el float de la POC
     
-    # 4. CLASIFICACIÓN Y FORMATEO DE FECHAS
     total_depositos_efectivo = 0.0
     total_traspaso_entre_cuentas = 0.0
     total_entradas_financiamiento = 0.0
@@ -247,27 +209,27 @@ async def procesar_documento_con_agentes_async(
     total_moratorios = 0.0
     todas_las_transacciones = []
 
-    for trx in transacciones_totales:
-        monto_float = trx.get("monto", 0.0)
-        if not isinstance(monto_float, (int, float)):
-            monto_float = limpiar_monto(str(monto_float))
+    for trx in transacciones_raw:
+        # La POC ya nos da floats y strings limpios
+        monto_float = trx["monto"] 
+        descripcion_limpia = trx["descripcion"].lower()
+        tipo_detectado = trx["tipo"] # 'cargo', 'abono', 'indefinido'
 
-        descripcion_limpia = trx.get("descripcion", "").lower()
-        es_tpv_ia = trx.get("categoria", False)
-
-        # --- AQUÍ CONSTRUIMOS LA FECHA COMPLETA ---
-        dia_raw = trx.get("fecha")
+        # Construcción de Fecha
+        dia_raw = trx["fecha"]
         fecha_final = construir_fecha_completa(dia_raw, p_inicio, p_fin)
 
         trx_procesada = {
-            "fecha": fecha_final, # Usamos la nueva fecha formateada
-            "descripcion": trx.get("descripcion"),
-            "monto": f"{monto_float:,.2f}",
-            "tipo": trx.get("tipo"),
-            "categoria": "GENERAL"
+            "fecha": fecha_final,
+            "descripcion": trx["descripcion"],
+            "monto": f"{monto_float:,.2f}", # Formato visual
+            "tipo": tipo_detectado,
+            "categoria": "GENERAL",
+            "debug_match": trx.get("debug_match") # Útil para ver si fue Geometry o TextMatch
         }
 
-        if trx.get("tipo") == "abono":
+        # --- LÓGICA DE CLASIFICACIÓN (KEYWORDS) ---
+        if tipo_detectado == "abono":
             if any(p in descripcion_limpia for p in PALABRAS_EXCLUIDAS):
                 pass 
             else:
@@ -287,19 +249,16 @@ async def procesar_documento_con_agentes_async(
                     total_moratorios += monto_float
                     trx_procesada["categoria"] = "MORATORIOS"
                 else:
-                    # Lógica Doble Validación (Filtro + IA)
-                    if es_tpv_ia:
-                        total_entradas_tpv += monto_float
-                        trx_procesada["categoria"] = "TPV"
-                    else:
-                        trx_procesada["categoria"] = "GENERAL"
+                    # Todo lo que no cae en keywords específicas, lo marcamos como GENERAL
+                    # El Router Fluxo (Fase 4) tomará estos y los pasará por la IA Clasificadora
+                    trx_procesada["categoria"] = "GENERAL" 
         
-        elif trx.get("tipo") == "cargo":
+        elif tipo_detectado == "cargo":
             trx_procesada["categoria"] = "CARGO"
 
         todas_las_transacciones.append(trx_procesada)
 
-    # 5. RETORNO FINAL
+    # 3. CÁLCULO DE TOTALES FINALES
     comisiones_str = ia_data_cuenta.get("comisiones", "0.0")
     if comisiones_str is None: comisiones_str = "0.0"
     comisiones = limpiar_monto(str(comisiones_str))
@@ -315,8 +274,8 @@ async def procesar_documento_con_agentes_async(
         "total_entradas_financiamiento": total_entradas_financiamiento,
         "entradas_bmrcash": total_entradas_bmrcash,
         "total_moratorios": total_moratorios,
-        "entradas_TPV_bruto": total_entradas_tpv,
-        "entradas_TPV_neto": entradas_TPV_neto,
+        "entradas_TPV_bruto": total_entradas_tpv, # Se actualizará en Router Fase 4
+        "entradas_TPV_neto": entradas_TPV_neto, # Se actualizará en Router Fase 4
         "error_transacciones": None
     }
 
@@ -450,7 +409,7 @@ async def procesar_documento_escaneado_con_agentes_async(
 
 def procesar_digital_worker_sync(
     ia_data_inicial: dict, 
-    texto_por_pagina_sucio: Dict[int, str], # Renombramos para ser explícitos 
+    texto_por_pagina_sucio: Dict[int, str], 
     movimientos_por_pagina: Dict[int, Any], 
     filename: str,
     file_path: str,
@@ -461,34 +420,47 @@ def procesar_digital_worker_sync(
         start, end = rango_paginas
         lista_paginas = list(range(start, end + 1))
         
-        # 2. APLICAR GEOMETRÍA: LEER TEXTO LIMPIO (SIN HEADER/FOOTER)
-        # Aquí definimos los márgenes. Podrías hacerlos dinámicos según el banco en el futuro.
-        # Por ahora, 15% arriba y 10% abajo es un estándar seguro para bancos MX.
+        # 2. GENERAR MAPA GEOMÉTRICO (La base de la precisión)
+        # Esto nos da coordenadas de todos los números y fechas, y detecta columnas
+        mapa_geometrico = generar_mapa_montos_geometrico(file_path, lista_paginas)
+
+        # 3. EXTRAER TEXTO CON CROP (Para tener lectura limpia)
         texto_limpio_crop = extraer_texto_con_crop(
             file_path, 
             paginas=lista_paginas,
-            margen_superior_pct=0.12, 
-            margen_inferior_pct=0.06
+            margen_superior_pct=0.10, 
+            margen_inferior_pct=0.05
+        )
+        texto_a_usar = texto_limpio_crop if texto_limpio_crop else texto_por_pagina_sucio
+
+        # 4. CICLO DE EXTRACCIÓN DETERMINISTA
+        transacciones_extraidas = []
+
+        for num_pag in lista_paginas:
+            texto_pag = texto_a_usar.get(num_pag, "")
+            if not texto_pag: continue
+            
+            # A. Date Slicer
+            bloques = segmentar_por_fechas(texto_pag, num_pag)
+            
+            # B. Reconciliación Híbrida (Geometría + Texto)
+            txs_pag = reconciliar_geometria_con_bloques(bloques, mapa_geometrico)
+            
+            transacciones_extraidas.extend(txs_pag)
+
+        # 5. CLASIFICACIÓN PRELIMINAR (KEYWORDS) Y FORMATEO
+        # Ya no llamamos a 'procesar_documento_con_agentes_async'
+        resultado_dict = clasificar_transacciones_extraidas(
+            ia_data_inicial, 
+            transacciones_extraidas, # Pasamos los datos puros de la POC
+            filename, 
+            rango_paginas
         )
         
-        if not texto_limpio_crop:
-            # Fallback: Si el crop falló por algo, usamos el texto sucio original
-            logger.warning(f"Crop falló para {filename}, usando texto completo.")
-            texto_a_usar = texto_por_pagina_sucio
-        else:
-            texto_a_usar = texto_limpio_crop
-
-        # 3. PASAR EL TEXTO LIMPIO AL PROCESAMIENTO
-        resultado_dict = asyncio.run(
-            procesar_documento_con_agentes_async(
-                ia_data_inicial, 
-                texto_a_usar, # <--- Usamos la versión limpia
-                movimientos_por_pagina, 
-                filename, 
-                rango_paginas
-            )
-        )
-        return crear_objeto_resultado(resultado_dict)
+        # Crear objeto Pydantic
+        obj_res = crear_objeto_resultado(resultado_dict)
+        obj_res.file_path_origen = file_path # Metadata importante
+        return obj_res
         
     except Exception as e:
         logger.error(f"Error Worker Digital ({filename}): {e}", exc_info=True)
@@ -513,6 +485,8 @@ def procesar_ocr_worker_sync(
     except Exception as e:
         logger.error(f"Error Worker OCR ({filename}): {e}", exc_info=True)
         return e
+    
+
 
 ### ----- FUNCIONES ORQUESTADORAS PARA NOMIFLASH -----
 

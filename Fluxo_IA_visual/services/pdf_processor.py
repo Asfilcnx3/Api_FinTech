@@ -2,8 +2,7 @@
 from ..core.exceptions import PDFCifradoError
 from ..utils.helpers_texto_fluxo import TRIGGERS_CONFIG, KEYWORDS_COLUMNAS
 
-from typing import Dict, List, Optional, Tuple, Any
-import re
+from typing import Dict, List, Optional, Tuple
 from io import BytesIO
 from pyzbar.pyzbar import decode
 import fitz
@@ -76,7 +75,7 @@ def detectar_zonas_columnas(page: fitz.Page) -> Dict[str, Tuple[float, float]]:
     Escanea la página buscando los encabezados de las columnas de montos.
     Retorna los rangos X (min, max) para 'cargo' y 'abono'.
     """
-    zonas = {"cargo": None, "abono": None}
+    zonas = {"cargo": None, "abono": None, "fecha_columna": None}
     words = page.get_text("words") # (x0, y0, x1, y1, "texto", block_no, line_no, word_no)
     
     # Buscamos las palabras clave
@@ -94,7 +93,12 @@ def detectar_zonas_columnas(page: fitz.Page) -> Dict[str, Tuple[float, float]]:
         elif texto in KEYWORDS_COLUMNAS["abono"]:
             # Si encontramos "Abonos", definimos esa zona vertical
             zonas["abono"] = (x0 - margen, x1 + margen)
-            
+
+        # Detectamos la zona de fechas (asumiendo que está a la izquierda y es la primera columna)
+        # Esto nos ayudará a filtrar solo los montos que estén alineados con las fechas
+        ancho_pag = page.rect.width
+        zonas["fecha_columna"] = (0, ancho_pag * 0.22)
+        
     return zonas
 
 def leer_qr_de_imagenes(imagen_buffers: List[BytesIO]) -> Optional[str]:
@@ -241,70 +245,63 @@ def detectar_rangos_y_texto(pdf_bytes: bytes) -> Tuple[Dict[int, str], List[Tupl
 
     return texto_por_pagina, rangos_detectados
 
-def generar_mapa_montos_geometrico(pdf_path: str, paginas: List[int]) -> List[Dict]:
+def detectar_zonas_columnas(page: fitz.Page) -> Dict[str, Tuple[float, float]]:
     """
-    Escanea el PDF y retorna una lista ordenada de todos los montos encontrados
-    con su clasificación (cargo/abono) basada ESTRICTAMENTE en su posición X.
+    Escanea la página (priorizando el tercio superior) buscando encabezados 
+    de columnas para definir las zonas X de 'cargo' y 'abono'.
     """
-    mapa_montos = []
+    # Importamos aquí para evitar ciclos, o asegúrate que KEYWORDS_COLUMNAS esté disponible
+    from ..utils.helpers_texto_fluxo import KEYWORDS_COLUMNAS 
     
-    try:
-        with fitz.open(pdf_path) as doc:
-            for num_pagina in paginas:
-                idx = num_pagina - 1
-                if idx >= len(doc): continue
-                
-                page = doc[idx]
-                
-                # 1. Detectar Columnas (Usamos la función que vimos antes)
-                # Asumimos que 'detectar_zonas_columnas' ya existe y funciona bien
-                zonas = detectar_zonas_columnas(page) 
-                
-                if not zonas["cargo"] and not zonas["abono"]:
-                    continue # Sin referencias visuales, no podemos juzgar
+    zonas = {"cargo": None, "abono": None}
+    
+    # Limitamos la búsqueda al tercio superior para evitar falsos positivos en descripciones
+    rect_header = fitz.Rect(0, 0, page.rect.width, page.rect.height * 0.35)
+    words = page.get_text("words", clip=rect_header)
+    
+    # Diccionarios para guardar candidatos: {x_centro: 'cargo/abono'}
+    candidatos = []
 
-                # 2. Extraer palabras y filtrar solo números con formato financiero
-                words = page.get_text("words")
-                
-                items_pagina = []
-                for w in words:
-                    texto = w[4].strip().replace("$", "").replace(",", "")
-                    try:
-                        # Verificamos si es float valido
-                        valor_float = float(texto)
-                        # Verificamos formato visual (tiene punto decimal)
-                        if "." not in w[4]: continue 
-                    except ValueError:
-                        continue
+    for w in words:
+        texto = w[4].lower().replace(":", "").replace(".", "").strip()
+        x0, x1 = w[0], w[2]
+        x_centro = (x0 + x1) / 2
+        
+        # Check Cargo
+        if texto in KEYWORDS_COLUMNAS["cargo"]:
+            candidatos.append({"tipo": "cargo", "x0": x0, "x1": x1, "y": w[1]})
+            
+        # Check Abono
+        elif texto in KEYWORDS_COLUMNAS["abono"]:
+            candidatos.append({"tipo": "abono", "x0": x0, "x1": x1, "y": w[1]})
 
-                    # Calcular centro X
-                    x_centro = (w[0] + w[2]) / 2
-                    tipo_detectado = "indefinido"
+    # Procesar candidatos: Si hay varios, tomamos los que estén más alineados o sean más explícitos
+    # Margen de tolerancia horizontal (expandimos la columna hacia abajo)
+    margen_expansion = 15
 
-                    # 3. Clasificación Geométrica
-                    if zonas["cargo"]:
-                        if zonas["cargo"][0] <= x_centro <= zonas["cargo"][1]:
-                            tipo_detectado = "cargo"
-                    
-                    if zonas["abono"] and tipo_detectado == "indefinido":
-                        if zonas["abono"][0] <= x_centro <= zonas["abono"][1]:
-                            tipo_detectado = "abono"
+    for c in candidatos:
+        # Definimos la zona con holgura a los lados
+        zona_tupla = (c["x0"] - margen_expansion, c["x1"] + margen_expansion)
+        
+        # Si ya tenemos una zona, a veces los bancos ponen titulos dobles ej: "Retiros / Cargos"
+        # Nos quedamos con la más ancha o la primera encontrada
+        if zonas[c["tipo"]] is None:
+            zonas[c["tipo"]] = zona_tupla
 
-                    if tipo_detectado != "indefinido":
-                        items_pagina.append({
-                            "monto_str": texto, # "1500.50"
-                            "monto_float": valor_float,
-                            "tipo": tipo_detectado,
-                            "y": w[1], # Coordenada Y para ordenar (lectura de arriba a abajo)
-                            "pagina": num_pagina
-                        })
-                
-                # Ordenar por posición vertical (Arriba -> Abajo)
-                items_pagina.sort(key=lambda x: x["y"])
-                mapa_montos.extend(items_pagina)
+    # FALLBACK DE EMERGENCIA:
+    # Si detectamos una pero no la otra, y están muy separadas, inferimos la faltante.
+    # Ej: Encontró "Retiros" a la izquierda, pero no "Depósitos". Asumimos derecha.
+    ancho_pag = page.rect.width
+    centro_pag = ancho_pag / 2
+    
+    if zonas["cargo"] and not zonas["abono"]:
+        # Si cargo está a la izquierda, abono a la derecha
+        if zonas["cargo"][1] < centro_pag: 
+            zonas["abono"] = (centro_pag, ancho_pag)
+            
+    elif zonas["abono"] and not zonas["cargo"]:
+        # Si abono está a la derecha, cargo a la izquierda
+        if zonas["abono"][0] > centro_pag: 
+            zonas["cargo"] = (0, centro_pag)
 
-    except Exception as e:
-        logger.error(f"Error generando mapa de montos: {e}")
-        return []
-
-    return mapa_montos
+    return zonas
