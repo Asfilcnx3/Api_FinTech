@@ -411,7 +411,7 @@ async def procesar_documento_escaneado_con_agentes_async(
 def procesar_digital_worker_sync(
     ia_data_inicial: dict, 
     texto_por_pagina_sucio: Dict[int, str], 
-    movimientos_por_pagina: Dict[int, Any], 
+    movimientos_por_pagina: Dict[int, Any], # Nota: Este argumento no se está usando, ¿es legacy?
     filename: str,
     file_path: str,
     rango_paginas: Tuple[int, int]
@@ -422,22 +422,32 @@ def procesar_digital_worker_sync(
         lista_paginas = list(range(start, end + 1))
         
         # 2. GENERAR MAPA GEOMÉTRICO (La base de la precisión)
-        # Esto nos da coordenadas de todos los números y fechas, y detecta columnas
         mapa_geometrico = generar_mapa_montos_geometrico(file_path, lista_paginas)
 
-        # 3. Detectamos formato con la página 1 (o la primera del rango)
-        texto_muestra = texto_a_usar.get(lista_paginas[0], "")
-        formatos_detectados = detectar_formato_fecha_predominante(texto_muestra)
-        logger.info(f"Formatos de fecha detectados: {formatos_detectados}")
+        # --- CORRECCIÓN DE ORDEN AQUÍ ---
         
-        # 4. EXTRAER TEXTO CON CROP (Para tener lectura limpia)
+        # 3. PRIMERO EXTRAER TEXTO CON CROP (Para tener lectura limpia)
+        # Movemos esto ANTES de detectar formato, para detectar sobre texto limpio.
         texto_limpio_crop = extraer_texto_con_crop(
             file_path, 
             paginas=lista_paginas,
             margen_superior_pct=0.10, 
             margen_inferior_pct=0.05
         )
+        
+        # Definimos la variable maestra de texto
         texto_a_usar = texto_limpio_crop if texto_limpio_crop else texto_por_pagina_sucio
+
+        # 4. AHORA SÍ DETECTAMOS FORMATO (Usando texto_a_usar ya definido)
+        # Usamos la primera página válida del rango para la muestra
+        texto_muestra = ""
+        for p in lista_paginas:
+            if texto_a_usar.get(p):
+                texto_muestra = texto_a_usar[p]
+                break
+        
+        formatos_detectados = detectar_formato_fecha_predominante(texto_muestra)
+        logger.info(f"Formatos de fecha detectados ({filename}): {formatos_detectados}")
 
         # 5. CICLO DE EXTRACCIÓN DETERMINISTA
         transacciones_extraidas = []
@@ -446,7 +456,7 @@ def procesar_digital_worker_sync(
             texto_pag = texto_a_usar.get(num_pag, "")
             if not texto_pag: continue
 
-            # A. Date Slicer
+            # A. Date Slicer (Ahora usa la versión corregida con len < 6)
             bloques = segmentar_por_fechas(texto_pag, num_pag, formatos_detectados)
             
             # B. Reconciliación Híbrida (Geometría + Texto)
@@ -454,22 +464,23 @@ def procesar_digital_worker_sync(
             
             transacciones_extraidas.extend(txs_pag)
 
-        # 5. CLASIFICACIÓN PRELIMINAR (KEYWORDS) Y FORMATEO
-        # Ya no llamamos a 'procesar_documento_con_agentes_async'
+        # 6. CLASIFICACIÓN PRELIMINAR (KEYWORDS) Y FORMATEO
         resultado_dict = clasificar_transacciones_extraidas(
             ia_data_inicial, 
-            transacciones_extraidas, # Pasamos los datos puros de la POC
+            transacciones_extraidas, 
             filename, 
             rango_paginas
         )
         
         # Crear objeto Pydantic
         obj_res = crear_objeto_resultado(resultado_dict)
-        obj_res.file_path_origen = file_path # Metadata importante
+        obj_res.file_path_origen = file_path 
         return obj_res
         
     except Exception as e:
         logger.error(f"Error Worker Digital ({filename}): {e}", exc_info=True)
+        # Es buena práctica devolver el error o lanzarlo, depende de tu orquestador.
+        # Si devuelves la excepción tal cual, asegúrate que quien llama sepa manejarla.
         return e
 
 def procesar_ocr_worker_sync(
