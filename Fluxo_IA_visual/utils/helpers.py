@@ -544,6 +544,39 @@ def construir_fecha_completa(dia_raw: str, periodo_inicio_str: str, periodo_fin_
     dt_inicio = parse_meta_fecha(periodo_inicio_str)
     dt_fin = parse_meta_fecha(periodo_fin_str)
 
+    # CASO ESPECIAL: DETECCIÓN FORMATO BBVA (DD/MMM)
+    match_bbva = re.match(r'(\d{1,2})\/([a-zA-Z]{3})', str(dia_raw))
+    if match_bbva:
+        dia_bbva = int(match_bbva.group(1))
+        mes_bbva_str = match_bbva.group(2).lower()[:3] # 'jul'
+        
+        # Mapa simple
+        meses = {"ene":1,"feb":2,"mar":3,"abr":4,"may":5,"jun":6,"jul":7,"ago":8,"sep":9,"oct":10,"nov":11,"dic":12}
+        mes_num = meses.get(mes_bbva_str)
+        
+        if mes_num and dt_inicio:
+            # MAGIA DEL AÑO:
+            # Si el mes detectado es el mismo (o cercano) al inicio del periodo, usamos año inicio.
+            # Si el mes es ENE y el periodo empezó en DIC, sumamos año.
+            # Si el mes es DIC y el periodo termina en ENE, restamos año (raro en este orden).
+            
+            anio_calc = dt_inicio.year
+            
+            # Caso cambio de año (Periodo Dic 2024 -> Ene 2025)
+            if dt_inicio.month == 12 and mes_num == 1:
+                anio_calc += 1
+            elif dt_inicio.month == 11 and mes_num == 1: # Nov -> Ene
+                anio_calc += 1
+            
+            # Validación con fecha fin si existe
+            if dt_fin and dt_fin.year != dt_inicio.year:
+                if mes_num == dt_fin.month:
+                    anio_calc = dt_fin.year
+            
+            return f"{dia_bbva:02d}/{mes_num:02d}/{anio_calc}"
+            
+        return dia_raw
+
     # --- CASO 1: ¿YA ES UNA FECHA COMPLETA? ---
     # A veces el 'dia_raw' viene como "25/12/2023" o "25-12-23"
     # Regex busca patrones dd/mm/aaaa o dd-mm-aaaa
