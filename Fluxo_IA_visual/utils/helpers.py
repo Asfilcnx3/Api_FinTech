@@ -8,7 +8,7 @@ from .helpers_texto_nomi import CAMPOS_FLOAT, CAMPOS_STR, PATTERNS_COMPILADOS_RF
 from dateutil.relativedelta import relativedelta
 from typing import Tuple, List, Any, Dict, Union, Optional, Literal
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 import re
 
@@ -525,26 +525,15 @@ def crear_objeto_resultado(datos_dict: dict) -> AnalisisTPV.ResultadoExtraccion:
     
 def construir_fecha_completa(dia_raw: str, periodo_inicio_str: str, periodo_fin_str: str) -> str:
     """
-    Recibe un día (ej: "02", "15") y las fechas del periodo (metadata).
+    Recibe un día (ej: "02", "15", "125", "30/12") y las fechas del periodo.
     Devuelve la fecha completa formateada (dd/mm/yyyy).
     """
-    # 1. Limpieza básica del día
     if not dia_raw: return ""
-    
-    # Intentamos obtener solo los dígitos del día
-    dia_str = "".join(filter(str.isdigit, str(dia_raw)))
-    if not dia_str: return str(dia_raw) # Si no hay números, devolvemos lo que llegó
-    
-    try:
-        dia_int = int(dia_str)
-    except:
-        return str(dia_raw)
+    dia_raw = str(dia_raw).strip()
 
-    # 2. Parseo de fechas del periodo (Asumimos formato dd/mm/yyyy o yyyy-mm-dd)
-    # Ajusta los formatos según cómo los devuelva tu función de metadata
-    def parse_fecha(f_str):
+    # --- HELPER INTERNO: PARSEO DE FECHAS DE METADATA ---
+    def parse_meta_fecha(f_str):
         if not f_str: return None
-        # Intentamos formatos comunes
         for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y"):
             try:
                 return datetime.strptime(str(f_str).strip(), fmt)
@@ -552,39 +541,110 @@ def construir_fecha_completa(dia_raw: str, periodo_inicio_str: str, periodo_fin_
                 continue
         return None
 
-    dt_inicio = parse_fecha(periodo_inicio_str)
-    dt_fin = parse_fecha(periodo_fin_str)
+    dt_inicio = parse_meta_fecha(periodo_inicio_str)
+    dt_fin = parse_meta_fecha(periodo_fin_str)
 
-    # 3. Lógica de asignación de Mes/Año
-    # Si no tenemos metadata, devolvemos solo el día (fallback)
-    if not dt_inicio: 
+    # --- CASO 1: ¿YA ES UNA FECHA COMPLETA? ---
+    # A veces el 'dia_raw' viene como "25/12/2023" o "25-12-23"
+    # Regex busca patrones dd/mm/aaaa o dd-mm-aaaa
+    match_full = re.search(r'\b(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})\b', dia_raw)
+    if match_full:
+        d, m, y = map(int, match_full.groups())
+        # Ajuste de año corto (ej: 25 -> 2025)
+        if y < 100: y += 2000 
+        try:
+            return datetime(y, m, d).strftime("%d/%m/%Y")
+        except ValueError:
+            pass # Si falla, seguimos intentando como día suelto
+
+    # --- CASO 2: LIMPIEZA INTELIGENTE DEL DÍA ---
+    # Usamos regex para sacar solo el PRIMER grupo de dígitos encontrado
+    # Esto evita que "25 Dic" se convierta en "25" pero "| 25" se convierta en "25"
+    match_dia = re.search(r'\b(\d{1,3})\b', dia_raw)
+    if not match_dia:
+        # Intento desesperado: filtrar todo lo que no sea dígito
+        dia_str = "".join(filter(str.isdigit, dia_raw))
+    else:
+        dia_str = match_dia.group(1)
+
+    if not dia_str: return dia_raw
+
+    try:
+        dia_int = int(dia_str)
+    except:
+        return dia_raw
+
+    # --- CORRECCIÓN DE ERRORES OCR (El problema del 125) ---
+    if dia_int > 31:
+        # Si es mayor a 31, asumimos ruido a la izquierda (ej: "125" -> "25")
+        dia_posible = int(str(dia_int)[-2:]) # Tomamos los últimos 2
+        if 1 <= dia_posible <= 31:
+            dia_int = dia_posible
+        else:
+            # Si aún así falla (ej: "999"), devolvemos error visual
+            return f"{dia_int}/??/???? (Inválido)"
+    
+    if dia_int == 0: dia_int = 1 # Corrección mínima
+
+    # --- LÓGICA DE ASIGNACIÓN DE MES/AÑO ---
+    if not dt_inicio:
+        # Sin metadata, no podemos adivinar
         return f"{dia_int:02d}/??/????"
 
-    # Si solo tenemos inicio (o inicio y fin son el mismo mes/año), es fácil
-    mes = dt_inicio.month
-    anio = dt_inicio.year
-
-    if dt_fin:
-        # CASO COMPLEJO: El periodo cruza meses (Ej: 15 Dic a 14 Ene)
-        if dt_inicio.month != dt_fin.month:
-            # Heurística: Si el día extraído es mayor o igual al día de inicio, 
-            # probablemente pertenece al primer mes. Si es menor, al segundo.
-            # Ej: Periodo 15/12 al 14/01. Día "20" -> 20/12. Día "05" -> 05/01.
-            if dia_int >= dt_inicio.day:
-                mes = dt_inicio.month
-                anio = dt_inicio.year
-            else:
-                mes = dt_fin.month
-                anio = dt_fin.year
+    # Candidatos: El día puede pertenecer al mes de inicio o al mes de fin
+    # Creamos fechas hipotéticas
+    fechas_candidatas = []
     
-    # 4. Construcción final
+    # Opción A: Mes/Año de inicio
     try:
-        # Creamos la fecha para validar que sea real (ej: evitar 30 de Febrero)
-        fecha_completa = datetime(year=anio, month=mes, day=dia_int)
-        return fecha_completa.strftime("%d/%m/%Y")
-    except ValueError:
-        # Si el día es inválido (ej: 32), devolvemos error controlado
-        return f"{dia_int:02d}/{mes:02d}/{anio} (Fecha Inválida)"
+        candidato_inicio = datetime(dt_inicio.year, dt_inicio.month, dia_int)
+        fechas_candidatas.append(candidato_inicio)
+    except ValueError: pass # Ej: dia 31 en mes de 30 días
+
+    # Opción B: Mes/Año de fin (si existe y es diferente mes)
+    if dt_fin and (dt_fin.month != dt_inicio.month or dt_fin.year != dt_inicio.year):
+        try:
+            candidato_fin = datetime(dt_fin.year, dt_fin.month, dia_int)
+            fechas_candidatas.append(candidato_fin)
+        except ValueError: pass
+
+    # Opción C: Mes siguiente al inicio (para periodos largos o saltos de año)
+    # Si el periodo es 20 Dic - 20 Ene, y tenemos día 05.
+    try:
+        # Truco para obtener el mes siguiente
+        mes_sig = (dt_inicio.replace(day=1) + timedelta(days=32)).replace(day=dia_int)
+        fechas_candidatas.append(mes_sig)
+    except ValueError: pass
+
+    # --- SELECCIÓN DEL MEJOR CANDIDATO ---
+    mejor_fecha = None
+    
+    if dt_fin:
+        # Si tenemos rango cerrado, buscamos cuál cae DENTRO (o más cerca)
+        for fecha in fechas_candidatas:
+            if dt_inicio <= fecha <= dt_fin:
+                mejor_fecha = fecha
+                break
+    
+    # Si ninguno cayó dentro (o no hay fin), usamos la heurística original
+    if not mejor_fecha:
+        if dt_fin and dt_inicio.month != dt_fin.month:
+            # Heurística simple: Si el día es alto (>20) va al inicio, si es bajo (<10) va al fin
+            if dia_int >= dt_inicio.day:
+                mejor_fecha = fechas_candidatas[0] if fechas_candidatas else None
+            elif len(fechas_candidatas) > 1:
+                mejor_fecha = fechas_candidatas[1]
+            else:
+                mejor_fecha = fechas_candidatas[0] if fechas_candidatas else None
+        else:
+            # Si es el mismo mes, o no hay fin, nos quedamos con la opción A
+            mejor_fecha = fechas_candidatas[0] if fechas_candidatas else None
+
+    if mejor_fecha:
+        return mejor_fecha.strftime("%d/%m/%Y")
+    else:
+        # Fallback de seguridad
+        return f"{dia_int:02d}/{dt_inicio.month:02d}/{dt_inicio.year}"
         
 # --- FUNCIONES AUXILIARES NOMIFLASH ---
 def verificar_fecha_comprobante(fecha_str: Optional[str]) -> Optional[bool]:

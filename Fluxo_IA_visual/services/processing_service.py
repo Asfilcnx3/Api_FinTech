@@ -6,12 +6,12 @@ from concurrent.futures import ProcessPoolExecutor
 # Imports del proyecto
 from ..models.responses_analisisTPV import AnalisisTPV
 from ..services.ia_extractor import clasificar_lote_con_ia
-from ..services.pdf_processor import generar_mapa_montos_geometrico
-from ..utils.logic_helpers import inyectar_tipo_por_geometria
 from ..core.exceptions import PDFCifradoError
 from ..services.storage_service import guardar_excel_local, guardar_json_local
 from ..utils.xlsx_converter import generar_excel_reporte
+
 from ..utils.helpers import total_depositos_verificacion
+
 from ..utils.helpers_texto_fluxo import prompt_base_fluxo
 
 from ..utils.helpers_texto_fluxo import (
@@ -194,44 +194,20 @@ class ProcessingService:
             documentos_escaneados 
         )
 
-        # --- ETAPA INTERMEDIA: INYECCIÓN GEOMÉTRICA ---
+        # --- ETAPA INTERMEDIA: INYECCIÓN GEOMÉTRICA (SOLO OCR) ---
         for resultado_doc in resultados_fase_2:
-            # Validación de seguridad: si no tiene el atributo (ej. falló antes), saltamos
             if not hasattr(resultado_doc, "file_path_origen"):
                 continue
 
             if isinstance(resultado_doc.DetalleTransacciones, AnalisisTPV.ErrorRespuesta):
                 continue
 
-            # Si NO es digital (es OCR), saltamos la geometría porque el OCR ya trajo el tipo.
-            if getattr(resultado_doc, "es_digital", True) is False:
-                logger.info(f"Saltando geometría para OCR: {resultado_doc.AnalisisIA.banco}")
-                continue
-            
-            # --- DEBUG 1: ¿Qué banco detectamos? ---
-            # banco_actual = resultado_doc.AnalisisIA.banco
-            # logger.info(f"--- DEBUG FASE 3 ---")
-            # logger.info(f"Banco detectado: '{banco_actual}'")
-            # ----------------------------------------
-                
-            # 1. Obtenemos el Mapa Geométrico Preciso del PDF original
-            # (Necesitamos volver a leer el PDF con fitz, es rápido)
-            file_path = resultado_doc.file_path_origen
-            rango_paginas = resultado_doc.rango_paginas
-            
-            lista_paginas = list(range(rango_paginas[0], rango_paginas[1] + 1))
-            mapa_geo = generar_mapa_montos_geometrico(file_path, lista_paginas)
-            
-            # 2. Convertimos Pydantic a Dict para manipular
-            lista_tx_dict = [tx.dict() for tx in resultado_doc.DetalleTransacciones.transacciones]
-            
-            # 3. ¡LA MAGIA! Corregimos "Cargo/Abono" usando el mapa
-            lista_corregida = inyectar_tipo_por_geometria(lista_tx_dict, mapa_geo)
-            
-            # 4. Actualizamos el objeto (re-convertimos a Pydantic)
-            resultado_doc.DetalleTransacciones.transacciones = [
-                AnalisisTPV.Transaccion(**tx) for tx in lista_corregida
-            ]
+            # --- CAMBIO CRÍTICO ---
+            # Si es digital, el Worker Sync YA HIZO la geometría perfecta.
+            # Solo ejecutamos este bloque si NO es digital (es decir, OCR que vino de la IA antigua)
+            if getattr(resultado_doc, "es_digital", True):
+                continue 
+            # ----------------------
 
         # --- ETAPA 4: CLASIFICACIÓN FINAL (FASE 3 - AUDITOR CON BATCHING) ---
         BATCH_SIZE = 100 # Procesamos de 100 en 100 para no saturar al LLM
@@ -266,10 +242,24 @@ class ProcessingService:
             
             for i_lote, mapa_lote in enumerate(resultados_lotes):
                 offset = i_lote * BATCH_SIZE
+
+                if isinstance(mapa_lote, Exception) or not isinstance(mapa_lote, dict):
+                    logger.warning(f"Lote {i_lote} devolvió error o formato inválido: {mapa_lote}")
+                    continue
+
                 for idx_relativo, etiqueta in mapa_lote.items():
-                    # Ajustamos el índice relativo (0-99) al índice global real
-                    idx_global = str(int(idx_relativo) + offset)
-                    mapa_clasificacion_total[idx_global] = etiqueta
+                    # Validamos que la llave sea un número antes de convertir
+                    str_idx = str(idx_relativo).strip()
+                    if not str_idx.isdigit():
+                        logger.warning(f"Ignorando índice inválido de IA: '{idx_relativo}'")
+                        continue
+
+                    try:
+                        idx_global = str(int(str_idx) + offset)
+                        mapa_clasificacion_total[idx_global] = etiqueta
+                    except Exception as e:
+                        logger.error(f"Error calculando índice global: {e}")
+                        continue
 
             # 4. APLICAR ETIQUETAS DE LA IA AL OBJETO (Solo TPV vs GENERAL)
             for idx, tx in enumerate(transacciones):

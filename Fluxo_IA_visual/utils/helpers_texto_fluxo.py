@@ -44,9 +44,32 @@ CAMPOS_FLOAT = [
 ]
 
 KEYWORDS_COLUMNAS = {
-    "cargo": ["retiros", "cargos", "debitos", "signo", "debe"],
-    "abono": ["depositos", "abonos", "creditos", "haber"]
+    # Agregamos singulares y variantes comunes sin espacios al inicio
+    "cargo": [
+        "retiro", "retiros", 
+        "cargo", "cargos", 
+        "debito", "debitos", 
+        "débito", "débitos",
+        "signo", "debe", 
+        "salida", "salidas"
+    ],
+    "abono": [
+        "deposito", "depositos",
+        "depósito", "depósitos",
+        "abono", "abonos", 
+        "credito", "creditos", 
+        "haber", "entrada", "entradas"
+    ]
 }
+
+PATRONES_FECHA_INICIO = [
+    r"^\d{2}-[A-Z]{3}-\d{2}",    # 01-DIC-25 (Tu caso actual)
+    r"^\d{2}/\d{2}/\d{4}",        # 01/12/2025
+    r"^\d{2}/\d{2}/\d{2}",        # 01/12/25
+    r"^\d{2}\s[A-Z]{3}",          # 01 DIC
+    r"^\d{2}-[A-Z]{3}",           # 01-DIC
+]
+REGEX_FECHA_COMBINADA = re.compile("|".join(PATRONES_FECHA_INICIO), re.IGNORECASE)
 
 # ==========================================
 # 1. CONFIGURACIÓN DE TERMINALES (REESTRUCTURADA)
