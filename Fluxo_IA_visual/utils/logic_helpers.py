@@ -1,9 +1,8 @@
 import fitz
 import re
 import logging
-from typing import List, Dict
+from typing import List, Dict, Tuple
 from .helpers_texto_fluxo import REGEX_FECHA_COMBINADA
-from ..services.pdf_processor import detectar_zonas_columnas
 
 logger = logging.getLogger(__name__)
 
@@ -19,120 +18,265 @@ MESES_ESP = {
     "ene": 1, "feb": 2, "mar": 3, "abr": 4, "may": 5, "jun": 6,
     "jul": 7, "ago": 8, "sep": 9, "oct": 10, "nov": 11, "dic": 12
 }
+MESES_REGEX = r"(ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)"
+
+REGEX_FECHA_SIMPLE = re.compile(r'\b\d{1,2}[/-](?:[0-9]{2}|[a-zA-Z]{3})', re.IGNORECASE)
+REGEX_MONTO_SIMPLE = re.compile(r'\d{1,3}(?:,\d{3})*\.\d{2}')
+
+def detectar_zonas_columnas(page: fitz.Page) -> Dict[str, Tuple[float, float]]:
+    """
+    Escanea la página (priorizando el tercio superior RECALCULADO) buscando encabezados 
+    de columnas para definir las zonas X de 'cargo' y 'abono'.
+    """
+    # Importación dentro para evitar ciclos si es necesario, o mover arriba
+    from ..utils.helpers_texto_fluxo import KEYWORDS_COLUMNAS 
+    
+    ancho_pag = page.rect.width
+    zonas = {
+        "cargo": None, 
+        "abono": None, 
+        "fecha_columna": (0, ancho_pag * 0.22)
+    }
+    
+    # IMPORTANTE: Ahora buscamos headers en una zona más amplia
+    # Porque el crop dinámico nos asegura que tenemos contenido, 
+    # pero a veces los headers están un poco más abajo de lo usual.
+    rect_header = fitz.Rect(0, 0, ancho_pag, page.rect.height * 0.40)
+    words = page.get_text("words", clip=rect_header)
+    
+    candidatos = []
+
+    for w in words:
+        texto = w[4].lower().replace(":", "").replace(".", "").strip()
+        x0, x1 = w[0], w[2]
+        
+        if texto in KEYWORDS_COLUMNAS["cargo"]:
+            candidatos.append({"tipo": "cargo", "x0": x0, "x1": x1, "y": w[1]})
+            
+        elif texto in KEYWORDS_COLUMNAS["abono"]:
+            candidatos.append({"tipo": "abono", "x0": x0, "x1": x1, "y": w[1]})
+
+    margen_expansion = 25 
+
+    for c in candidatos:
+        zona_tupla = (c["x0"] - margen_expansion, c["x1"] + margen_expansion)
+        if zonas[c["tipo"]] is None:
+            zonas[c["tipo"]] = zona_tupla
+
+    centro_pag = ancho_pag / 2
+    if zonas["cargo"] and not zonas["abono"]:
+        if zonas["cargo"][1] < centro_pag: 
+            zonas["abono"] = (centro_pag, ancho_pag)
+            
+    elif zonas["abono"] and not zonas["cargo"]:
+        if zonas["abono"][0] > centro_pag: 
+            zonas["cargo"] = (0, centro_pag)
+
+    return zonas
+
+def calcular_crop_dinamico(page: fitz.Page) -> fitz.Rect:
+    """
+    Escanea la página buscando 'señales de vida' (fechas y montos).
+    Devuelve un rectángulo ajustado al contenido real, ignorando headers lejanos y footers.
+    """
+    rect_original = page.rect
+    words = page.get_text("words")
+    
+    if not words:
+        return rect_original
+
+    min_y_detectado = rect_original.height  # Empezamos desde abajo
+    max_y_detectado = 0.0                   # Empezamos desde arriba
+    
+    encontro_datos = False
+
+    for w in words:
+        texto = w[4].strip()
+        
+        # HEURÍSTICA 1: ¿Parece una fecha? (dd/mm o dd-mes)
+        es_fecha = bool(REGEX_FECHA_SIMPLE.search(texto))
+        
+        # HEURÍSTICA 2: ¿Parece un monto? (tiene punto decimal y dígitos)
+        # Evitamos números de página simples (ej: "1", "45") pidiendo el punto decimal.
+        es_monto = bool(REGEX_MONTO_SIMPLE.search(texto))
+        
+        if es_fecha or es_monto:
+            y0, y1 = w[1], w[3]
+            
+            # Actualizamos los límites del "mapa de calor"
+            if y0 < min_y_detectado: min_y_detectado = y0
+            if y1 > max_y_detectado: max_y_detectado = y1
+            encontro_datos = True
+
+    # --- DEFINICIÓN DE MÁRGENES ---
+    if not encontro_datos:
+        # Fallback: Si no detectamos nada (página vacía o imagen), devolvemos crop estándar
+        # Margen 5% arriba y abajo
+        return fitz.Rect(0, rect_original.height * 0.05, rect_original.width, rect_original.height * 0.95)
+
+    # BÚFER DE SEGURIDAD
+    # Arriba: Necesitamos espacio para los Headers de columna (Saldo, Cargo, etc.)
+    # Si la primera fecha está en Y=200, subimos 150px para atrapar los headers.
+    BUFFER_SUPERIOR = 120 
+    
+    # Abajo: Solo necesitamos un poquito extra por si el monto tiene colita (ej. letras 'g', 'j', 'p')
+    BUFFER_INFERIOR = 10 
+
+    y_final_top = max(0, min_y_detectado - BUFFER_SUPERIOR)
+    y_final_bottom = min(rect_original.height, max_y_detectado + BUFFER_INFERIOR)
+
+    # --- VALIDACIÓN DE SEGURIDAD ---
+    # Si el crop resultante es ridículamente pequeño (ej. < 100px), algo salió mal.
+    if (y_final_bottom - y_final_top) < 100:
+        return rect_original
+
+    return fitz.Rect(0, y_final_top, rect_original.width, y_final_bottom)
+
+# --- PATRONES DE FECHA CONOCIDOS (Agrega aquí los nuevos que descubras) ---
+PATRONES_FECHA = {
+    "DD/MM/AAAA": re.compile(r'\b(\d{1,2})[/-](\d{1,2})[/-](\d{4})\b'),
+    "DD/MM/AA":   re.compile(r'\b(\d{1,2})[/-](\d{1,2})[/-](\d{2})\b'),
+    "DD-MMM":     re.compile(r'\b(\d{1,2})[-/]([a-zA-Z]{3})\b', re.IGNORECASE), # 01-ENE, 01/ENE
+    "DD/MMM":     re.compile(r'\b(\d{1,2})[-/]([a-zA-Z]{3})\b', re.IGNORECASE), # BBVA
+    "DD MMM":     re.compile(rf'\b(\d{{1,2}})\s+{MESES_REGEX}\b', re.IGNORECASE),
+    "MMM-DD":     re.compile(r'\b([a-zA-Z]{3})[-/](\d{1,2})\b', re.IGNORECASE), # ENE-01
+    "DD_AISLADO": re.compile(r'^(\d{1,2})(\s+|$)') # Días sueltos al inicio de línea
+}
+
+def detectar_formato_fecha_predominante(texto_muestra: str) -> List[str]:
+    """
+    Analiza el texto y devuelve una lista de claves de formatos detectados
+    ordenados por frecuencia.
+    """
+    conteo = {k: 0 for k in PATRONES_FECHA.keys()}
+    
+    # Muestreo rápido
+    lineas = texto_muestra.split('\n')[:200] # Analizar primeras 200 líneas es suficiente
+    
+    for linea in lineas:
+        linea = linea.strip()
+        if not linea: continue
+        
+        for clave, regex in PATRONES_FECHA.items():
+            if regex.search(linea):
+                conteo[clave] += 1
+                
+    # Filtramos los que tengan 0 hits y ordenamos por popularidad
+    detectados = sorted(
+        [k for k, v in conteo.items() if v > 0],
+        key=lambda k: conteo[k],
+        reverse=True
+    )
+    
+    # "DD_AISLADO" es peligroso, solo lo devolvemos si es el ÚNICO o el MUY dominante
+    if "DD_AISLADO" in detectados:
+        # Si hay formatos fuertes (DD/MM/AAAA), preferimos esos aunque haya menos
+        formatos_fuertes = [f for f in detectados if f != "DD_AISLADO"]
+        if formatos_fuertes:
+            return formatos_fuertes + ["DD_AISLADO"]
+            
+    return detectados
 
 # --- 1. DATE SLICER ---
-def segmentar_por_fechas(texto_pagina: str, numero_pagina: int) -> List[Dict]:
+def segmentar_por_fechas(texto_pagina: str, numero_pagina: int, formatos_activos: List[str] = None) -> List[Dict]:
+    
+    # Auto-detección si no se provee (lazy init)
+    if formatos_activos is None:
+        formatos_activos = detectar_formato_fecha_predominante(texto_pagina)
+        # Si no detecta nada, fallback a todo
+        if not formatos_activos: 
+            formatos_activos = ["DD/MM/AAAA", "DD-MMM", "DD/MMM", "DD MMM", "DD_AISLADO"]
+    
+    # Inicializamos regex activos según formatos detectados
     lineas = texto_pagina.split('\n')
     bloques = []
     bloque_actual = None
     idx_interno = 0
-    
-    # Bandera de estado: ¿Hemos detectado que esta página es formato BBVA?
-    modo_bbva_detectado = False
 
     for linea in lineas:
         linea_limpia = linea.strip()
         if not linea_limpia: continue
 
-        # --- MATCHES ---
-        match_full = REGEX_FECHA_COMBINADA.match(linea_limpia)
-        match_dia = REGEX_DIA_INICIO.match(linea_limpia)
-        match_bbva = REGEX_FECHA_BBVA.match(linea_limpia)
+        match_encontrado = None
+        tipo_match = None
 
-        # --- ARBITRAJE: ¿Es fecha real o un falso positivo? ---
-        es_fecha_fuerte = False
-        if match_full:
-            if re.search(r'[/|-]|(\sde\s)', match_full.group(0)):
-                es_fecha_fuerte = True
-
-        # --- LÓGICA DE CORTE ---
-
-        # CASO A: FECHA BBVA (DD/MMM) <--- PRIORIDAD MÁXIMA
-        if match_bbva:
-            # ACTIVAMOS MODO BBVA: A partir de aquí, somos estrictos.
-            modo_bbva_detectado = True 
+        # --- MATCH DINÁMICO ---
+        # Probamos solo los regex que tienen sentido para este documento
+        for fmt_key in formatos_activos:
+            regex = PATRONES_FECHA[fmt_key]
+            match = regex.match(linea_limpia) # Usamos match para asegurar inicio de línea (o search si prefieres)
             
-            if bloque_actual: bloques.append(bloque_actual)
-            
-            fecha_raw = match_bbva.group(0) # "01/JUL"
-            
-            bloque_actual = {
-                "id_unico": f"P{numero_pagina}_IDX{idx_interno}",
-                "fecha_detectada": fecha_raw,
-                "texto_completo": linea_limpia,
-                "lineas": [linea_limpia],
-                "pagina": numero_pagina
-            }
-            idx_interno += 1
-
-        # CASO B: Fecha Completa y Fuerte (Ej: 12/12/2025)
-        elif match_full and es_fecha_fuerte:
-            if bloque_actual: bloques.append(bloque_actual)
-            
-            fecha_str = match_full.group(0)
-            bloque_actual = {
-                "id_unico": f"P{numero_pagina}_IDX{idx_interno}",
-                "fecha_detectada": fecha_str,
-                "texto_completo": linea_limpia,
-                "lineas": [linea_limpia],
-                "pagina": numero_pagina
-            }
-            idx_interno += 1
-
-        # CASO C: Día Aislado (Ej: "03 comvta...", "15 compra...")
-        elif match_dia:
-            # --- CORRECCIÓN CRÍTICA ---
-            # Si ya detectamos formato BBVA en esta página, NO aceptamos "días aislados" (números solos).
-            # En BBVA, una nueva transacción SIEMPRE empieza con DD/MMM.
-            # Si empieza con un número (ej: "1 DOM..."), es descripción de la anterior.
-            if modo_bbva_detectado:
-                # Es descripción (Falso positivo de fecha)
-                if bloque_actual:
-                    bloque_actual["texto_completo"] += " " + linea_limpia
-                    bloque_actual["lineas"].append(linea_limpia)
-                continue # Saltamos al siguiente ciclo
-
-            # Lógica estándar para otros bancos (Afirme, etc.)
-            posible_dia = int(match_dia.group(1))
-
-            # Filtro anti-ruido genérico
-            es_dia_valido = (1 <= posible_dia <= 31)
-            
-            # Filtro extra: Si es un solo dígito sin cero (ej: "1" en vez de "01"), desconfiamos
-            # a menos que estemos seguros de que no es BBVA.
-            txt_dia = match_dia.group(1)
-            if len(txt_dia) == 1 and len(linea_limpia) > 50:
-                # Ej: "1 DOM FAIRPLAY..." es muy largo para ser un header de fecha simple tipo "1 PAGO"
-                es_dia_valido = False
-
-            if es_dia_valido:
-                if bloque_actual: bloques.append(bloque_actual)
-
-                fecha_limpia = f"{posible_dia:02d}"
+            if match:
+                # Validación extra para BBVA/Texto (evitar "03 com" si no estamos seguros)
+                if fmt_key == "DD_AISLADO":
+                    # --- LÓGICA DEFENSIVA PARA DÍA AISLADO ("2") ---
+                    posible_dia = int(match.group(1))
+                    
+                    es_valido = (1 <= posible_dia <= 31)
+                    
+                    # FILTRO ANTI-RUIDO (Solo para días aislados)
+                    # Si es muy largo y solo empieza con un número, asumimos que es descripción
+                    if len(linea_limpia) < 15:
+                        es_valido = False
+                        
+                    if es_valido:
+                        match_encontrado = match
+                        tipo_match = fmt_key
+                        break # Encontrado día válido, salimos
+                else:
+                    # --- FECHAS FUERTES (DD MMM, DD/JUL) ---
+                    # Pasan directo, SIN filtro de longitud
+                    match_encontrado = match
+                    tipo_match = fmt_key
+                    break
                 
-                bloque_actual = {
-                    "id_unico": f"P{numero_pagina}_IDX{idx_interno}",
-                    "fecha_detectada": fecha_limpia, 
-                    "texto_completo": linea_limpia, 
-                    "lineas": [linea_limpia],
-                    "pagina": numero_pagina
-                }
-                idx_interno += 1
-            else:
-                # Falso positivo -> Se pega al anterior
-                if bloque_actual:
-                    bloque_actual["texto_completo"] += " " + linea_limpia
-                    bloque_actual["lineas"].append(linea_limpia)
+        if bloque_actual:
+            bloques.append(bloque_actual)
+
+        # --- LÓGICA DE CORTE (STATE MACHINE) ---
+        if match_encontrado:
+            # 1. Si ya teníamos un bloque abierto, lo cerramos y guardamos
+            if bloque_actual:
+                bloques.append(bloque_actual)
+
+            # 2. Preparamos los datos de la fecha
+            raw_fecha = match_encontrado.group(0)
+            fecha_final = raw_fecha 
+
+            if tipo_match == "DD_AISLADO":
+                dia_num = int(match_encontrado.group(1))
+                fecha_final = f"{dia_num:02d}"
+
+            elif tipo_match == "DD MMM": 
+                dia = int(match_encontrado.group(1))
+                mes_str = match_encontrado.group(2).lower()
+                mapa_mes = {"ene":1,"feb":2,"mar":3,"abr":4,"may":5,"jun":6,"jul":7,"ago":8,"sep":9,"oct":10,"nov":11,"dic":12}
+                mes_num = mapa_mes.get(mes_str[:3], 0)
+                fecha_final = f"{dia:02d}/{mes_num:02d}"
+
+            # 3. Iniciamos el NUEVO bloque
+            bloque_actual = {
+                "id_unico": f"P{numero_pagina}_IDX{idx_interno}",
+                "fecha_detectada": fecha_final,
+                "texto_completo": linea_limpia,
+                "lineas": [linea_limpia],
+                "pagina": numero_pagina,
+                "formato_detectado": tipo_match
+            }
+            idx_interno += 1
         
-        # CASO D: Texto normal (Descripción)
         else:
+            # --- CONTINUACIÓN ---
+            # Si no es fecha, pertenece a la transacción anterior
             if bloque_actual:
                 bloque_actual["texto_completo"] += " " + linea_limpia
                 bloque_actual["lineas"].append(linea_limpia)
 
+    # --- CIERRE FINAL (ESTO ARREGLA TU BUG ORIGINAL) ---
+    # Al salir del loop, si quedó un bloque abierto, lo guardamos.
     if bloque_actual:
         bloques.append(bloque_actual)
-        
+
     return bloques
 
 # --- 2. MAPA ESTELAR ---
