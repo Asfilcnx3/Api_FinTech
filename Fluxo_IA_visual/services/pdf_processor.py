@@ -1,6 +1,7 @@
 # Aqui irán todas las funciones de extracción de PDF (sin IA)
 from ..core.exceptions import PDFCifradoError
-from ..utils.helpers_texto_fluxo import TRIGGERS_CONFIG, KEYWORDS_COLUMNAS
+from ..utils.helpers_texto_fluxo import TRIGGERS_CONFIG
+from ..utils.logic_helpers import calcular_crop_dinamico
 
 from typing import Dict, List, Optional, Tuple
 from io import BytesIO
@@ -33,42 +34,45 @@ def convertir_pdf_a_imagenes(pdf_bytes: bytes, paginas: List[int] = [1]) -> List
 
     return buffers_imagenes
 
-def extraer_texto_con_crop(
-    pdf_path: str, 
-    paginas: List[int], 
-    margen_superior_pct: float = 0.12, 
-    margen_inferior_pct: float = 0.06
-) -> Dict[int, str]:
+def extraer_texto_con_crop(pdf_path: str, paginas: List[int] = None, margen_superior_pct: float = 0.10, margen_inferior_pct: float = 0.05) -> Dict[int, str]:
     """
-    Extrae texto aplicando un recorte geométrico Y ORDENAMIENTO VISUAL (Layout).
+    Extrae texto aplicando recorte dinámico (heatmap) para no perder datos en los bordes.
+    Ignora los parámetros pct si el modo dinámico funciona bien.
     """
-    texto_limpio = {}
+    texto_por_pagina = {}
     
     try:
-        with fitz.open(pdf_path) as doc:
-            for num_pagina in paginas:
-                idx = num_pagina - 1 
-                
-                if 0 <= idx < len(doc):
-                    page = doc[idx]
-                    rect_completo = page.rect
-                    
-                    y1 = rect_completo.height * margen_superior_pct
-                    y2 = rect_completo.height * (1 - margen_inferior_pct)
-                    
-                    rect_recorte = fitz.Rect(0, y1, rect_completo.width, y2)
-                    
-                    # Usamos sort=True para que Fitz reorganice el texto visualmente (lectura humana)
-                    # Esto es vital para que las columnas de montos no aparezcan antes que la descripción
-                    texto_crop = page.get_text("text", clip=rect_recorte, sort=True)
-                    
-                    texto_limpio[num_pagina] = texto_crop.lower()
-                    
-    except Exception as e:
-        logger.error(f"Error en crop geométrico para {pdf_path}: {e}")
-        return {} 
+        doc = fitz.open(pdf_path)
+        
+        # Si no se especifican páginas, procesar todas
+        if not paginas:
+            paginas = range(1, len(doc) + 1)
 
-    return texto_limpio
+        for num_pag in paginas:
+            idx = num_pag - 1
+            if idx >= len(doc): continue
+            
+            page = doc[idx]
+            
+            # --- CÁLCULO DINÁMICO (LA MAGIA) ---
+            rect_crop = calcular_crop_dinamico(page)
+            
+            # Para debug visual (imprimir coordenadas)
+            # print(f"Pag {num_pag}: Crop Dinámico -> Y_Top: {rect_crop.y0:.2f}, Y_Bot: {rect_crop.y1:.2f} (Alto total: {page.rect.height})")
+            
+            # Extraemos texto SOLO dentro de ese rectángulo
+            # 'sort=True' es vital para mantener el orden de lectura visual
+            texto_pagina = page.get_text("text", clip=rect_crop, sort=True)
+            
+            texto_por_pagina[num_pag] = texto_pagina
+
+        doc.close()
+        
+    except Exception as e:
+        logger.error(f"Error procesando PDF {pdf_path}: {e}")
+        return {}
+
+    return texto_por_pagina
 
 def leer_qr_de_imagenes(imagen_buffers: List[BytesIO]) -> Optional[str]:
     """
@@ -213,69 +217,3 @@ def detectar_rangos_y_texto(pdf_bytes: bytes) -> Tuple[Dict[int, str], List[Tupl
         rangos_detectados = [(1, len(texto_por_pagina))]
 
     return texto_por_pagina, rangos_detectados
-
-def detectar_zonas_columnas(page: fitz.Page) -> Dict[str, Tuple[float, float]]:
-    """
-    Escanea la página (priorizando el tercio superior) buscando encabezados 
-    de columnas para definir las zonas X de 'cargo' y 'abono'.
-    """
-    # Asegúrate de importar esto arriba o dentro de la función para evitar ciclos
-    from ..utils.helpers_texto_fluxo import KEYWORDS_COLUMNAS 
-    
-    # Inicializamos con fecha_columna (del código viejo) para mantener compatibilidad
-    ancho_pag = page.rect.width
-    zonas = {
-        "cargo": None, 
-        "abono": None, 
-        "fecha_columna": (0, ancho_pag * 0.22) # Default seguro
-    }
-    
-    # Limitamos la búsqueda al tercio superior para evitar falsos positivos en descripciones
-    # (Del código nuevo: esto es vital)
-    rect_header = fitz.Rect(0, 0, ancho_pag, page.rect.height * 0.35)
-    words = page.get_text("words", clip=rect_header)
-    
-    # Lista para guardar candidatos encontrados: {x_centro, tipo}
-    candidatos = []
-
-    for w in words:
-        # Limpieza robusta
-        texto = w[4].lower().replace(":", "").replace(".", "").strip()
-        x0, x1 = w[0], w[2]
-        
-        # Check Cargo
-        if texto in KEYWORDS_COLUMNAS["cargo"]:
-            candidatos.append({"tipo": "cargo", "x0": x0, "x1": x1, "y": w[1]})
-            
-        # Check Abono
-        elif texto in KEYWORDS_COLUMNAS["abono"]:
-            candidatos.append({"tipo": "abono", "x0": x0, "x1": x1, "y": w[1]})
-
-    # Procesar candidatos: 
-    # Margen de tolerancia horizontal (expandimos la columna detectada a los lados)
-    margen_expansion = 25 # Un poco más generoso para atrapar números largos
-
-    for c in candidatos:
-        # Definimos la zona con holgura a los lados
-        zona_tupla = (c["x0"] - margen_expansion, c["x1"] + margen_expansion)
-        
-        # Si ya tenemos una zona detectada, priorizamos la que esté más "arriba" (menor Y)
-        # o simplemente nos quedamos con la primera encontrada confiable.
-        if zonas[c["tipo"]] is None:
-            zonas[c["tipo"]] = zona_tupla
-
-    # --- FALLBACK DE EMERGENCIA (La magia de la v2) ---
-    # Si detectamos una columna pero no la otra, inferimos la faltante por posición.
-    centro_pag = ancho_pag / 2
-    
-    if zonas["cargo"] and not zonas["abono"]:
-        # Si cargo está a la izquierda (lo normal), abono debe estar a la derecha
-        if zonas["cargo"][1] < centro_pag: 
-            zonas["abono"] = (centro_pag, ancho_pag) # Asumimos toda la mitad derecha
-            
-    elif zonas["abono"] and not zonas["cargo"]:
-        # Si abono está a la derecha, cargo debe estar a la izquierda
-        if zonas["abono"][0] > centro_pag: 
-            zonas["cargo"] = (0, centro_pag) # Asumimos toda la mitad izquierda
-
-    return zonas

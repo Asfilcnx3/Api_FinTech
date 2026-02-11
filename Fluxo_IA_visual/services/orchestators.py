@@ -22,6 +22,7 @@ from .pdf_processor import (
 )
 
 from ..utils.logic_helpers import (
+    detectar_formato_fecha_predominante,
     segmentar_por_fechas, 
     generar_mapa_montos_geometrico, 
     reconciliar_geometria_con_bloques
@@ -424,7 +425,12 @@ def procesar_digital_worker_sync(
         # Esto nos da coordenadas de todos los números y fechas, y detecta columnas
         mapa_geometrico = generar_mapa_montos_geometrico(file_path, lista_paginas)
 
-        # 3. EXTRAER TEXTO CON CROP (Para tener lectura limpia)
+        # 3. Detectamos formato con la página 1 (o la primera del rango)
+        texto_muestra = texto_a_usar.get(lista_paginas[0], "")
+        formatos_detectados = detectar_formato_fecha_predominante(texto_muestra)
+        logger.info(f"Formatos de fecha detectados: {formatos_detectados}")
+        
+        # 4. EXTRAER TEXTO CON CROP (Para tener lectura limpia)
         texto_limpio_crop = extraer_texto_con_crop(
             file_path, 
             paginas=lista_paginas,
@@ -433,15 +439,15 @@ def procesar_digital_worker_sync(
         )
         texto_a_usar = texto_limpio_crop if texto_limpio_crop else texto_por_pagina_sucio
 
-        # 4. CICLO DE EXTRACCIÓN DETERMINISTA
+        # 5. CICLO DE EXTRACCIÓN DETERMINISTA
         transacciones_extraidas = []
 
         for num_pag in lista_paginas:
             texto_pag = texto_a_usar.get(num_pag, "")
             if not texto_pag: continue
-            
+
             # A. Date Slicer
-            bloques = segmentar_por_fechas(texto_pag, num_pag)
+            bloques = segmentar_por_fechas(texto_pag, num_pag, formatos_detectados)
             
             # B. Reconciliación Híbrida (Geometría + Texto)
             txs_pag = reconciliar_geometria_con_bloques(bloques, mapa_geometrico)
