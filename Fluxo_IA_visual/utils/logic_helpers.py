@@ -7,6 +7,19 @@ from ..services.pdf_processor import detectar_zonas_columnas
 
 logger = logging.getLogger(__name__)
 
+# Regex para detectar líneas que empiezan con un número (posible día) seguido de texto
+REGEX_DIA_INICIO = re.compile(r'^(\d{1,2})(\s+|$)(.*)')
+
+# Regex para fechas tipo "01/JUL", "15/ENE" (Case insensitive)
+# Captura: Grupo 1 (Día), Grupo 2 (Mes)
+REGEX_FECHA_BBVA = re.compile(r'\b(\d{1,2})\/([a-zA-Z]{3})\b', re.IGNORECASE)
+
+# Mapa de meses para conversión rápida (BBVA usa español)
+MESES_ESP = {
+    "ene": 1, "feb": 2, "mar": 3, "abr": 4, "may": 5, "jun": 6,
+    "jul": 7, "ago": 8, "sep": 9, "oct": 10, "nov": 11, "dic": 12
+}
+
 # --- 1. DATE SLICER ---
 def segmentar_por_fechas(texto_pagina: str, numero_pagina: int) -> List[Dict]:
     lineas = texto_pagina.split('\n')
@@ -14,18 +27,49 @@ def segmentar_por_fechas(texto_pagina: str, numero_pagina: int) -> List[Dict]:
     bloque_actual = None
     idx_interno = 0
     
+    # Bandera de estado: ¿Hemos detectado que esta página es formato BBVA?
+    modo_bbva_detectado = False
+
     for linea in lineas:
         linea_limpia = linea.strip()
         if not linea_limpia: continue
 
-        match = REGEX_FECHA_COMBINADA.match(linea_limpia)
-        
-        if match:
-            # Guardamos el anterior si existe
-            if bloque_actual:
-                bloques.append(bloque_actual)
+        # --- MATCHES ---
+        match_full = REGEX_FECHA_COMBINADA.match(linea_limpia)
+        match_dia = REGEX_DIA_INICIO.match(linea_limpia)
+        match_bbva = REGEX_FECHA_BBVA.match(linea_limpia)
+
+        # --- ARBITRAJE: ¿Es fecha real o un falso positivo? ---
+        es_fecha_fuerte = False
+        if match_full:
+            if re.search(r'[/|-]|(\sde\s)', match_full.group(0)):
+                es_fecha_fuerte = True
+
+        # --- LÓGICA DE CORTE ---
+
+        # CASO A: FECHA BBVA (DD/MMM) <--- PRIORIDAD MÁXIMA
+        if match_bbva:
+            # ACTIVAMOS MODO BBVA: A partir de aquí, somos estrictos.
+            modo_bbva_detectado = True 
             
-            fecha_str = match.group(0)
+            if bloque_actual: bloques.append(bloque_actual)
+            
+            fecha_raw = match_bbva.group(0) # "01/JUL"
+            
+            bloque_actual = {
+                "id_unico": f"P{numero_pagina}_IDX{idx_interno}",
+                "fecha_detectada": fecha_raw,
+                "texto_completo": linea_limpia,
+                "lineas": [linea_limpia],
+                "pagina": numero_pagina
+            }
+            idx_interno += 1
+
+        # CASO B: Fecha Completa y Fuerte (Ej: 12/12/2025)
+        elif match_full and es_fecha_fuerte:
+            if bloque_actual: bloques.append(bloque_actual)
+            
+            fecha_str = match_full.group(0)
             bloque_actual = {
                 "id_unico": f"P{numero_pagina}_IDX{idx_interno}",
                 "fecha_detectada": fecha_str,
@@ -34,6 +78,53 @@ def segmentar_por_fechas(texto_pagina: str, numero_pagina: int) -> List[Dict]:
                 "pagina": numero_pagina
             }
             idx_interno += 1
+
+        # CASO C: Día Aislado (Ej: "03 comvta...", "15 compra...")
+        elif match_dia:
+            # --- CORRECCIÓN CRÍTICA ---
+            # Si ya detectamos formato BBVA en esta página, NO aceptamos "días aislados" (números solos).
+            # En BBVA, una nueva transacción SIEMPRE empieza con DD/MMM.
+            # Si empieza con un número (ej: "1 DOM..."), es descripción de la anterior.
+            if modo_bbva_detectado:
+                # Es descripción (Falso positivo de fecha)
+                if bloque_actual:
+                    bloque_actual["texto_completo"] += " " + linea_limpia
+                    bloque_actual["lineas"].append(linea_limpia)
+                continue # Saltamos al siguiente ciclo
+
+            # Lógica estándar para otros bancos (Afirme, etc.)
+            posible_dia = int(match_dia.group(1))
+
+            # Filtro anti-ruido genérico
+            es_dia_valido = (1 <= posible_dia <= 31)
+            
+            # Filtro extra: Si es un solo dígito sin cero (ej: "1" en vez de "01"), desconfiamos
+            # a menos que estemos seguros de que no es BBVA.
+            txt_dia = match_dia.group(1)
+            if len(txt_dia) == 1 and len(linea_limpia) > 50:
+                # Ej: "1 DOM FAIRPLAY..." es muy largo para ser un header de fecha simple tipo "1 PAGO"
+                es_dia_valido = False
+
+            if es_dia_valido:
+                if bloque_actual: bloques.append(bloque_actual)
+
+                fecha_limpia = f"{posible_dia:02d}"
+                
+                bloque_actual = {
+                    "id_unico": f"P{numero_pagina}_IDX{idx_interno}",
+                    "fecha_detectada": fecha_limpia, 
+                    "texto_completo": linea_limpia, 
+                    "lineas": [linea_limpia],
+                    "pagina": numero_pagina
+                }
+                idx_interno += 1
+            else:
+                # Falso positivo -> Se pega al anterior
+                if bloque_actual:
+                    bloque_actual["texto_completo"] += " " + linea_limpia
+                    bloque_actual["lineas"].append(linea_limpia)
+        
+        # CASO D: Texto normal (Descripción)
         else:
             if bloque_actual:
                 bloque_actual["texto_completo"] += " " + linea_limpia
@@ -54,49 +145,78 @@ def generar_mapa_montos_geometrico(pdf_path: str, paginas: List[int]) -> Dict[in
                 if idx >= len(doc): continue
                 
                 page = doc[idx]
-                width = page.rect.width 
+                width = page.rect.width
                 
-                # 1. Detectar columnas
+                # 1. Detectar columnas (Headers)
                 zonas = detectar_zonas_columnas(page)
                 
-                # DEFINICIÓN DE LÍMITES "HARDCODED" (Reglas de Oro)
-                limite_fecha_x = width * 0.20       # 20% Izquierdo (Fechas)
-                limite_saldo_x_inicio = width * 0.85 # 15% Derecho (Saldos - Zona Prohibida)
+                # DEFINICIÓN DE LÍMITES "BASE"
+                limite_fecha_x = width * 0.22      
+                limite_saldo_x_base = width * 0.78 # Default (15% Derecho aprox)
                 
+                # --- CORRECCIÓN DINÁMICA DE SALDO ---
+                # Si las zonas detectadas (Cargo/Abono) invaden la zona de saldo,
+                # empujamos el límite de saldo a la derecha para no "comer" montos válidos.
+                max_x_columnas = 0
+                if zonas.get("cargo"):
+                    max_x_columnas = max(max_x_columnas, zonas["cargo"][1])
+                if zonas.get("abono"):
+                    max_x_columnas = max(max_x_columnas, zonas["abono"][1])
+                
+                # Si la columna termina en 514 y el saldo empezaba en 477, 
+                # movemos el saldo a 514 + un buffer pequeño (ej. 10px).
+                if max_x_columnas > limite_saldo_x_base:
+                    limite_saldo_real = max_x_columnas + 5
+                else:
+                    limite_saldo_real = limite_saldo_x_base
+
                 zonas["fecha_limite_x"] = limite_fecha_x
-                zonas["saldo_limite_x"] = limite_saldo_x_inicio # Para debug
+                zonas["saldo_limite_x"] = limite_saldo_real # Guardamos el real para debug
 
                 words = page.get_text("words")
                 numeros_encontrados = []
                 filas_fechas = []
                 
                 for w in words:
-                    texto = w[4].strip().replace("$", "").replace(",", "")
+                    texto_raw = w[4].strip()
+                    texto_clean = texto_raw.replace("$", "").replace(",", "")
                     x_centro = (w[0] + w[2]) / 2
                     y_centro = (w[1] + w[3]) / 2
                     
-                    # A. Fechas (Solo izquierda)
-                    if REGEX_FECHA_COMBINADA.match(w[4]):
-                        if x_centro <= limite_fecha_x:
-                            filas_fechas.append({
-                                "fecha_texto": w[4],
-                                "y": y_centro,
-                                "x": x_centro,
-                                "y_min": w[1] - 2,
-                                "y_max": w[3] + 2
-                            })
+                    # --- A. Fechas (Solo izquierda) ---
+                    es_fecha_regex = bool(REGEX_FECHA_COMBINADA.match(texto_raw))
+                    es_fecha_bbva = bool(REGEX_FECHA_BBVA.match(texto_raw)) # BBVA
                     
-                    # B. Números
-                    if "." in texto and len(texto) > 3 and texto.replace(".", "").isdigit():
+                    # Detectar si es un día aislado (número 1-31)
+                    es_dia_aislado = False
+                    if texto_clean.isdigit() and len(texto_clean) <= 2:
+                        val = int(texto_clean)
+                        if 1 <= val <= 31:
+                            es_dia_aislado = True
+
+                    # SI ES FECHA O DÍA AISLADO EN ZONA IZQUIERDA
+                    if (es_fecha_regex or es_fecha_bbva or es_dia_aislado) and x_centro <= limite_fecha_x:
+                        filas_fechas.append({
+                            "fecha_texto": texto_raw,
+                            "y": y_centro,
+                            "x": x_centro,
+                            "y_min": w[1] - 2,
+                            "y_max": w[3] + 2,
+                            "es_dia_aislado": es_dia_aislado # Metadata útil
+                        })
+                    
+                    # --- B. Números (Montos) ---
+                    # (Esta lógica se mantiene igual, busca floats)
+                    if "." in texto_clean and len(texto_clean) > 3 and texto_clean.replace(".", "").isdigit():
                         try:
-                            valor = float(texto)
+                            valor = float(texto_clean)
                             tipo = "indefinido"
                             
-                            # 1. ¿Es SALDO? (Prioridad Máxima: Zona Prohibida)
-                            if x_centro >= limite_saldo_x_inicio:
+                            # 1. ¿Es SALDO?
+                            if x_centro >= limite_saldo_real:
                                 tipo = "saldo"
                             
-                            # 2. Si no es saldo, checamos columnas detectadas
+                            # 2. Columnas detectadas
                             elif zonas["cargo"] and zonas["cargo"][0] <= x_centro <= zonas["cargo"][1]:
                                 tipo = "cargo"
                             elif zonas["abono"] and zonas["abono"][0] <= x_centro <= zonas["abono"][1]:
@@ -107,7 +227,7 @@ def generar_mapa_montos_geometrico(pdf_path: str, paginas: List[int]) -> Dict[in
                                 "valor": valor,
                                 "x": x_centro,
                                 "y": y_centro,
-                                "tipo": tipo, # Ahora puede ser 'saldo'
+                                "tipo": tipo,
                                 "usado": False
                             })
                         except ValueError:
@@ -141,31 +261,67 @@ def reconciliar_geometria_con_bloques(bloques_texto: List[Dict], mapa_geometrico
         filas_geo = sorted(data_pag["filas_fechas"], key=lambda k: k['y'])
         numeros_geo = sorted(data_pag["numeros"], key=lambda k: k['y'])
         
-        fecha_bloque_str = bloque["fecha_detectada"].lower().strip()
+        # --- LIMPIEZA DE FECHA ---
+        fecha_bloque_raw = bloque["fecha_detectada"].lower().strip()
         
-        # --- PASO 1: ENCONTRAR ANCLA Y ---
+        # 1. Si es BBVA (tiene letras)
+        match_bbva = REGEX_FECHA_BBVA.match(fecha_bloque_raw)
+        
+        # 2.Si es Afirme Extraemos solo el número si viene sucio (por seguridad)
+        match_dia = REGEX_DIA_INICIO.match(fecha_bloque_raw)
+        
+        if match_bbva:
+            # Normalizamos para comparar: "01/jul"
+            token_fecha_bloque = match_bbva.group(0).lower()
+
+        elif match_dia:
+            # Si el bloque dice "03 com", extraemos "03"
+            # Si dice "3", extraemos "3" y le ponemos pad
+            raw_num = int(match_dia.group(1))
+            token_fecha_bloque = f"{raw_num:02d}"
+        else:
+            token_fecha_bloque = fecha_bloque_raw
+        
+        # --- PASO 1: ENCONTRAR ANCLA Y (GEOMETRÍA) ---
         y_bloque = None
         for fila in filas_geo:
             if fila.get("usada", False): continue
+            
             fecha_geo = fila["fecha_texto"].lower().strip()
-            if fecha_geo in fecha_bloque_str or fecha_bloque_str in fecha_geo:
+            
+            # COMPARACIÓN RELAJADA:
+            # 1. Coincidencia exacta ("03" == "03")
+            # 2. Contención ("03/12" contiene "03")
+            
+            match_found = False
+            if token_fecha_bloque == fecha_geo: # "03" == "03"
+                match_found = True
+            elif token_fecha_bloque in fecha_geo or fecha_geo in token_fecha_bloque:
+                # Solo si longitudes son suficientes para evitar falsos positivos
+                if len(token_fecha_bloque) > 2 or len(fecha_geo) > 2:
+                    match_found = True
+                # Si son cortos ("2" vs "12"), cuidado. Exigimos igualdad si son cortos.
+                elif token_fecha_bloque == fecha_geo: 
+                    match_found = True
+
+            if match_found:
                 y_bloque = fila["y"]
                 fila["usada"] = True 
-                break 
+                break
         
-        # --- PASO 2: LOGICA DE FUSION PREVIA ---
+        # --- PASO 2: LOGICA DE FUSION (Si no hay ancla, buscar montos en texto) ---
         if y_bloque is None:
             montos_en_texto = regex_monto_texto.findall(bloque["texto_completo"])
-            # Si no hay ancla geométrica Y no hay montos escritos, es basura/descripción
             if not montos_en_texto and transacciones_finales:
+                # Fusión de descripción
                 transacciones_finales[-1]["descripcion"] += " " + bloque["texto_completo"]
                 continue
             elif not montos_en_texto:
                 continue
             else:
-                y_bloque = -1 
+                y_bloque = -1 # Estrategia Texto Puro
 
-        # --- PASO 3: CAZAR EL NÚMERO ---
+        # --- PASO 3: CAZAR EL NÚMERO (Estrategia Espacial vs Texto) ---
         monto_final = 0.0
         tipo_final = "indefinido"
         match_status = "MISS_MONTO"
@@ -195,11 +351,9 @@ def reconciliar_geometria_con_bloques(bloques_texto: List[Dict], mapa_geometrico
                 and n["tipo"] != "saldo" # Ignoramos saldo
             ]
 
-        # Estrategia B: Valor Exacto (Textual) - CORREGIDA
+        # Estrategia B: Valor Exacto (Textual)
         valores_texto = []
-        # Usamos un regex un poco más permisivo para capturar, luego limpiamos
         strs_montos = regex_monto_texto.findall(bloque["texto_completo"])
-        
         for s in strs_montos:
             try:
                 # Limpieza de comas y espacios antes de convertir
@@ -229,14 +383,35 @@ def reconciliar_geometria_con_bloques(bloques_texto: List[Dict], mapa_geometrico
         if candidato_valor_exacto:
             mejor_candidato = candidato_valor_exacto
             match_status = "OK_TEXT_MATCH"
+
         elif candidatos_espaciales:
-            clasificados = [c for c in candidatos_espaciales if c["tipo"] != "indefinido"]
-            if clasificados:
-                mejor_candidato = clasificados[0] 
-                match_status = "OK_SPATIAL_CLASS"
+            # 1. Filtramos candidatos que explícitamente sean saldo (por si se coló alguno)
+            candidatos_validos = [c for c in candidatos_espaciales if c["tipo"] != "saldo"]
+            
+            if not candidatos_validos:
+                # Si todos eran saldo, no hay nada que hacer
+                mejor_candidato = None
             else:
-                mejor_candidato = max(candidatos_espaciales, key=lambda x: x["valor"])
-                match_status = "WARN_SPATIAL_INDEF"
+                # 2. Intentamos buscar por clasificación explícita (Cargo/Abono detectado por headers)
+                clasificados = [c for c in candidatos_validos if c["tipo"] != "indefinido"]
+                
+                if clasificados:
+                    # Si hay clasificados, tomamos el primero (prioridad a columnas detectadas)
+                    # Ordenamos por X para asegurar izquierda-derecha
+                    clasificados.sort(key=lambda x: x["x"])
+                    mejor_candidato = clasificados[0]
+                    match_status = "OK_SPATIAL_CLASS"
+                
+                else:
+                    # 3. CASO CRÍTICO (BBVA): Todos son "indefinidos".
+                    # AQUÍ ESTABA EL ERROR: Antes usabas max(valor).
+                    # AHORA: Usamos el que esté más a la IZQUIERDA (menor X).
+                    # Porque el orden es: [Cargo/Abono] -> [Saldo]
+                    
+                    candidatos_validos.sort(key=lambda k: k["x"]) # Ordenar por posición X
+                    mejor_candidato = candidatos_validos[0]       # Tomar el primero (izquierda)
+                    
+                    match_status = "OK_LEFTMOST_GUESS" # "WARN_SPATIAL_INDEF"
 
         # ASIGNACIÓN
         if mejor_candidato:
@@ -272,7 +447,7 @@ def reconciliar_geometria_con_bloques(bloques_texto: List[Dict], mapa_geometrico
                 continue
 
         tx = {
-            "fecha": bloque["fecha_detectada"],
+            "fecha": token_fecha_bloque,
             "descripcion": bloque["texto_completo"],
             "monto": monto_final,
             "tipo": tipo_final,

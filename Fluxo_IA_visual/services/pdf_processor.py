@@ -70,37 +70,6 @@ def extraer_texto_con_crop(
 
     return texto_limpio
 
-def detectar_zonas_columnas(page: fitz.Page) -> Dict[str, Tuple[float, float]]:
-    """
-    Escanea la página buscando los encabezados de las columnas de montos.
-    Retorna los rangos X (min, max) para 'cargo' y 'abono'.
-    """
-    zonas = {"cargo": None, "abono": None, "fecha_columna": None}
-    words = page.get_text("words") # (x0, y0, x1, y1, "texto", block_no, line_no, word_no)
-    
-    # Buscamos las palabras clave
-    for w in words:
-        texto = w[4].lower().replace(":", "").replace(".", "").strip()
-        x0, x1 = w[0], w[2]
-        
-        # Margen de tolerancia para la columna (expandimos un poco el ancho detectado)
-        margen = 30 
-        
-        if texto in KEYWORDS_COLUMNAS["cargo"]:
-            # Si encontramos "Cargos", definimos esa zona vertical
-            zonas["cargo"] = (x0 - margen, x1 + margen)
-        
-        elif texto in KEYWORDS_COLUMNAS["abono"]:
-            # Si encontramos "Abonos", definimos esa zona vertical
-            zonas["abono"] = (x0 - margen, x1 + margen)
-
-        # Detectamos la zona de fechas (asumiendo que está a la izquierda y es la primera columna)
-        # Esto nos ayudará a filtrar solo los montos que estén alineados con las fechas
-        ancho_pag = page.rect.width
-        zonas["fecha_columna"] = (0, ancho_pag * 0.22)
-        
-    return zonas
-
 def leer_qr_de_imagenes(imagen_buffers: List[BytesIO]) -> Optional[str]:
     """
     Lee una lista de imágenes en memoria y devuelve el contenido del primer QR que encuentre.
@@ -250,22 +219,29 @@ def detectar_zonas_columnas(page: fitz.Page) -> Dict[str, Tuple[float, float]]:
     Escanea la página (priorizando el tercio superior) buscando encabezados 
     de columnas para definir las zonas X de 'cargo' y 'abono'.
     """
-    # Importamos aquí para evitar ciclos, o asegúrate que KEYWORDS_COLUMNAS esté disponible
+    # Asegúrate de importar esto arriba o dentro de la función para evitar ciclos
     from ..utils.helpers_texto_fluxo import KEYWORDS_COLUMNAS 
     
-    zonas = {"cargo": None, "abono": None}
+    # Inicializamos con fecha_columna (del código viejo) para mantener compatibilidad
+    ancho_pag = page.rect.width
+    zonas = {
+        "cargo": None, 
+        "abono": None, 
+        "fecha_columna": (0, ancho_pag * 0.22) # Default seguro
+    }
     
     # Limitamos la búsqueda al tercio superior para evitar falsos positivos en descripciones
-    rect_header = fitz.Rect(0, 0, page.rect.width, page.rect.height * 0.35)
+    # (Del código nuevo: esto es vital)
+    rect_header = fitz.Rect(0, 0, ancho_pag, page.rect.height * 0.35)
     words = page.get_text("words", clip=rect_header)
     
-    # Diccionarios para guardar candidatos: {x_centro: 'cargo/abono'}
+    # Lista para guardar candidatos encontrados: {x_centro, tipo}
     candidatos = []
 
     for w in words:
+        # Limpieza robusta
         texto = w[4].lower().replace(":", "").replace(".", "").strip()
         x0, x1 = w[0], w[2]
-        x_centro = (x0 + x1) / 2
         
         # Check Cargo
         if texto in KEYWORDS_COLUMNAS["cargo"]:
@@ -275,33 +251,31 @@ def detectar_zonas_columnas(page: fitz.Page) -> Dict[str, Tuple[float, float]]:
         elif texto in KEYWORDS_COLUMNAS["abono"]:
             candidatos.append({"tipo": "abono", "x0": x0, "x1": x1, "y": w[1]})
 
-    # Procesar candidatos: Si hay varios, tomamos los que estén más alineados o sean más explícitos
-    # Margen de tolerancia horizontal (expandimos la columna hacia abajo)
-    margen_expansion = 15
+    # Procesar candidatos: 
+    # Margen de tolerancia horizontal (expandimos la columna detectada a los lados)
+    margen_expansion = 25 # Un poco más generoso para atrapar números largos
 
     for c in candidatos:
         # Definimos la zona con holgura a los lados
         zona_tupla = (c["x0"] - margen_expansion, c["x1"] + margen_expansion)
         
-        # Si ya tenemos una zona, a veces los bancos ponen titulos dobles ej: "Retiros / Cargos"
-        # Nos quedamos con la más ancha o la primera encontrada
+        # Si ya tenemos una zona detectada, priorizamos la que esté más "arriba" (menor Y)
+        # o simplemente nos quedamos con la primera encontrada confiable.
         if zonas[c["tipo"]] is None:
             zonas[c["tipo"]] = zona_tupla
 
-    # FALLBACK DE EMERGENCIA:
-    # Si detectamos una pero no la otra, y están muy separadas, inferimos la faltante.
-    # Ej: Encontró "Retiros" a la izquierda, pero no "Depósitos". Asumimos derecha.
-    ancho_pag = page.rect.width
+    # --- FALLBACK DE EMERGENCIA (La magia de la v2) ---
+    # Si detectamos una columna pero no la otra, inferimos la faltante por posición.
     centro_pag = ancho_pag / 2
     
     if zonas["cargo"] and not zonas["abono"]:
-        # Si cargo está a la izquierda, abono a la derecha
+        # Si cargo está a la izquierda (lo normal), abono debe estar a la derecha
         if zonas["cargo"][1] < centro_pag: 
-            zonas["abono"] = (centro_pag, ancho_pag)
+            zonas["abono"] = (centro_pag, ancho_pag) # Asumimos toda la mitad derecha
             
     elif zonas["abono"] and not zonas["cargo"]:
-        # Si abono está a la derecha, cargo a la izquierda
+        # Si abono está a la derecha, cargo debe estar a la izquierda
         if zonas["abono"][0] > centro_pag: 
-            zonas["cargo"] = (0, centro_pag)
+            zonas["cargo"] = (0, centro_pag) # Asumimos toda la mitad izquierda
 
     return zonas
