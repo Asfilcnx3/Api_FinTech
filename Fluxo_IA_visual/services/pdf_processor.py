@@ -1,4 +1,5 @@
 # Aqui irán todas las funciones de extracción de PDF (sin IA)
+import unicodedata
 from ..core.exceptions import PDFCifradoError
 from ..utils.helpers_texto_fluxo import TRIGGERS_CONFIG
 from ..utils.logic_helpers import calcular_crop_dinamico
@@ -54,17 +55,29 @@ def extraer_texto_con_crop(pdf_path: str, paginas: List[int] = None, margen_supe
             
             page = doc[idx]
             
-            # --- CÁLCULO DINÁMICO (LA MAGIA) ---
+            # --- CÁLCULO DINÁMICO ---
             rect_crop = calcular_crop_dinamico(page)
             
-            # Para debug visual (imprimir coordenadas)
-            # print(f"Pag {num_pag}: Crop Dinámico -> Y_Top: {rect_crop.y0:.2f}, Y_Bot: {rect_crop.y1:.2f} (Alto total: {page.rect.height})")
+            # Extraemos texto crudo
+            texto_raw = page.get_text("text", clip=rect_crop, sort=True)
             
-            # Extraemos texto SOLO dentro de ese rectángulo
-            # 'sort=True' es vital para mantener el orden de lectura visual
-            texto_pagina = page.get_text("text", clip=rect_crop, sort=True)
-            
-            texto_por_pagina[num_pag] = texto_pagina
+            # --- NORMALIZACIÓN (El parche que falta) ---
+            if texto_raw:
+                # 1. Normalizar Unicode a forma compuesta (NFC)
+                # Esto asegura que 'ó' sea siempre un caracter y no dos.
+                texto_limpio = unicodedata.normalize('NFC', texto_raw)
+                
+                # 2. Reemplazar Non-breaking space (\xa0) por espacio normal
+                # CRÍTICO para Banregio y Santander
+                texto_limpio = texto_limpio.replace('\xa0', ' ')
+                
+                # 3. (Opcional) Eliminar espacios repetidos si quieres ser muy agresivo,
+                # pero a veces "   " sirve para separar columnas visualmente, 
+                # así que mejor lo dejamos, tus regex ya manejan \s+
+            else:
+                texto_limpio = ""
+
+            texto_por_pagina[num_pag] = texto_limpio
 
         doc.close()
         
