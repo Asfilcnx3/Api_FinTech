@@ -1,6 +1,6 @@
 from .responses_general import ErrorRespuestaBase
 from pydantic import BaseModel, Field
-from typing import List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 # ----- Clases para respuestas de Análisis TPV (Fluxo) -----
 class AnalisisTPV:
@@ -24,6 +24,8 @@ class AnalisisTPV:
 
     class ResultadoAnalisisIA(BaseModel):
         """Clase de respuesta para un analisis de carátula exitóso."""
+        nombre_archivo_virtual: Optional[str] = None
+
         banco: str
         tipo_moneda: Optional[str] = None
         rfc: Optional[str] = None
@@ -47,6 +49,10 @@ class AnalisisTPV:
         """Representa la respuesta para los documentos individuales -> Caratula + Resultados TPV."""
         AnalisisIA: Optional["AnalisisTPV.ResultadoAnalisisIA"] = None
         DetalleTransacciones: Optional[Union["AnalisisTPV.ResultadoTPV", "AnalisisTPV.ErrorRespuesta"]] = None
+
+        # --- MÉTRICAS ---
+        # Usamos List[Dict[str, Any]] para máxima flexibilidad
+        metadata_tecnica: List[Dict[str, Any]] = Field(default_factory=list)
         
         # --- CAMPOS INTERNOS (Contexto para Geometría) ---
         # exclude=True hace que estos campos existan en Python pero NO en el JSON final

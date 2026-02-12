@@ -11,9 +11,11 @@ from ...services.file_manager import FileManagerService
 from ...services.processing_service import ProcessingService
 from ...services.storage_service import obtener_ruta_archivo, obtener_datos_json
 from ...models.responses_general import RespuestaProcesamientoIniciado
+from ...services.passport_service import PassportService
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+passport_service = PassportService()
 
 # Inyección de dependencias (Manual por ahora)
 file_manager = FileManagerService()
@@ -61,20 +63,48 @@ async def procesar_pdf_api(
         estatus="procesando"
     )
 
-# El endpoint de descarga se mantiene igual, ya que solo lee del storage service
+@router.get("/fluxo/status/{job_id}")
+async def consultar_estatus(job_id: str):
+    """
+    Endpoint dedicado para polling. Retorna el Pasaporte completo.
+    """
+    datos = passport_service.leer_pasaporte(job_id)
+    if not datos:
+        raise HTTPException(status_code=404, detail="Job no encontrado")
+    return datos
+
 @router.get("/fluxo/descargar-resultado/{job_id}")
 async def descargar_resultado(job_id: str, formato: str = Query("excel", enum=["excel", "json"])):
-    # ... (Tu código existente para descarga está perfecto) ...
-    if formato == "json":
-        datos = obtener_datos_json(job_id)
-        if datos: return datos
-        raise HTTPException(status_code=404, detail="No encontrado o procesando.")
-    else:
-        ruta = obtener_ruta_archivo(job_id)
-        if ruta:
-            return FileResponse(
-                path=ruta, 
-                filename=f"Reporte_{job_id}.xlsx",
-                media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-            )
-        raise HTTPException(status_code=404, detail="Archivo no listo.")
+    """
+    Intenta descargar. Si no está listo, retorna un 202 (Accepted) con el Pasaporte 
+    para que el frontend sepa qué mostrar.
+    """
+    # 1. Intentar buscar el archivo final
+    ruta = obtener_ruta_archivo(job_id) if formato == "excel" else obtener_datos_json(job_id)
+    
+    if ruta:
+        # SI EXISTE, lo entregamos (Código 200 normal)
+        if formato == "json": return ruta
+        return FileResponse(
+            path=ruta, 
+            filename=f"Reporte_{job_id}.xlsx",
+            media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        )
+    
+    # 2. SI NO EXISTE, buscamos el Pasaporte
+    pasaporte = passport_service.leer_pasaporte(job_id)
+    
+    if pasaporte:
+        # Retornamos 202 Accepted (estándar REST para "estoy en ello")
+        # Y en el body mandamos el JSON del pasaporte para que el usuario vea el avance
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=202, 
+            content={
+                "mensaje": "Archivo aún procesando",
+                "pasaporte": pasaporte
+            }
+        )
+
+    # 3. Si no hay ni archivo ni pasaporte -> 404
+    raise HTTPException(status_code=404, detail="Job no encontrado.")
