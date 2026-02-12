@@ -1,6 +1,7 @@
 import fitz
 import re
 import logging
+import difflib
 from typing import List, Dict, Tuple
 from .helpers_texto_fluxo import REGEX_FECHA_COMBINADA
 
@@ -179,74 +180,85 @@ def detectar_formato_fecha_predominante(texto_muestra: str) -> List[str]:
 
 # --- 1. DATE SLICER ---
 def segmentar_por_fechas(texto_pagina: str, numero_pagina: int, formatos_activos: List[str] = None) -> List[Dict]:
+    """
+    Segmenta el texto en bloques lógicos, aplicando un FILTRO ANTI-GHOSTING 
+    para eliminar líneas duplicadas por capas de impresión del PDF.
+    """
     
-    # Auto-detección si no se provee (lazy init)
+    # 1. Configuración de formatos
     if formatos_activos is None:
         formatos_activos = detectar_formato_fecha_predominante(texto_pagina)
-        # Si no detecta nada, fallback a todo
         if not formatos_activos: 
             formatos_activos = ["DD/MM/AAAA", "DD-MMM", "DD/MMM", "DD MMM", "DD_AISLADO"]
     
-    # Inicializamos regex activos según formatos detectados
-    lineas = texto_pagina.split('\n')
+    lineas_crudas = texto_pagina.split('\n')
+    
+    # --- FASE 1: LIMPIEZA DE ECOS (PRE-PROCESAMIENTO) ---
+    lineas_unicas = []
+    linea_prev = ""
+    
+    for linea in lineas_crudas:
+        linea_limpia = linea.strip()
+        if not linea_limpia: continue
+        
+        # Calculamos similitud con la línea inmediatamente anterior
+        # Si es > 90% similar, asumimos que es un "fantasma" de impresión (negritas falsas)
+        ratio = difflib.SequenceMatcher(None, linea_limpia, linea_prev).ratio()
+        
+        if ratio > 0.90:
+            # Es un fantasma, la ignoramos.
+            continue
+            
+        lineas_unicas.append(linea_limpia)
+        linea_prev = linea_limpia
+
+    # --- FASE 2: MÁQUINA DE ESTADOS (LOGIC ORIGINAL MEJORADA) ---
     bloques = []
     bloque_actual = None
     idx_interno = 0
 
-    for linea in lineas:
-        linea_limpia = linea.strip()
-        if not linea_limpia: continue
-
+    for linea in lineas_unicas:
         match_encontrado = None
         tipo_match = None
 
-        # --- MATCH DINÁMICO ---
-        # Probamos solo los regex que tienen sentido para este documento
+        # Probamos regex
         for fmt_key in formatos_activos:
             regex = PATRONES_FECHA[fmt_key]
-            match = regex.match(linea_limpia) # Usamos match para asegurar inicio de línea (o search si prefieres)
+            match = regex.match(linea) 
             
             if match:
-                # Validación extra para BBVA/Texto (evitar "03 com" si no estamos seguros)
                 if fmt_key == "DD_AISLADO":
-                    # --- LÓGICA DEFENSIVA PARA DÍA AISLADO ("2") ---
                     posible_dia = int(match.group(1))
-                    
                     es_valido = (1 <= posible_dia <= 31)
+                    if len(linea) < 6: es_valido = False # Filtro de ruido corto
                     
-                    # FILTRO ANTI-RUIDO (Solo para días aislados)
-                    # Si es muy largo y solo empieza con un número, asumimos que es descripción
-                    if len(linea_limpia) < 15:
-                        es_valido = False
+                    # Validación de dinero para fechas débiles ("02")
+                    if es_valido:
+                        tiene_monto = bool(REGEX_MONTO_SIMPLE.search(linea))
+                        if not tiene_monto: es_valido = False
                         
                     if es_valido:
                         match_encontrado = match
                         tipo_match = fmt_key
-                        break # Encontrado día válido, salimos
+                        break 
                 else:
-                    # --- FECHAS FUERTES (DD MMM, DD/JUL) ---
-                    # Pasan directo, SIN filtro de longitud
                     match_encontrado = match
                     tipo_match = fmt_key
                     break
-                
-        if bloque_actual:
-            bloques.append(bloque_actual)
-
-        # --- LÓGICA DE CORTE (STATE MACHINE) ---
+        
         if match_encontrado:
-            # 1. Si ya teníamos un bloque abierto, lo cerramos y guardamos
+            # 1. CERRAR BLOQUE ANTERIOR
             if bloque_actual:
-                bloques.append(bloque_actual)
+                # IMPORTANTE: .copy() para romper la referencia de memoria
+                bloques.append(bloque_actual.copy())
 
-            # 2. Preparamos los datos de la fecha
+            # 2. PREPARAR DATOS NUEVOS
             raw_fecha = match_encontrado.group(0)
             fecha_final = raw_fecha 
 
             if tipo_match == "DD_AISLADO":
                 dia_num = int(match_encontrado.group(1))
                 fecha_final = f"{dia_num:02d}"
-
             elif tipo_match == "DD MMM": 
                 dia = int(match_encontrado.group(1))
                 mes_str = match_encontrado.group(2).lower()
@@ -254,28 +266,26 @@ def segmentar_por_fechas(texto_pagina: str, numero_pagina: int, formatos_activos
                 mes_num = mapa_mes.get(mes_str[:3], 0)
                 fecha_final = f"{dia:02d}/{mes_num:02d}"
 
-            # 3. Iniciamos el NUEVO bloque
+            # 3. CREAR NUEVO BLOQUE (ID ÚNICO)
             bloque_actual = {
                 "id_unico": f"P{numero_pagina}_IDX{idx_interno}",
                 "fecha_detectada": fecha_final,
-                "texto_completo": linea_limpia,
-                "lineas": [linea_limpia],
+                "texto_completo": linea,
+                "lineas": [linea],
                 "pagina": numero_pagina,
                 "formato_detectado": tipo_match
             }
-            idx_interno += 1
+            idx_interno += 1 # Incrementamos contador
         
         else:
-            # --- CONTINUACIÓN ---
-            # Si no es fecha, pertenece a la transacción anterior
+            # CONTINUACIÓN
             if bloque_actual:
-                bloque_actual["texto_completo"] += " " + linea_limpia
-                bloque_actual["lineas"].append(linea_limpia)
+                bloque_actual["texto_completo"] += " " + linea
+                bloque_actual["lineas"].append(linea)
 
-    # --- CIERRE FINAL (ESTO ARREGLA TU BUG ORIGINAL) ---
-    # Al salir del loop, si quedó un bloque abierto, lo guardamos.
+    # Cierre final al salir del loop
     if bloque_actual:
-        bloques.append(bloque_actual)
+        bloques.append(bloque_actual.copy())
 
     return bloques
 
@@ -577,17 +587,29 @@ def reconciliar_geometria_con_bloques(bloques_texto: List[Dict], mapa_geometrico
                     if x_cand < 400: tipo_final = "cargo"
                     else: tipo_final = "abono"
 
-        # --- PASO 4: GARBAGE COLLECTOR (NUEVO) ---
-        # Si después de todo el esfuerzo, el monto es 0 y no encontramos nada...
-        # Es altamente probable que sea una continuación de descripción con fecha engañosa.
+        # --- PASO 4: GARBAGE COLLECTOR INTELIGENTE (GHOSTBUSTER) ---
         if monto_final == 0.0 and match_status == "MISS_MONTO":
             if transacciones_finales:
-                # FUSIONAMOS HACIA ATRÁS
-                transacciones_finales[-1]["descripcion"] += " " + bloque["texto_completo"]
-                # Y NO AGREGAMOS esta transacción a la lista
+                # Obtenemos la descripción anterior
+                tx_prev = transacciones_finales[-1]
+                desc_prev = tx_prev["descripcion"]
+                desc_actual = bloque["texto_completo"]
+                
+                # --- CHECK DE FANTASMA ---
+                # 1. Si la descripción actual está contenida en la anterior (duplicado exacto o parcial)
+                if desc_actual in desc_prev:
+                    continue # Es un fantasma, lo ignoramos por completo
+                
+                # 2. Si son muy similares (ej. > 80% parecido) usando SequenceMatcher
+                # Esto detecta "23/OCT Compra" vs "23/OCT Compra." (con punto extra)
+                ratio = difflib.SequenceMatcher(None, desc_prev, desc_actual).ratio()
+                if ratio > 0.8:
+                    continue # Es un fantasma casi idéntico, lo ignoramos
+
+                # Si NO es un fantasma, entonces sí es información nueva (ej. continuación real)
+                transacciones_finales[-1]["descripcion"] += " " + desc_actual
                 continue
             else:
-                # Si es el primer bloque y está vacío, lo ignoramos
                 continue
 
         tx = {
