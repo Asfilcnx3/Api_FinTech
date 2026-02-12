@@ -1,8 +1,5 @@
-# Aqui irán todas las funciones de extracción de PDF (sin IA)
-import unicodedata
 from ..core.exceptions import PDFCifradoError
 from ..utils.helpers_texto_fluxo import TRIGGERS_CONFIG
-from ..utils.logic_helpers import calcular_crop_dinamico
 
 from typing import Dict, List, Optional, Tuple
 from io import BytesIO
@@ -34,58 +31,6 @@ def convertir_pdf_a_imagenes(pdf_bytes: bytes, paginas: List[int] = [1]) -> List
         raise ValueError(f"No se pudo procesar el archivo como PDF: {e}")
 
     return buffers_imagenes
-
-def extraer_texto_con_crop(pdf_path: str, paginas: List[int] = None, margen_superior_pct: float = 0.10, margen_inferior_pct: float = 0.05) -> Dict[int, str]:
-    """
-    Extrae texto aplicando recorte dinámico (heatmap) para no perder datos en los bordes.
-    Ignora los parámetros pct si el modo dinámico funciona bien.
-    """
-    texto_por_pagina = {}
-    
-    try:
-        doc = fitz.open(pdf_path)
-        
-        # Si no se especifican páginas, procesar todas
-        if not paginas:
-            paginas = range(1, len(doc) + 1)
-
-        for num_pag in paginas:
-            idx = num_pag - 1
-            if idx >= len(doc): continue
-            
-            page = doc[idx]
-            
-            # --- CÁLCULO DINÁMICO ---
-            rect_crop = calcular_crop_dinamico(page)
-            
-            # Extraemos texto crudo
-            texto_raw = page.get_text("text", clip=rect_crop, sort=True)
-            
-            # --- NORMALIZACIÓN (El parche que falta) ---
-            if texto_raw:
-                # 1. Normalizar Unicode a forma compuesta (NFC)
-                # Esto asegura que 'ó' sea siempre un caracter y no dos.
-                texto_limpio = unicodedata.normalize('NFC', texto_raw)
-                
-                # 2. Reemplazar Non-breaking space (\xa0) por espacio normal
-                # CRÍTICO para Banregio y Santander
-                texto_limpio = texto_limpio.replace('\xa0', ' ')
-                
-                # 3. (Opcional) Eliminar espacios repetidos si quieres ser muy agresivo,
-                # pero a veces "   " sirve para separar columnas visualmente, 
-                # así que mejor lo dejamos, tus regex ya manejan \s+
-            else:
-                texto_limpio = ""
-
-            texto_por_pagina[num_pag] = texto_limpio
-
-        doc.close()
-        
-    except Exception as e:
-        logger.error(f"Error procesando PDF {pdf_path}: {e}")
-        return {}
-
-    return texto_por_pagina
 
 def leer_qr_de_imagenes(imagen_buffers: List[BytesIO]) -> Optional[str]:
     """

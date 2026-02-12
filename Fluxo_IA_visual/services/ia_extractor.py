@@ -5,306 +5,213 @@ from ..utils.helpers_texto_fluxo import PROMPT_FASE_3_AUDITOR_TEMPLATE, PROMPT_G
 
 from fastapi import HTTPException
 from openai import AsyncOpenAI
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from io import BytesIO
 import json
-import re
 import base64
 import logging
+import httpx
 
-nomi_api = settings.OPENAI_API_KEY_NOMI.get_secret_value()
-
-def get_fluxo_client():
-    return AsyncOpenAI(api_key=settings.OPENAI_API_KEY_FLUXO.get_secret_value())
-
-openrouter_api = settings.OPENROUTER_API_KEY.get_secret_value()
-
+# --- CONFIGURACIÓN Y CLIENTES ---
 logger = logging.getLogger(__name__)
 
-client_gpt_nomi = AsyncOpenAI(
-    api_key=nomi_api
-)
+# Configuración de Timeouts para evitar cuelgues en paralelismo masivo
+HTTP_TIMEOUT = httpx.Timeout(60.0, connect=10.0)
 
+# SINGLETONS DE CLIENTES (Para reutilizar conexiones TCP)
+_fluxo_client_instance = None
+_openrouter_client_instance = None
+_nomi_client_instance = None
 
-client_openrouter = AsyncOpenAI(
-    api_key=openrouter_api,
-    base_url=settings.OPENROUTER_BASE_URL,
-    default_headers={
-        "HTTP-Referer": "https://github.com/Asfilcnx3", 
-        "X-Title": "Fluxo IA Test", 
-    },
-)
-## ANALISIS DE FLUXO
-# Función para enviar el prompt + imagen a GPT-5
-async def analizar_gpt_fluxo(
-        prompt: str, 
-        pdf_bytes: bytes,
-        paginas_a_procesar: List[int],
-        razonamiento: str = "low", 
-        detalle: str = "high"
-    ) -> str:
-    """
-    Se hace la llamada al modelo GPT-5 con razonamiento bajo y detalle de imagen alto
-    """
-    imagen_buffers = convertir_pdf_a_imagenes(pdf_bytes, paginas = paginas_a_procesar)
-    if not imagen_buffers:
-        return # ya retorna el error que dió dentro de la función
-    
-    content = [{"type": "text", "text": prompt}]
-    # Hacemos encode a los datos de la imagen a base64
-    for buffer in imagen_buffers:
-        encoded_image = base64.b64encode(buffer.read()).decode('utf-8')
-        content.append({
-            "type": "image_url",
-            "image_url": {
-                "url": f"data:image/png;base64,{encoded_image}",
-                "detail": detalle
-                },
-            })
-    client = get_fluxo_client()
-    response = await client.chat.completions.create(
-        model="gpt-5.2",
-        messages=[{"role": "user","content": content}],
-        reasoning_effort=razonamiento
-    )
-
-    return response.choices[0].message.content
-
-# Función para enviar el prompt + imagen a modelo de preferencia
-async def analizar_gemini_fluxo(prompt: str, pdf_bytes: bytes, paginas_a_procesar: List[int]) -> str:
-    """
-    Se hace la llamada al modelo de preferencia
-    """
-    imagen_buffers = convertir_pdf_a_imagenes(pdf_bytes, paginas = paginas_a_procesar)
-    if not imagen_buffers:
-        return # ya retorna el error que dió dentro de la función
-    
-    content = [{"type": "text", "text": prompt}]
-    # Hacemos encode a los datos de la imagen a base64
-    for buffer in imagen_buffers:
-        encoded_image = base64.b64encode(buffer.read()).decode('utf-8')
-        content.append({
-            "type": "image_url",
-            "image_url": {
-                "url": f"data:image/png;base64,{encoded_image}",
-                "detail": "high"
-                },
-            })
-    response = await client_openrouter.chat.completions.create(
-        model="qwen/qwen3-vl-235b-a22b-instruct", # CAMBIAR AL MODELO QUE SE QUIERA USAR
-        messages=[{"role": "user","content": content}],
-    )
-
-    return response.choices[0].message.content
-
-async def llamar_agente_tpv(
-    banco: str, 
-    texto_chunk: str, 
-    paginas: List[int]
-) -> List[Dict[str, Any]]:
-    """
-    Llama a un agente LLM experto con un prompt de texto específico
-    para extraer transacciones de un chunk de texto.
-    """
-    logger.info(f"Agente TPV: Procesando {banco} (Páginas: {paginas[0]}-{paginas[-1]})")
-
-    # 1. Crear el prompt de sistema y de usuario
-    prompt_sistema = _crear_prompt_agente_unificado(banco, tipo="texto")
-    prompt_usuario = f"""
-    Aquí está el fragmento de texto (páginas {paginas[0]} a {paginas[-1]}):
-    
-    ---INICIO DEL FRAGMENTO---
-    {texto_chunk}
-    ---FIN DEL FRAGMENTO---
-    """
-
-    try:
-        # 2. Llamar al LLM (modo texto)
-        client = get_fluxo_client()
-        response = await client.chat.completions.create(
-            model="gpt-5.2", # O tu modelo de texto preferido
-            messages=[
-                {"role": "system", "content": prompt_sistema},
-                {"role": "user", "content": prompt_usuario}
-            ],
-            # Si el modelo soporta JSON mode, es altamente recomendado:
-            # response_format={"type": "json_object"} 
+def get_fluxo_client():
+    """Retorna una instancia única del cliente Fluxo (OpenAI)."""
+    global _fluxo_client_instance
+    if _fluxo_client_instance is None:
+        _fluxo_client_instance = AsyncOpenAI(
+            api_key=settings.OPENAI_API_KEY_FLUXO.get_secret_value(),
+            timeout=HTTP_TIMEOUT
         )
-        
-        respuesta_str = response.choices[0].message.content
+    return _fluxo_client_instance
 
-        if "SIN_DATOS" in respuesta_str:
-            return []
-
-        transacciones = parsear_respuesta_toon(respuesta_str)
-        
-        logger.debug(f"Agente TPV ({banco}): TOON parseado, {len(transacciones)} transacciones encontradas.")
-        return transacciones
-        
-    except Exception as e:
-        logger.error(f"Error crítico llamando al Agente TPV para {banco} (págs {paginas[0]}-{paginas[-1]}): {e}", exc_info=True)
-        return [] # Devuelve lista vacía en caso de cualquier error
-
-## ANALISIS DE NOMIFLASH
-async def analizar_gpt_nomi(
-        prompt: str, 
-        imagen_buffers: List[BytesIO], 
-        razonamiento: str = "low", 
-        detalle: str = "high"
-    ) -> str:
-    if not imagen_buffers:
-        return None
-
-    content = [{"type": "text", "text": prompt}]
-    for buffer in imagen_buffers:
-        buffer.seek(0)
-        encoded_image = base64.b64encode(buffer.read()).decode('utf-8')
-        content.append({
-            "type": "image_url",
-            "image_url": {"url": f"data:image/png;base64,{encoded_image}", "detail": detalle}
-        })
-    try:
-        response = await client_gpt_nomi.chat.completions.create(
-            model="gpt-5.2",
-            messages=[{"role": "user", "content": content}],
-            reasoning_effort=razonamiento
-        )
-        return response.choices[0].message.content  
-    
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=f"El servicio de IA no está disponible: {e}")
-
-async def llamar_agente_ocr_vision(
-        banco: str, 
-        pdf_bytes: bytes, 
-        paginas: List[int] 
-    ) -> List[Dict[str, Any]]: 
-    """ Llama a un agente LLM multimodal (Qwen-VL) con las imágenes de las páginas de un PDF para extraer transacciones. """ 
-    logger.info(f"Agente OCR-Visión: Procesando {banco} (Páginas: {paginas[0]}-{paginas[-1]})")
-
-    # 1. Crear el prompt de texto
-    prompt_sistema_texto = _crear_prompt_agente_unificado(banco, tipo="vision")
-
-    # 2. Convertir las páginas de este chunk a imágenes
-    # (Reutilizamos la función que ya tenías para el análisis de portada)
-    imagen_buffers = convertir_pdf_a_imagenes(pdf_bytes, paginas=paginas)
-    if not imagen_buffers:
-        logger.warning(f"No se pudieron generar imágenes para las páginas {paginas} de {banco}")
-        return []
-
-    # 3. Construir el payload multimodal (texto + imágenes)
-    content = [{"type": "text", "text": prompt_sistema_texto}]
-    for buffer in imagen_buffers:
-        encoded_image = base64.b64encode(buffer.read()).decode('utf-8')
-        content.append({
-            "type": "image_url",
-            "image_url": {
-                "url": f"data:image/png;base64,{encoded_image}",
-                "detail": "high" # 'high' es crucial para que el OCR lea el texto
+def get_openrouter_client():
+    """Retorna una instancia única del cliente OpenRouter."""
+    global _openrouter_client_instance
+    if _openrouter_client_instance is None:
+        _openrouter_client_instance = AsyncOpenAI(
+            api_key=settings.OPENROUTER_API_KEY.get_secret_value(),
+            base_url=settings.OPENROUTER_BASE_URL,
+            default_headers={
+                "HTTP-Referer": "https://github.com/Asfilcnx3", 
+                "X-Title": "Fluxo IA Test", 
             },
-        })
-
-    try:
-        # 4. Llamar al modelo Qwen-VL vía OpenRouter
-        response = await client_openrouter.chat.completions.create(
-            model="qwen/qwen3-vl-235b-a22b-instruct", # Tu modelo de OpenRouter
-            messages=[{"role": "user", "content": content}],
-            temperature=0.1, # Casi 0 para máxima consistencia
-            max_tokens=4000, # Asegurar espacio para JSONs largos
+            timeout=HTTP_TIMEOUT
         )
+    return _openrouter_client_instance
 
-        respuesta_str = response.choices[0].message.content
-        logger.debug(f"Agente OCR ({banco}) RAW TOON: {respuesta_str[:100]}...") # Loguear inicio para ver formato
-
-        # --- PARSEO TOON ---
-        if "SIN_DATOS" in respuesta_str:
-            return []
-
-        transacciones = parsear_respuesta_toon(respuesta_str)
-        
-        logger.debug(f"Agente OCR ({banco}): TOON parseado, {len(transacciones)} transacciones encontradas.")
-        return transacciones
-
-    except Exception as e:
-        logger.error(f"Error crítico llamando al Agente OCR-Visión para {banco}: {e}", exc_info=True)
-        return []
-
-async def _extraer_datos_con_ia(texto: str) -> Dict:
-    """
-    Función de fallback que usa la IA para extraer los datos si la regex falla.
-    """
-    prompt_ia = f"""
-    Extrae los datos de la siguiente Constancia de Situación Fiscal.
-    Devuelve únicamente un JSON con las secciones: 'identificacion_contribuyente', 'domicilio_registrado'.
-    Texto a analizar:
-    ---
-    {texto[:4000]}
-    """
-    try:
-        client = get_fluxo_client()
-        response = await client.chat.completions.create(
-            model="gpt-5.2",
-            messages=[{"role": "user", "content": prompt_ia}],
-            # response_format={"type": "json_object"}
+def get_nomi_client():
+    global _nomi_client_instance
+    if _nomi_client_instance is None:
+        _nomi_client_instance = AsyncOpenAI(
+            api_key=settings.OPENAI_API_KEY_NOMI.get_secret_value(),
+            timeout=HTTP_TIMEOUT
         )
-        return json.loads(response.choices[0].message.content)
-    except Exception as e:
-        return e
-    
-async def clasificar_lote_con_ia(banco: str, transacciones: List[Any]) -> Dict[str, str]:
+    return _nomi_client_instance
+
+# --- FUNCIONES DE CLASIFICACIÓN (FLUXO) ---
+
+async def clasificar_lote_con_ia(
+    banco: str, 
+    transacciones: List[Any], 
+    client: AsyncOpenAI = None # Inyección de dependencia opcional
+) -> Dict[str, str]:
     """
     Fase 3: Envía un lote de descripciones a la IA para clasificación.
-    Inyecta dinámicamente las reglas del banco específico.
+    Optimizado para alto rendimiento y bajo consumo de tokens.
     """
-    # 1. Preparar el payload
+    if not transacciones:
+        return {}
+
+    # 1. Preparar Payload (Minimizado)
+    # Solo enviamos ID, Desc y Monto. Fecha y Tipo no son necesarios para categorizar.
     payload_input = []
     for idx, tx in enumerate(transacciones):
+        # Manejo híbrido (Dict o Objeto Pydantic)
         if isinstance(tx, dict):
             desc = tx.get("descripcion", "")
             monto = tx.get("monto", "0")
         else: 
-            desc = tx.descripcion
-            monto = tx.monto
+            desc = getattr(tx, "descripcion", "")
+            monto = getattr(tx, "monto", "0")
 
         payload_input.append({
-            "id": idx, # ID relativo (0 a BatchSize)
-            "desc": desc, 
-            "monto": monto
+            "id": idx, 
+            "d": desc,
+            "m": monto
         })
     
-    # 2. SELECCIONAR LAS REGLAS ESPECÍFICAS (LA PIEZA FALTANTE)
-    banco_key = banco.lower().strip()
-    
-    # Buscamos las reglas en tu diccionario gigante. Si no está, usamos las genéricas.
+    # 2. Seleccionar Prompt
+    banco_key = banco.lower().strip() if banco else "generico"
     reglas_a_usar = PROMPTS_POR_BANCO.get(banco_key, PROMPT_GENERICO)
     
-    # 3. CONSTRUIR EL PROMPT FINAL
-    # Aquí inyectamos tanto el nombre del banco como sus reglas
     prompt_sistema = PROMPT_FASE_3_AUDITOR_TEMPLATE.format(
         banco=banco, 
         reglas_especificas=reglas_a_usar
     )
     
-    prompt_usuario = json.dumps(payload_input)
+    # JSON dump compacto (separadores sin espacios)
+    prompt_usuario = json.dumps(payload_input, separators=(',', ':'))
 
     try:
-        client = get_fluxo_client()
+        # Usamos el cliente inyectado o el singleton
+        ai_client = client or get_fluxo_client()
         
-        # Usamos temperature=0 para que siga las reglas estrictamente
-        response = await client.chat.completions.create(
-            model="gpt-5.2", 
+        response = await ai_client.chat.completions.create(
+            model="gpt-5.2", # Asegúrate que este modelo exista o usa gpt-4o-mini / gpt-3.5-turbo
             messages=[
                 {"role": "system", "content": prompt_sistema},
                 {"role": "user", "content": prompt_usuario}
             ],
-            response_format={"type": "json_object"},
-            temperature=0 
+            response_format={"type": "json_object"}
         )
         
-        resultado_json = json.loads(response.choices[0].message.content)
-        return resultado_json
+        content = response.choices[0].message.content
+        if not content: return {}
+        
+        return json.loads(content)
 
     except Exception as e:
-        logger.error(f"Error en clasificación IA ({banco}): {e}")
-        # Fallback de seguridad
+        logger.error(f"Error IA ({banco}): {e}")
+        # Fallback silencioso: todo es GENERAL si falla
         return {str(i): "GENERAL" for i in range(len(transacciones))}
+
+async def llamar_agente_ocr_vision(banco: str, pdf_bytes: bytes, paginas: List[int]) -> List[Dict[str, Any]]:
+    """Agente Multimodal OCR (Qwen-VL)."""
+    logger.info(f"Agente OCR: {banco} (Págs {paginas})")
+    
+    prompt = _crear_prompt_agente_unificado(banco, tipo="vision")
+    imagen_buffers = convertir_pdf_a_imagenes(pdf_bytes, paginas=paginas)
+    if not imagen_buffers: return []
+
+    content = [{"type": "text", "text": prompt}]
+    for buffer in imagen_buffers:
+        b64 = base64.b64encode(buffer.read()).decode('utf-8')
+        content.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}", "detail": "high"}})
+
+    try:
+        client = get_openrouter_client()
+        res = await client.chat.completions.create(
+            model="qwen/qwen3-vl-235b-a22b-instruct",
+            messages=[{"role": "user", "content": content}]
+        )
+        return parsear_respuesta_toon(res.choices[0].message.content)
+    except Exception as e:
+        logger.error(f"Error Agente OCR {banco}: {e}")
+        return []
+    
+# --- FUNCIONES DE ANALISIS DE PORTADA Y OCR (OPENROUTER/GPT-V) ---
+
+async def analizar_gpt_fluxo(prompt: str, pdf_bytes: bytes, paginas_a_procesar: List[int], razonamiento: str = "low", detail: str = "high") -> str:
+    """Envía PDF a GPT-Vision (Fluxo)."""
+    imagen_buffers = convertir_pdf_a_imagenes(pdf_bytes, paginas=paginas_a_procesar)
+    if not imagen_buffers: return ""
+    
+    content = [{"type": "text", "text": prompt}]
+    for buffer in imagen_buffers:
+        b64 = base64.b64encode(buffer.read()).decode('utf-8')
+        content.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}", "detail": detail}})
+    
+    client = get_fluxo_client()
+    res = await client.chat.completions.create(
+        model="gpt-5.2",
+        messages=[{"role": "user", "content": content}],
+        reasoning_effort=razonamiento
+    )
+    return res.choices[0].message.content
+
+async def analizar_gemini_fluxo(prompt: str, pdf_bytes: bytes, paginas_a_procesar: List[int]) -> str:
+    """Envía PDF a OpenRouter (Gemini/Qwen)."""
+    imagen_buffers = convertir_pdf_a_imagenes(pdf_bytes, paginas=paginas_a_procesar)
+    if not imagen_buffers: return ""
+    
+    content = [{"type": "text", "text": prompt}]
+    for buffer in imagen_buffers:
+        b64 = base64.b64encode(buffer.read()).decode('utf-8')
+        content.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}", "detail": "high"}})
+    
+    client = get_openrouter_client()
+    res = await client.chat.completions.create(
+        model="qwen/qwen3-vl-235b-a22b-instruct",
+        messages=[{"role": "user", "content": content}],
+    )
+    return res.choices[0].message.content
+
+# --- FUNCIONES LEGACY / TEXTO [[EN SU MAYORÍA SON USADAS DENTRO DEL FALLBACK PARA NOMIFLASH]] ---
+async def _extraer_datos_con_ia(texto: str) -> Dict:
+    """Extractor genérico de Constancia Fiscal."""
+    prompt = f"Extrae JSON ('identificacion_contribuyente', 'domicilio_registrado') de:\n{texto[:4000]}"
+    try:
+        client = get_fluxo_client()
+        res = await client.chat.completions.create(
+            model="gpt-5.2",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return json.loads(res.choices[0].message.content)
+    except Exception:
+        return {}
+
+# --- FUNCIONES NOMI ---
+async def analizar_gpt_nomi(prompt: str, imagen_buffers: List[BytesIO], razonamiento="low", detalle="high") -> str:
+    if not imagen_buffers: return None
+    content = [{"type": "text", "text": prompt}]
+    for buffer in imagen_buffers:
+        buffer.seek(0)
+        b64 = base64.b64encode(buffer.read()).decode('utf-8')
+        content.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}", "detail": detalle}})
+    
+    client = get_nomi_client()
+    res = await client.chat.completions.create(
+        model="gpt-5.2",
+        messages=[{"role": "user", "content": content}],
+        reasoning_effort=razonamiento
+    )
+    return res.choices[0].message.content

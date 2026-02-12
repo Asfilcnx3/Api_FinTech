@@ -1,7 +1,7 @@
 from ..models.responses_analisisTPV import AnalisisTPV
 from ..models.responses_nomiflash import NomiFlash
 from .helpers_texto_fluxo import (
-    BANCO_DETECTION_REGEX, ALIAS_A_BANCO_MAP, PATRONES_COMPILADOS, PALABRAS_CLAVE_VERIFICACION, PROMPT_GENERICO, PROMPT_FASE_2_ESCRIBA_VISION, PROMPT_FASE_2_ESCRIBA_TEXTO, PROMPTS_POR_BANCO
+    BANCO_DETECTION_REGEX, ALIAS_A_BANCO_MAP, PATRONES_COMPILADOS, PALABRAS_CLAVE_VERIFICACION, PROMPT_FASE_2_ESCRIBA_VISION, PROMPT_FASE_2_ESCRIBA_TEXTO, PROMPTS_POR_BANCO
 )
 from .helpers_texto_nomi import CAMPOS_FLOAT, CAMPOS_STR, PATTERNS_COMPILADOS_RFC_CURP, RFCS_INSTITUCIONES_IGNORAR
 
@@ -11,8 +11,6 @@ import json
 from datetime import datetime, timedelta
 import logging
 import re
-
-
 
 logger = logging.getLogger(__name__)
 
@@ -477,14 +475,14 @@ def _crear_prompt_agente_unificado(
     
     return prompt_final.strip()
 
-def crear_objeto_resultado(datos_dict: dict) -> AnalisisTPV.ResultadoExtraccion: # no estamos usandola (identificar si se usará o eliminar)
+def crear_objeto_resultado(datos_dict: dict) -> AnalisisTPV.ResultadoExtraccion:
     """
-    Transforma un diccionario plano de resultados en un objeto Pydantic
-    ResultadoExtraccion completamente estructurado y anidado.
+    Transforma un diccionario plano de resultados en un objeto Pydantic.
     """
     try:
-        # 1. Creamos el sub-objeto AnalisisIA
+        # 1. Creamos el sub-objeto AnalisisIA (Igual que antes)
         analisis_ia = AnalisisTPV.ResultadoAnalisisIA(
+            nombre_archivo_virtual=datos_dict.get("nombre_archivo_virtual"),
             banco=datos_dict.get("banco"),
             tipo_moneda=datos_dict.get("tipo_moneda"),
             rfc=datos_dict.get("rfc"),
@@ -505,7 +503,7 @@ def crear_objeto_resultado(datos_dict: dict) -> AnalisisTPV.ResultadoExtraccion:
             entradas_TPV_neto=datos_dict.get("entradas_TPV_neto"),
         )
 
-        # 2. Creamos el sub-objeto DetalleTransacciones
+        # 2. Creamos el sub-objeto DetalleTransacciones (Igual que antes)
         detalle_transacciones = AnalisisTPV.ResultadoTPV(
             transacciones=datos_dict.get("transacciones", []),
             error_transacciones=datos_dict.get("error_transacciones")
@@ -514,13 +512,15 @@ def crear_objeto_resultado(datos_dict: dict) -> AnalisisTPV.ResultadoExtraccion:
         # 3. Ensamblamos y devolvemos el objeto principal
         return AnalisisTPV.ResultadoExtraccion(
             AnalisisIA=analisis_ia,
-            DetalleTransacciones=detalle_transacciones
+            DetalleTransacciones=detalle_transacciones,
+            metadata_tecnica=datos_dict.get("metadata_tecnica", []) 
         )
+
     except Exception as e:
-        # Si algo falla en la creación del modelo, devolvemos un objeto de error
+        # Si algo falla, devolvemos un error
         return AnalisisTPV.ResultadoExtraccion(
             AnalisisIA=None,
-            DetalleTransacciones=AnalisisTPV.ErrorRespuesta(error=f"Error al estructurar el diccionario de respuesta: {e}")
+            DetalleTransacciones=AnalisisTPV.ErrorRespuesta(error=f"Error estructural: {e}")
         )
     
 def construir_fecha_completa(dia_raw: str, periodo_inicio_str: str, periodo_fin_str: str) -> str:

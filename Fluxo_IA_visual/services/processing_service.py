@@ -10,6 +10,8 @@ from ..core.exceptions import PDFCifradoError
 from ..services.storage_service import guardar_excel_local, guardar_json_local
 from ..utils.xlsx_converter import generar_excel_reporte
 
+from .passport_service import PassportService
+
 from ..utils.helpers import total_depositos_verificacion
 
 from ..utils.helpers_texto_fluxo import prompt_base_fluxo
@@ -35,28 +37,37 @@ logger = logging.getLogger(__name__)
 class ProcessingService:
     def __init__(self, file_manager):
         self.file_manager = file_manager
+        self.passport = PassportService() # Inyección manual del pasaporte
+
+        # --- SEMÁFORO DE CONCURRENCIA ---
+        # Limitamos a 20 peticiones simultáneas a OpenAI globalmente.
+        self.sem_ia = asyncio.Semaphore(20)
 
     async def ejecutar_pipeline_background(self, job_id: str, lista_archivos: list):
         """
         Esta función encapsula TODA la lógica pesada.
         Recibe la lista de metadatos de archivos: [{'path': Path, 'filename': str, ...}]
         """
-        logger.info(f"Iniciando Pipeline para Job {job_id}")
+        # 0. INICIO
+        self.passport.crear_pasaporte(job_id)
+        logger.info(f"Iniciando Pipeline V2 (Motor Híbrido) para Job {job_id}")
         
         tareas_analisis = []
         
-        # --- ETAPA 1: ANÁLISIS DE PORTADA ---
-        # Leemos archivos uno por uno para extraer texto inicial
+        # --- ETAPA 1: PORTADAS (I/O Bound -> Threads o Async nativo) ---
+        self.passport.actualizar(job_id, fase=1, nombre_fase="Análisis Inicial", descripcion="Escaneando estructura de archivos...")
+
         for doc_info in lista_archivos:
+            self.passport.actualizar(job_id, descripcion=f"Analizando carátula: {doc_info['filename']}")
             path = doc_info["path"]
             try:
                 with open(path, "rb") as f:
                     pdf_bytes = f.read()
                     # Analisis inicial (Portadas, Rangos, Texto base)
-                    tarea = obtener_y_procesar_portada(prompt_base_fluxo, pdf_bytes)
+                    tarea = obtener_y_procesar_portada(prompt_base_fluxo, pdf_bytes) 
                     tareas_analisis.append(tarea)
             except Exception as e:
-                logger.error(f"Error leyendo archivo {path}: {e}")
+                logger.error(f"Error lectura {path}: {e}")
                 # Agregamos una excepción a la lista para manejarla después
                 tareas_analisis.append(asyncio.create_task(self._return_exception(e)))
 
@@ -65,14 +76,12 @@ class ProcessingService:
             resultados_portada = await asyncio.gather(*tareas_analisis, return_exceptions=True)
         except Exception as e:
             logger.critical(f"Error crítico en Etapa 1: {e}")
+            self.passport.actualizar(job_id, error=f"Fallo crítico inicial: {e}")
             return # Detener pipeline
 
-        # --- LIMPIEZA TEMPRANA ---
-        # Si ya extrajimos texto y rangos, ¿necesitamos el archivo en disco para los digitales?
-        # Para OCR sí, para Digitales tal vez no (ya tenemos texto).
-        # Por seguridad, los mantenemos hasta el final, pero aquí podrías optimizar.
-
-        # --- ETAPA 2: SEPARACIÓN Y PREPARACIÓN ---
+        # --- ETAPA 2: SEPARACIÓN (Digital vs OCR) ---
+        self.passport.actualizar(job_id, fase=2, nombre_fase="Extracción", descripcion="Calculando carga de trabajo...", estado="PROCESANDO")
+        
         documentos_digitales = []
         documentos_escaneados = []
         resultados_finales = [None] * len(lista_archivos)
@@ -103,16 +112,15 @@ class ProcessingService:
             try:
                 for idx_cuenta, datos_cuenta in enumerate(lista_cuentas):
                     rango = rangos[idx_cuenta]
-                    # parche de seguridad: si movs_pag es None, usar {}
                     movimientos_seguros = movimientos_paginas if movimientos_paginas is not None else {}
                     
                     item_info = {
-                        "index": i, # Indice del archivo padre
+                        "index": i, 
                         "sub_index": idx_cuenta,
                         "filename": f"{filename} (Cta {idx_cuenta + 1})",
-                        "file_path": file_path, # <--- PASAMOS EL PATH
+                        "file_path": file_path, 
                         "ia_data": datos_cuenta,
-                        "texto_por_pagina": texto_por_pagina, # Pasamos el texto ya extraido
+                        "texto_por_pagina": texto_por_pagina,
                         "movimientos": movimientos_seguros,
                         "rango_paginas": rango
                     }
@@ -126,47 +134,101 @@ class ProcessingService:
                 logger.error(f"Error separando cuentas {filename}: {e}")
                 resultados_finales[i] = AnalisisTPV.ErrorRespuesta(error="Error interno separando cuentas.")
 
-        # --- ETAPA 3: PROCESAMIENTO PARALELO (FASE 2 - ESCRIBA) ---
+        # [IMPLEMENTACIÓN DE LÓGICA MATEMÁTICA 1]
+        # Recorremos para saber cuántas páginas digitales vamos a procesar y ajustar el tiempo estimado
+        total_pags_digitales = 0
+        for doc in documentos_digitales:
+            if "rango_paginas" in doc and doc["rango_paginas"]:
+                start, end = doc["rango_paginas"]
+                # Calculamos páginas reales (ej: de la 2 a la 5 son 4 páginas)
+                total_pags_digitales += (end - start + 1)
+        
+        # Actualizamos el pasaporte con la carga de trabajo digital inicial
+        self.passport.actualizar(
+            job_id, 
+            sumar_paginas_digitales=total_pags_digitales,
+            descripcion=f"Carga detectada: {total_pags_digitales} páginas digitales."
+        )
+
+        # --- ETAPA 3: EJECUCIÓN PARALELA (CPU Bound -> ProcessPool) ---
+        self.passport.actualizar(job_id, descripcion="Ejecutando motores de lectura...")
+
         loop = asyncio.get_running_loop()
         tareas_digitales = []
         tareas_ocr = []
         
-        # Lógica de decisión OCR
+        # Lógica OCR
         procesar_ocr = es_mayor and documentos_escaneados and len(documentos_escaneados) <= 15
 
-        logger.info(f"Iniciando Workers. Digitales: {len(documentos_digitales)}, OCR: {len(documentos_escaneados)} (Activo: {procesar_ocr})")
+        logger.info(f"Ejecutando Workers. Digitales: {len(documentos_digitales)} | OCR: {len(documentos_escaneados)}")
 
         with ProcessPoolExecutor() as executor:
-            # 3.A Digitales
+            
+            # A. Digitales
             for doc in documentos_digitales:
                 tarea = loop.run_in_executor(
                     executor,
-                    procesar_digital_worker_sync,
+                    procesar_digital_worker_sync, 
                     doc["ia_data"],
-                    doc["texto_por_pagina"],
-                    doc["movimientos"],
+                    doc["texto_por_pagina"], 
+                    doc["movimientos"],      
                     doc["filename"],
-                    doc["file_path"], # <--- Pasamos PATH
+                    str(doc["file_path"]),   
                     doc["rango_paginas"]
                 )
                 tareas_digitales.append((doc["index"], tarea))
 
-            # 3.B OCR
+            # B. OCR
             if procesar_ocr:
                 for doc in documentos_escaneados:
                     tarea = loop.run_in_executor(
                         executor,
                         procesar_ocr_worker_sync,
                         doc["ia_data"],
-                        doc["file_path"], # <--- Pasamos PATH (Ahorro RAM)
+                        str(doc["file_path"]),
                         doc["filename"]
                     )
                     tareas_ocr.append((doc["index"], tarea))
             else:
-                # 3.C Manejo de Omitidos (Lógica de negocio)
                 self._manejar_ocr_omitidos(documentos_escaneados, resultados_finales, es_mayor)
 
-            # 3.D Esperar resultados
+            # C. Esperar resultados y actualizar Pasaporte dinámicamente
+            todos_los_futuros = []
+            if tareas_digitales: todos_los_futuros.extend([t[1] for t in tareas_digitales])
+            if tareas_ocr: todos_los_futuros.extend([t[1] for t in tareas_ocr])
+
+            if todos_los_futuros:
+                # [IMPLEMENTACIÓN DE LÓGICA MATEMÁTICA 2]
+                # as_completed nos permite actualizar la barra de progreso conforme termina cada archivo
+                for futuro_completado in asyncio.as_completed(todos_los_futuros):
+                    try:
+                        res = await futuro_completado
+                        
+                        # Intentamos extraer el nombre para el log
+                        nombre_archivo = "Desconocido"
+                        if hasattr(res, 'AnalisisIA') and res.AnalisisIA:
+                            nombre_archivo = res.AnalisisIA.nombre_archivo_virtual or "Archivo"
+
+                        # Verificamos si es OCR o Digital
+                        # (Asegúrate de que tu modelo ResultadoExtraccion tenga 'es_digital' o úsalo por defecto)
+                        es_digital = getattr(res, 'es_digital', True) 
+                        
+                        if es_digital:
+                            # Digital: Ya sumamos las páginas al inicio, solo logueamos
+                            self.passport.actualizar(job_id, descripcion=f"Leído: {nombre_archivo}")
+                        else:
+                            # OCR: Sumamos al contador de páginas OCR (que valen 1.5s cada una)
+                            self.passport.actualizar(
+                                job_id, 
+                                descripcion=f"OCR Finalizado: {nombre_archivo}", 
+                                sumar_paginas_ocr=1 # Asumimos 1 página por tarea OCR simple
+                            )
+                            
+                    except Exception as e:
+                        logger.error(f"Error en tarea individual: {e}")
+
+            # D. Recoger resultados finales ordenados
+            # (Requerido porque as_completed pierde el orden)
             resultados_brutos_digitales = []
             if tareas_digitales:
                 resultados_brutos_digitales = await asyncio.gather(*[t[1] for t in tareas_digitales], return_exceptions=True)
@@ -183,8 +245,7 @@ class ProcessingService:
                     ocr_timed_out = True
                     self._manejar_timeout_ocr(tareas_ocr, documentos_escaneados, resultados_finales)
 
-        # --- ETAPA 4: RECOLECCIÓN Y CLASIFICACIÓN (FASE 3 - AUDITOR) ---
-        # 1. Ensamblar resultados crudos (Objetos Pydantic con categoría "GENERAL")
+        # --- ETAPA 4: RECOLECCIÓN ---
         resultados_fase_2 = self._ensamblar_resultados_crudos(
             resultados_finales, 
             tareas_digitales, resultados_brutos_digitales, 
@@ -202,88 +263,42 @@ class ProcessingService:
             if isinstance(resultado_doc.DetalleTransacciones, AnalisisTPV.ErrorRespuesta):
                 continue
 
-            # --- CAMBIO CRÍTICO ---
             # Si es digital, el Worker Sync YA HIZO la geometría perfecta.
             # Solo ejecutamos este bloque si NO es digital (es decir, OCR que vino de la IA antigua)
             if getattr(resultado_doc, "es_digital", True):
                 continue 
-            # ----------------------
 
-        # --- ETAPA 4: CLASIFICACIÓN FINAL (FASE 3 - AUDITOR CON BATCHING) ---
-        BATCH_SIZE = 100 # Procesamos de 100 en 100 para no saturar al LLM
+        # --- ETAPA 5: CLASIFICACIÓN FINAL Y REGLAS DE NEGOCIO ---
+        self.passport.actualizar(job_id, fase=3, nombre_fase="Clasificación IA", descripcion="Analizando transacciones en paralelo...")
+        logger.info(f"Disparando clasificación masiva para {len(resultados_fase_2)} documentos...")
+
+        tareas_documentos = []
+        BATCH_SIZE = 100 
         
+        # Creamos todas las tareas (promesas) sin ejecutarlas aún
         for resultado_doc in resultados_fase_2:
-            if isinstance(resultado_doc.DetalleTransacciones, AnalisisTPV.ErrorRespuesta):
-                continue
+            tarea = self._clasificar_documento_async(job_id, resultado_doc, BATCH_SIZE)
+            tareas_documentos.append(tarea)
 
-            transacciones = resultado_doc.DetalleTransacciones.transacciones
-            if not transacciones:
-                continue
+        # Ejecutamos todos los documentos simultáneamente
+        if tareas_documentos:
+            await asyncio.gather(*tareas_documentos)
 
-            banco_actual = resultado_doc.AnalisisIA.banco
-            total_tx = len(transacciones)
-            logger.info(f"Clasificando {total_tx} movimientos de {banco_actual} en paralelo...")
-
-            # 1. PREPARAR TODAS LAS TAREAS (Sin await aquí)
-            tareas_lotes = []
-            
-            # Calculamos cuántos lotes necesitamos
-            for i in range(0, total_tx, BATCH_SIZE):
-                lote = transacciones[i : i + BATCH_SIZE]
-                # Agregamos la corutina a la lista de tareas
-                tareas_lotes.append(clasificar_lote_con_ia(banco_actual, lote))
-
-            # 2. DISPARAR TODO DE GOLPE (Aquí ocurre la magia asíncrona)
-            # Esto enviará todas las peticiones a OpenAI casi al mismo tiempo
-            resultados_lotes = await asyncio.gather(*tareas_lotes)
-
-            # 3. RECONSTRUIR EL MAPA COMPLETO
-            mapa_clasificacion_total = {}
-            
-            for i_lote, mapa_lote in enumerate(resultados_lotes):
-                offset = i_lote * BATCH_SIZE
-
-                if isinstance(mapa_lote, Exception) or not isinstance(mapa_lote, dict):
-                    logger.warning(f"Lote {i_lote} devolvió error o formato inválido: {mapa_lote}")
-                    continue
-
-                for idx_relativo, etiqueta in mapa_lote.items():
-                    # Validamos que la llave sea un número antes de convertir
-                    str_idx = str(idx_relativo).strip()
-                    if not str_idx.isdigit():
-                        logger.warning(f"Ignorando índice inválido de IA: '{idx_relativo}'")
-                        continue
-
-                    try:
-                        idx_global = str(int(str_idx) + offset)
-                        mapa_clasificacion_total[idx_global] = etiqueta
-                    except Exception as e:
-                        logger.error(f"Error calculando índice global: {e}")
-                        continue
-
-            # 4. APLICAR ETIQUETAS DE LA IA AL OBJETO (Solo TPV vs GENERAL)
-            for idx, tx in enumerate(transacciones):
-                str_idx = str(idx)
-                etiqueta_ia = mapa_clasificacion_total.get(str_idx, "GENERAL")
-                
-                if tx.tipo == "cargo":
-                    tx.categoria = "CARGO"
-                else:
-                    tx.categoria = etiqueta_ia # TPV o GENERAL (La IA no decide Efectivo/Traspasos)
-
-            # --- FASE DE AGREGACIÓN ÚNICA (FINAL) ---
-            # Aquí aplicamos las reglas de negocio de Python (Efectivo, Traspasos, etc.)
-            # Y sumamos todo UNA SOLA VEZ.
-            self._aplicar_reglas_negocio_y_calcular_totales(resultado_doc.AnalisisIA, transacciones)
-
-        # --- ETAPA 5: GENERACIÓN DE REPORTES ---
-        # Ahora 'resultados_fase_2' ya tiene las categorías actualizadas
+        # --- SAFETY CHECK ---
+        conteo_validos = len([r for r in resultados_fase_2 if r is not None])
+        logger.info(f"PRE-REPORTE: Se enviarán {conteo_validos} documentos a generar reporte.")
+        
+        # --- ETAPA 6: GENERACIÓN DE REPORTES ---
+        self.passport.actualizar(job_id, fase=4, nombre_fase="Generando Reportes", descripcion="Escribiendo Excel y JSON...")
         self._generar_y_guardar_reportes(resultados_fase_2, job_id)
 
         # --- LIMPIEZA FINAL ---
         rutas_a_borrar = [d["path"] for d in lista_archivos]
         self.file_manager.limpiar_temporales(rutas_a_borrar)
         logger.info(f"Job {job_id} finalizado exitosamente.")
+        
+        # FINAL
+        self.passport.actualizar(job_id, fase=5, nombre_fase="Completado", terminado=True)
 
     # --- MÉTODOS AUXILIARES PRIVADOS (Para mantener limpio el método principal) ---
     async def _return_exception(self, e):
@@ -326,6 +341,13 @@ class ProcessingService:
         def procesar_lista(tareas, resultados_brutos, lista_contexto, es_digital_flag):
             for i, (idx_orig, _) in enumerate(tareas):
                 res = resultados_brutos[i]
+            
+                # PARCHE DE SEGURIDAD: Si es excepción, la convertimos a objeto de error
+                if isinstance(res, Exception):
+                    res = AnalisisTPV.ResultadoExtraccion(
+                        AnalisisIA=AnalisisTPV.AnalisisIA(banco="ERROR_PROCESAMIENTO"),
+                        DetalleTransacciones=AnalisisTPV.ErrorRespuesta(error=str(res))
+                    )
 
                 # Recuperamos el contexto original (path, rango) usando el índice
                 # El orden de 'tareas' coincide con el orden de 'lista_contexto' (digitales o escaneados)
@@ -369,15 +391,24 @@ class ProcessingService:
         return acumulados
 
     def _generar_y_guardar_reportes(self, resultados_acumulados, job_id):
+        # 1. Filtro estricto
         resultados_validos = [r for r in resultados_acumulados if r is not None]
         
-        # Calcular totales finales
-        total_dep = sum((r.AnalisisIA.depositos or 0) for r in resultados_validos if r.AnalisisIA)
+        if not resultados_validos:
+            logger.warning("Alerta: Intentando generar reporte con 0 resultados válidos.")
+
+        # 2. Recalcular métricas globales (Tu lógica)
+        total_dep = 0.0
+        resultados_generales = []
+        
+        for r in resultados_validos:
+            if r.AnalisisIA:
+                total_dep += (r.AnalisisIA.depositos or 0)
+                resultados_generales.append(r.AnalisisIA)
+        
         es_mayor = total_dep > 250000
         
-        # Filtramos solo las carátulas para el resumen
-        resultados_generales = [r.AnalisisIA for r in resultados_validos if r.AnalisisIA]
-
+        # 3. Construir Objeto Maestro
         respuesta_final = AnalisisTPV.ResultadoTotal(
             total_depositos=total_dep,
             es_mayor_a_250=es_mayor,
@@ -385,12 +416,23 @@ class ProcessingService:
             resultados_individuales=resultados_validos
         )
 
-        # Generar archivos
-        datos_dict = jsonable_encoder(respuesta_final) # Necesitas importar jsonable_encoder de fastapi.encoders
-        excel_bytes = generar_excel_reporte(datos_dict)
-        
+        # --- SERIALIZACIÓN SEGURA ---
+        try:
+            # Opción A: Pydantic V2 (Recomendada)
+            datos_dict = respuesta_final.model_dump(mode='json')
+        except AttributeError:
+            # Opción B: Pydantic V1 (Fallback)
+            datos_dict = jsonable_encoder(respuesta_final)
+
+        # 4. Generar Archivos
+        # Pasamos el DICCIONARIO YA SERIALIZADO al excel, no el objeto
+        try:
+            excel_bytes = generar_excel_reporte(datos_dict)
+            guardar_excel_local(excel_bytes, job_id)
+        except Exception as e:
+            logger.error(f"Error generando Excel: {e}")
+
         guardar_json_local(datos_dict, job_id)
-        guardar_excel_local(excel_bytes, job_id)
     
     def _aplicar_reglas_negocio_y_calcular_totales(self, analisis_ia, transacciones):
         """
@@ -468,3 +510,62 @@ class ProcessingService:
         # Calculamos Neto
         comisiones = analisis_ia.comisiones or 0.0
         analisis_ia.entradas_TPV_neto = totales["TPV"] - comisiones
+    
+    async def _clasificar_documento_async(self, job_id, resultado_doc, BATCH_SIZE=100):
+        """
+        Procesa UN documento completo de forma asíncrona, respetando el Semáforo Global.
+        """
+        # Validaciones de seguridad
+        if not resultado_doc or isinstance(resultado_doc.DetalleTransacciones, AnalisisTPV.ErrorRespuesta):
+            return
+
+        transacciones = resultado_doc.DetalleTransacciones.transacciones
+        if not transacciones:
+            return
+
+        banco_actual = resultado_doc.AnalisisIA.banco
+        
+        # Actualizamos Pasaporte
+        self.passport.actualizar(
+            job_id, 
+            sumar_transacciones=len(transacciones), 
+            descripcion=f"Encolando {len(transacciones)} movs de {banco_actual}..."
+        )
+
+        # --- FUNCIÓN WRAPPER CON SEMÁFORO ---
+        # Esta función interna "espera su turno" antes de llamar a la API
+        async def _clasificar_lote_seguro(banco, lote):
+            async with self.sem_ia: # <--- AQUÍ OCURRE EL BLOQUEO INTELIGENTE
+                return await clasificar_lote_con_ia(banco, lote)
+
+        # 1. PREPARAR TAREAS
+        tareas_lotes = []
+        for k in range(0, len(transacciones), BATCH_SIZE):
+            lote = transacciones[k : k + BATCH_SIZE]
+            # Usamos el wrapper seguro en lugar de la función directa
+            tareas_lotes.append(_clasificar_lote_seguro(banco_actual, lote))
+
+        # 2. DISPARAR (El semáforo controlará el flujo automáticamente)
+        # Aunque lanzamos 1000 tareas, solo 20 correrán a la vez.
+        # Conforme una termina, entra la siguiente.
+        resultados_lotes = await asyncio.gather(*tareas_lotes)
+
+        # 3. RECONSTRUCCIÓN DEL MAPA (Igual que antes)
+        mapa_clasificacion_total = {}
+        for i_lote, mapa_lote in enumerate(resultados_lotes):
+            offset = i_lote * BATCH_SIZE
+            if isinstance(mapa_lote, dict):
+                for idx_relativo, etiqueta in mapa_lote.items():
+                    if str(idx_relativo).isdigit():
+                        mapa_clasificacion_total[str(int(str(idx_relativo)) + offset)] = etiqueta
+
+        # 4. APLICACIÓN DE ETIQUETAS
+        for idx, tx in enumerate(transacciones):
+            str_idx = str(idx)
+            if tx.tipo != "cargo":
+                tx.categoria = mapa_clasificacion_total.get(str_idx, "GENERAL")
+            else:
+                tx.categoria = "CARGO"
+
+        # 5. REGLAS DE NEGOCIO Y TOTALES
+        self._aplicar_reglas_negocio_y_calcular_totales(resultado_doc.AnalisisIA, transacciones)

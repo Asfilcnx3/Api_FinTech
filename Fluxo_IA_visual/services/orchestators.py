@@ -5,42 +5,53 @@ from ..utils.helpers import (
     
 )
 from .ia_extractor import (
-    analizar_gpt_fluxo, analizar_gemini_fluxo, analizar_gpt_nomi, _extraer_datos_con_ia, llamar_agente_ocr_vision
+    analizar_gpt_fluxo, analizar_gemini_fluxo, _extraer_datos_con_ia, llamar_agente_ocr_vision
 )
 from ..utils.helpers_texto_fluxo import (
     PALABRAS_BMRCASH, PALABRAS_EXCLUIDAS, PALABRAS_EFECTIVO, PALABRAS_TRASPASO_ENTRE_CUENTAS, PALABRAS_TRASPASO_FINANCIAMIENTO, PALABRAS_TRASPASO_MORATORIO
 )
-from ..utils.helpers_texto_nomi import (
-    PROMPT_COMPROBANTE, PROMPT_ESTADO_CUENTA, PROMPT_NOMINA, SEGUNDO_PROMPT_NOMINA
-)
+
 from ..utils.helpers_texto_csf import (
     PATRONES_CONSTANCIAS_COMPILADO
 )
 
 from .pdf_processor import (
-    detectar_rangos_y_texto, extraer_texto_de_pdf, convertir_pdf_a_imagenes, leer_qr_de_imagenes, extraer_texto_con_crop
+    detectar_rangos_y_texto, extraer_texto_de_pdf
 )
 
-from ..utils.logic_helpers import (
-    detectar_formato_fecha_predominante,
-    segmentar_por_fechas, 
-    generar_mapa_montos_geometrico, 
-    reconciliar_geometria_con_bloques
-)
+from ..core.extraction_motor import BankStatementEngine
+from ..models.responses_motor_estados import RespuestasMotorEstados
 
-from ..utils.helpers import extraer_rfc_curp_por_texto
 from ..models.responses_analisisTPV import AnalisisTPV
-from ..models.responses_nomiflash import NomiFlash
 from ..models.responses_csf import CSF
+
+from fastapi import UploadFile
+from ..core.nomiflash_engine import NomiFlashEngine
+from ..models.responses_nomiflash import NomiFlash
 
 from typing import Dict, Any, Tuple, Optional, Union, List
 from fastapi import UploadFile
-from io import BytesIO
 import logging
 import fitz
 import asyncio
 
 logger = logging.getLogger(__name__)
+
+# Singleton del Motor
+_engine = NomiFlashEngine()
+
+async def procesar_nomina(archivo: UploadFile) -> NomiFlash.RespuestaNomina:
+    return await _engine.procesar_nomina(archivo)
+
+async def procesar_segunda_nomina(archivo: UploadFile) -> NomiFlash.SegundaRespuestaNomina:
+    return await _engine.procesar_segunda_nomina(archivo)
+
+async def procesar_estado_cuenta(archivo: UploadFile) -> NomiFlash.RespuestaEstado:
+    return await _engine.procesar_estado_cuenta(archivo)
+
+async def procesar_comprobante(archivo: UploadFile) -> NomiFlash.RespuestaComprobante:
+    return await _engine.procesar_comprobante(archivo)
+
 
 # ----- FUNCIONES ORQUESTADORAS DE FLUXO -----
 async def analizar_metadatos_rango(
@@ -173,22 +184,22 @@ async def obtener_y_procesar_portada(prompt:str, pdf_bytes: bytes) -> Tuple[Dict
     return resultados_acumulados, es_documento_digital, texto_verificacion_global, None, texto_por_pagina, rangos_cuentas
     
 def clasificar_transacciones_extraidas(
-    ia_data_cuenta: dict, 
-    transacciones_raw: List[Dict],
+    ia_data_cuenta: dict,
+    transacciones_objetos: List["RespuestasMotorEstados.TransaccionDetectada"],
     filename: str,
     rango_paginas: Tuple[int, int]
 ) -> Dict[str, Any]:
     
     start_pg, end_pg = rango_paginas
     nombre_cuenta = f"{filename} (Págs {start_pg}-{end_pg})"
-    logger.info(f"Clasificando {len(transacciones_raw)} movs para: {nombre_cuenta}")
+    logger.info(f"Clasificando {len(transacciones_objetos)} movs para: {nombre_cuenta}")
     
     # Metadata Fechas
     p_inicio = ia_data_cuenta.get("periodo_inicio")
     p_fin = ia_data_cuenta.get("periodo_fin")
 
-    # 1. SI NO HAY TRANSACCIONES (La POC no encontró nada)
-    if not transacciones_raw:
+    # 1. SI NO HAY TRANSACCIONES
+    if not transacciones_objetos:
         return {
             **ia_data_cuenta,
             "nombre_archivo_virtual": nombre_cuenta,
@@ -196,12 +207,10 @@ def clasificar_transacciones_extraidas(
             "depositos_en_efectivo": 0.0, "traspaso_entre_cuentas": 0.0,
             "total_entradas_financiamiento": 0.0, "entradas_bmrcash": 0.0,
             "total_moratorios": 0.0, "entradas_TPV_bruto": 0.0, "entradas_TPV_neto": 0.0,
-            "error_transacciones": "Geometría no detectó transacciones válidas."
+            "error_transacciones": "El motor no detectó transacciones válidas."
         }
 
-    # 2. PROCESAMIENTO DE REGLAS DE NEGOCIO (Keywords)
-    # No limpiamos montos con IA ni regex, se confía en el float de la POC
-    
+    # 2. PROCESAMIENTO DE REGLAS DE NEGOCIO
     total_depositos_efectivo = 0.0
     total_traspaso_entre_cuentas = 0.0
     total_entradas_financiamiento = 0.0
@@ -210,26 +219,29 @@ def clasificar_transacciones_extraidas(
     total_moratorios = 0.0
     todas_las_transacciones = []
 
-    for trx in transacciones_raw:
-        # La POC ya nos da floats y strings limpios
-        monto_float = trx["monto"] 
-        descripcion_limpia = trx["descripcion"].lower()
-        tipo_detectado = trx["tipo"] # 'cargo', 'abono', 'indefinido'
-
-        # Construcción de Fecha
-        dia_raw = trx["fecha"]
+    for trx in transacciones_objetos:
+        # --- CAMBIO CRÍTICO: ACCESO POR ATRIBUTOS ---
+        monto_float = trx.monto  
+        descripcion_limpia = trx.descripcion.lower()
+        
+        # Manejo seguro del Enum de tipo
+        tipo_detectado = trx.tipo.value if hasattr(trx.tipo, 'value') else str(trx.tipo)
+        
+        # Fecha
+        dia_raw = trx.fecha
         fecha_final = construir_fecha_completa(dia_raw, p_inicio, p_fin)
 
         trx_procesada = {
             "fecha": fecha_final,
-            "descripcion": trx["descripcion"],
-            "monto": f"{monto_float:,.2f}", # Formato visual
+            "descripcion": trx.descripcion,
+            "monto": f"{monto_float:,.2f}", 
             "tipo": tipo_detectado,
             "categoria": "GENERAL",
-            "debug_match": trx.get("debug_match") # Útil para ver si fue Geometry o TextMatch
+            # Obtenemos el valor del Enum de metodo_match
+            "debug_match": trx.metodo_match.value if hasattr(trx.metodo_match, 'value') else str(trx.metodo_match)
         }
 
-        # --- LÓGICA DE CLASIFICACIÓN (KEYWORDS) ---
+        # --- LÓGICA DE CLASIFICACIÓN (KEYWORDS - IGUAL QUE ANTES) ---
         if tipo_detectado == "abono":
             if any(p in descripcion_limpia for p in PALABRAS_EXCLUIDAS):
                 pass 
@@ -250,8 +262,6 @@ def clasificar_transacciones_extraidas(
                     total_moratorios += monto_float
                     trx_procesada["categoria"] = "MORATORIOS"
                 else:
-                    # Todo lo que no cae en keywords específicas, lo marcamos como GENERAL
-                    # El Router Fluxo (Fase 4) tomará estos y los pasará por la IA Clasificadora
                     trx_procesada["categoria"] = "GENERAL" 
         
         elif tipo_detectado == "cargo":
@@ -259,7 +269,7 @@ def clasificar_transacciones_extraidas(
 
         todas_las_transacciones.append(trx_procesada)
 
-    # 3. CÁLCULO DE TOTALES FINALES
+    # 3. CÁLCULO DE TOTALES (Igual que antes)
     comisiones_str = ia_data_cuenta.get("comisiones", "0.0")
     if comisiones_str is None: comisiones_str = "0.0"
     comisiones = limpiar_monto(str(comisiones_str))
@@ -275,8 +285,8 @@ def clasificar_transacciones_extraidas(
         "total_entradas_financiamiento": total_entradas_financiamiento,
         "entradas_bmrcash": total_entradas_bmrcash,
         "total_moratorios": total_moratorios,
-        "entradas_TPV_bruto": total_entradas_tpv, # Se actualizará en Router Fase 4
-        "entradas_TPV_neto": entradas_TPV_neto, # Se actualizará en Router Fase 4
+        "entradas_TPV_bruto": total_entradas_tpv, 
+        "entradas_TPV_neto": entradas_TPV_neto, 
         "error_transacciones": None
     }
 
@@ -410,77 +420,70 @@ async def procesar_documento_escaneado_con_agentes_async(
 
 def procesar_digital_worker_sync(
     ia_data_inicial: dict, 
-    texto_por_pagina_sucio: Dict[int, str], 
-    movimientos_por_pagina: Dict[int, Any], # Nota: Este argumento no se está usando, ¿es legacy?
+    texto_por_pagina_sucio: Dict[int, str], # Se mantiene por compatibilidad, pero el motor lo rehará mejor
+    movimientos_por_pagina: Dict[int, Any], # Legacy, no se usa
     filename: str,
     file_path: str,
     rango_paginas: Tuple[int, int]
 ) -> Union[AnalisisTPV.ResultadoExtraccion, Exception]:
     try:
-        # 1. DETERMINAR PÁGINAS DEL RANGO
+        # 1. DETERMINAR PÁGINAS
         start, end = rango_paginas
         lista_paginas = list(range(start, end + 1))
         
-        # 2. GENERAR MAPA GEOMÉTRICO (La base de la precisión)
-        mapa_geometrico = generar_mapa_montos_geometrico(file_path, lista_paginas)
+        # 2. INSTANCIAR Y EJECUTAR MOTOR (Reemplaza los pasos 2, 3, 4 y 5 antiguos)
+        # Nota: debug_mode=False para prod
+        engine = BankStatementEngine(debug_mode=False) 
 
-        # --- CORRECCIÓN DE ORDEN AQUÍ ---
-        
-        # 3. PRIMERO EXTRAER TEXTO CON CROP (Para tener lectura limpia)
-        # Movemos esto ANTES de detectar formato, para detectar sobre texto limpio.
-        texto_limpio_crop = extraer_texto_con_crop(
-            file_path, 
-            paginas=lista_paginas,
-            margen_superior_pct=0.10, 
-            margen_inferior_pct=0.05
-        )
-        
-        # Definimos la variable maestra de texto
-        texto_a_usar = texto_limpio_crop if texto_limpio_crop else texto_por_pagina_sucio
+        # Log de auditoría simple
+        logger.info(f"Iniciando Motor v2 para {filename} en páginas {lista_paginas}")
 
-        # 4. AHORA SÍ DETECTAMOS FORMATO (Usando texto_a_usar ya definido)
-        # Usamos la primera página válida del rango para la muestra
-        texto_muestra = ""
-        for p in lista_paginas:
-            if texto_a_usar.get(p):
-                texto_muestra = texto_a_usar[p]
-                break
-        
-        formatos_detectados = detectar_formato_fecha_predominante(texto_muestra)
-        logger.info(f"Formatos de fecha detectados ({filename}): {formatos_detectados}")
+        # Esto hace: Crop -> Normalización -> Detección Formato -> Segmentación -> Geometría
+        resultados_paginas = engine.procesar_documento_entero(file_path, paginas=lista_paginas)
 
-        # 5. CICLO DE EXTRACCIÓN DETERMINISTA
-        transacciones_extraidas = []
+        # 3. APLANAR RESULTADOS Y RECOLECTAR MÉTRICAS (NUEVO)
+        todas_las_transacciones_objs = []
+        metricas_consolidado = []
 
-        for num_pag in lista_paginas:
-            texto_pag = texto_a_usar.get(num_pag, "")
-            if not texto_pag: continue
+        for res_pag in resultados_paginas:
+            todas_las_transacciones_objs.extend(res_pag.transacciones)
 
-            # A. Date Slicer (Ahora usa la versión corregida con len < 6)
-            bloques = segmentar_por_fechas(texto_pag, num_pag, formatos_detectados)
-            
-            # B. Reconciliación Híbrida (Geometría + Texto)
-            txs_pag = reconciliar_geometria_con_bloques(bloques, mapa_geometrico)
-            
-            transacciones_extraidas.extend(txs_pag)
+            # Guardamos la métrica de esta página
+            metricas_consolidado.append({
+                "pagina": res_pag.pagina,
+                "tiempo_ms": res_pag.metricas.tiempo_procesamiento_ms,
+                "calidad_score": res_pag.metricas.calidad_promedio_pagina,
+                "metodo_predominante": "MIXTO", # Opcional: lógica para determinarlo
+                "bloques": res_pag.metricas.cantidad_bloques_detectados,
+                "transacciones": res_pag.metricas.cantidad_transacciones_finales,
+                "alertas": "; ".join(res_pag.metricas.alertas) if res_pag.metricas.alertas else "OK"
+            })
 
-        # 6. CLASIFICACIÓN PRELIMINAR (KEYWORDS) Y FORMATEO
+        # Log de auditoría simple
+        logger.info(f"Motor finalizado. Transacciones encontradas: {len(todas_las_transacciones_objs)}")
+
+        # 4. CLASIFICACIÓN (Usando la versión actualizada que acepta objetos)
         resultado_dict = clasificar_transacciones_extraidas(
             ia_data_inicial, 
-            transacciones_extraidas, 
+            todas_las_transacciones_objs, # Pasamos objetos Pydantic
             filename, 
             rango_paginas
         )
         
-        # Crear objeto Pydantic
-        obj_res = crear_objeto_resultado(resultado_dict)
+        # 5. INYECCIÓN AL DICCIONARIO (CRÍTICO)
+        resultado_dict["metadata_tecnica"] = metricas_consolidado 
+        
+        # 6. CREACIÓN DEL OBJETO
+        # Ahora que actualizaste el modelo, Pydantic ACEPTARÁ este campo
+        obj_res = crear_objeto_resultado(resultado_dict) 
+        
+        # Restaurar campos excluidos manualmente
         obj_res.file_path_origen = file_path 
+        
         return obj_res
         
     except Exception as e:
-        logger.error(f"Error Worker Digital ({filename}): {e}", exc_info=True)
-        # Es buena práctica devolver el error o lanzarlo, depende de tu orquestador.
-        # Si devuelves la excepción tal cual, asegúrate que quien llama sepa manejarla.
+        logger.error(f"Error Worker Digital: {e}")
         return e
 
 def procesar_ocr_worker_sync(
@@ -502,204 +505,6 @@ def procesar_ocr_worker_sync(
     except Exception as e:
         logger.error(f"Error Worker OCR ({filename}): {e}", exc_info=True)
         return e
-    
-
-
-### ----- FUNCIONES ORQUESTADORAS PARA NOMIFLASH -----
-
-# --- PROCESADOR PARA NÓMINA ---
-async def procesar_nomina(archivo: UploadFile) -> NomiFlash.RespuestaNomina:
-    """
-    Función auxiliar que procesa los archivos de nómina siguiendo lógica de negocio interna.
-    Tiene comprobación interna con regex para más precisión (RFC Y CURP)
-    Devuelve un objeto RespuestaNomina en caso de éxito o error_lectura_nomina en caso de fallo.
-    """
-    try:
-        # Leer contenido. Si falla, la excepción será capturada.
-        pdf_bytes = await archivo.read()
-
-        # --- Lógica de negocio específica para Nómina ---
-        # 1. Extraemos texto para la validación con regex
-        texto_inicial = extraer_texto_de_pdf(pdf_bytes, num_paginas=2)
-        rfc, curp = extraer_rfc_curp_por_texto(texto_inicial, "nomina")
-
-        # 2. Leemos el QR de las imagenes (con loop executor para no bloquear el servidor)
-        loop = asyncio.get_running_loop()
-
-        imagen_buffers = await loop.run_in_executor(
-            None, convertir_pdf_a_imagenes, pdf_bytes
-        )
-
-        if not imagen_buffers:
-            raise ValueError("No se pudieron generar imágenes del PDF.")
-
-        # 2.5 Leemos el QR de las imágenes (lógica condicional aquí)
-        datos_qr = await loop.run_in_executor(
-            None, leer_qr_de_imagenes, imagen_buffers
-        )
-        
-        # 3. Analizamos con la IA usando el prompt de nómina y las mismas imagenes
-        respuesta_gpt = await analizar_gpt_nomi(PROMPT_NOMINA, imagen_buffers)
-        datos_crudos = extraer_json_del_markdown(respuesta_gpt)
-        datos_listos = sanitizar_datos_ia(datos_crudos)
-
-        # --- Lógica de corrección específica para Nómina ---
-        # 3. Sobrescribimos los datos de la IA con los de la regex (más fiables)
-        if datos_qr:
-            datos_listos["datos_qr"] = datos_qr
-        if rfc:
-            datos_listos["rfc"] = rfc[-1]
-        if curp:
-            datos_listos["curp"] = curp[-1]
-        
-        # Si todo fue exitoso, devuelve los datos.
-        return NomiFlash.RespuestaNomina(**datos_listos)
-
-    except Exception as e:
-        # Error por procesamiento
-        return NomiFlash.RespuestaNomina(error_lectura_nomina=f"Error procesando '{archivo.filename}': {e}")
-    
-async def procesar_segunda_nomina(archivo: UploadFile) -> NomiFlash.SegundaRespuestaNomina:
-    """
-    Función auxiliar que procesa los archivos de la segunda nómina siguiendo lógica de negocio interna.
-    Tiene comprobación interna con regex para más precisión (RFC Y CURP)
-    Devuelve un objeto SegundaRespuestaNomina en caso de éxito o error_lectura_nomina en caso de fallo.
-    """
-    try:
-        # Leer contenido. Si falla, la excepción será capturada.
-        pdf_bytes = await archivo.read()
-
-        # --- Lógica de negocio específica para Nómina ---
-        # 1. Extraemos texto para la validación con regex
-        texto_inicial = extraer_texto_de_pdf(pdf_bytes, num_paginas=2)
-        rfc, curp = extraer_rfc_curp_por_texto(texto_inicial, "nomina")
-        # 2.5 Log de RFC y CURP extraídos
-        logger.info(f"Se extrajo el RFC: {rfc[-1] if rfc else None}")
-        logger.info(f"Se extrajo el CURP: {curp[-1] if curp else None}")
-
-        # 2. Leemos el QR de las imagenes (con loop executor para no bloquear el servidor)
-        loop = asyncio.get_running_loop()
-
-        imagen_buffers = await loop.run_in_executor(
-            None, convertir_pdf_a_imagenes, pdf_bytes
-        )
-
-        if not imagen_buffers:
-            raise ValueError("No se pudieron generar imágenes del PDF.")
-
-        # 2.5 Leemos el QR de las imágenes (lógica condicional aquí)
-        datos_qr = await loop.run_in_executor(
-            None, leer_qr_de_imagenes, imagen_buffers
-        )
-        
-        # 3. Analizamos con la IA usando el prompt de nómina y las mismas imagenes
-        respuesta_gpt = await analizar_gpt_nomi(SEGUNDO_PROMPT_NOMINA, imagen_buffers)
-        datos_crudos = extraer_json_del_markdown(respuesta_gpt)
-        datos_listos = sanitizar_datos_ia(datos_crudos)
-
-        # --- Lógica de corrección específica para Nómina ---
-        # 3. Sobrescribimos los datos de la IA con los de la regex (más fiables)
-        if datos_qr:
-            datos_listos["datos_qr"] = datos_qr
-        if rfc:
-            datos_listos["rfc"] = rfc[-1]
-        if curp:
-            datos_listos["curp"] = curp[-1]
-        
-        # Si todo fue exitoso, devuelve los datos.
-        return NomiFlash.SegundaRespuestaNomina(**datos_listos)
-
-    except Exception as e:
-        # Error por procesamiento
-        return NomiFlash.SegundaRespuestaNomina(error_lectura_nomina=f"Error procesando '{archivo.filename}': {e}")
-    
-# --- PROCESADOR PARA ESTADO DE CUENTA ---
-async def procesar_estado_cuenta(archivo: UploadFile) -> NomiFlash.RespuestaEstado:
-    """
-    Procesa un estado de cuenta, analizando la primera, segunda y última página.
-    Ejecuta la lectura de QR y el análisis de IA en paralelo para mayor eficiencia.
-    """
-    try:
-        pdf_bytes = await archivo.read()
-
-        # --- Lógica de negocio específica para Nómina ---
-        # 0. Extraemos texto para la validación con regex
-        texto_inicial = extraer_texto_de_pdf(pdf_bytes, num_paginas=2)
-        rfc, _ = extraer_rfc_curp_por_texto(texto_inicial, "estado")
-        logger.info(f"Se extrajo el RFC: {rfc[0] if rfc else None}")
-
-        loop = asyncio.get_running_loop()
-
-        # --- 1. Determinar dinámicamente las páginas a procesar ---
-        paginas_a_procesar = []
-        try:
-            # Abrimos el PDF brevemente solo para contar las páginas
-            with fitz.open(stream=BytesIO(pdf_bytes), filetype="pdf") as doc:
-                total_paginas = len(doc)
-            
-            # Creamos la lista: [1, 2, ultima_pagina]
-            # Usamos set para manejar PDFs cortos (ej. de 1 o 2 páginas) sin duplicados.
-            paginas_a_procesar = sorted(list(set([1, 2, total_paginas])))
-            logger.info(f"Procesando páginas {paginas_a_procesar} para '{archivo.filename}'")
-            
-        except Exception as e:
-            # Si falla, usamos un valor seguro por defecto
-            logger.warning(f"No se pudo determinar el total de páginas para '{archivo.filename}': {e}. Usando páginas [1, 2].")
-            paginas_a_procesar = [1, 2]
-
-        # --- 2. Convertir solo las páginas necesarias a imágenes ---
-        imagen_buffers = await loop.run_in_executor(
-            None, convertir_pdf_a_imagenes, pdf_bytes, paginas_a_procesar
-        )
-        if not imagen_buffers:
-            raise ValueError("No se pudieron generar imágenes del PDF.")
-
-        # 2.5 Leemos el QR de las imágenes (lógica condicional aquí)
-        datos_qr = await loop.run_in_executor(
-            None, leer_qr_de_imagenes, imagen_buffers
-        )
-        
-        # 3. Analizamos con la IA usando el prompt de nómina y las mismas imagenes
-        respuesta_gpt = await analizar_gpt_nomi(PROMPT_ESTADO_CUENTA, imagen_buffers)
-        datos_crudos = extraer_json_del_markdown(respuesta_gpt)
-        datos_listos = sanitizar_datos_ia(datos_crudos)
-
-        # --- Lógica de corrección específica para Nómina ---
-        if datos_qr:
-            datos_listos["datos_qr"] = datos_qr
-        if rfc:
-            logger.info(f"RFC extraído: {rfc[0]}")
-            datos_listos["rfc"] = rfc[0]
-
-        logger.debug(datos_listos)
-        return NomiFlash.RespuestaEstado(**datos_listos)
-
-    except Exception as e:
-        return NomiFlash.RespuestaEstado(error_lectura_estado=f"Error procesando '{archivo.filename}': {e}")
-
-# --- PROCESADOR PARA COMPROBANTE DE DOMICILIO ---
-async def procesar_comprobante(archivo: UploadFile) -> NomiFlash.RespuestaComprobante:
-    """
-    Procesa un archivo de comprobante de domicilio.
-    Devuelve un objeto RespuestaComprobante en caso de éxito o error_lectura_comprobante en caso de fallo.
-    """
-    try:
-        pdf_bytes = await archivo.read()
-
-        # 1. Convertimos los PDF a imagenes (con loop executor para no bloquear el servidor)
-        loop = asyncio.get_running_loop()
-
-        imagen_buffers = await loop.run_in_executor(
-            None, convertir_pdf_a_imagenes, pdf_bytes
-        )
-
-        respuesta_ia = await analizar_gpt_nomi(PROMPT_COMPROBANTE, imagen_buffers)
-        datos_crudos = extraer_json_del_markdown(respuesta_ia)
-        datos_listos = sanitizar_datos_ia(datos_crudos)
-        return NomiFlash.RespuestaComprobante(**datos_listos)
-    
-    except Exception as e: 
-        return NomiFlash.RespuestaComprobante(error_lectura_comprobante=f"Error procesando '{archivo.filename}': {e}")
     
 def extraer_datos_con_regex(texto: str, tipo_persona: str) -> Optional[Dict]:
     """

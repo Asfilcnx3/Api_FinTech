@@ -212,6 +212,80 @@ def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
     aplicar_estilo_header(ws_final)
     ws_final.column_dimensions['A'].width = 30
 
+    # ==========================================
+    # 11. REPORTE TÉCNICO (QA)
+    # ==========================================
+    ws_qa = wb.create_sheet("Métricas de Extracción (QA)")
+    
+    # Encabezados Técnicos
+    headers_qa = [
+        "Archivo", "Cuenta", "Página", 
+        "Estado", "Tiempo (s)", "Confianza (%)", 
+        "Transacciones", "Bloques Texto", "Alertas del Motor"
+    ]
+    ws_qa.append(headers_qa)
+    
+    # Estilos condicionales simples
+    fill_ok = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid") # Verde
+    fill_warn = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid") # Amarillo
+    fill_error = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid") # Rojo
+
+    for res in resultados:
+        # Datos generales del archivo
+        ia = res.get("AnalisisIA") or {}
+        nombre_archivo = ia.get("nombre_archivo_virtual", "Desconocido")
+        banco = ia.get("banco", "N/A")
+        
+        # Extraemos la metadata técnica que inyectamos en el orquestador
+        # Nota: Asegúrate de que tu modelo Pydantic o Dict tenga este campo
+        metadata_list = res.get("metadata_tecnica", []) 
+        
+        if not metadata_list:
+            # Si es un archivo OCR antiguo o falló, ponemos una línea genérica
+            ws_qa.append([nombre_archivo, banco, "N/A", "Sin Métricas (Legacy/OCR)", 0, 0, 0, 0, "-"])
+            continue
+            
+        for meta in metadata_list:
+            score = meta.get("calidad_score", 0.0)
+            tiempo_sec = meta.get("tiempo_ms", 0) / 1000.0
+            alertas = meta.get("alertas", "OK")
+            
+            row_data = [
+                nombre_archivo,
+                banco,
+                meta.get("pagina", 0),
+                "PROCESADO",
+                tiempo_sec,
+                score, # Se formateará como porcentaje
+                meta.get("transacciones", 0),
+                meta.get("bloques", 0),
+                alertas
+            ]
+            ws_qa.append(row_data)
+            
+            # Coloreado semántico de la última fila agregada
+            last_row = ws_qa[ws_qa.max_row]
+            
+            # Color basado en score
+            c_score = last_row[5] # Columna F (Confianza)
+            if score >= 0.9: c_score.fill = fill_ok
+            elif score >= 0.7: c_score.fill = fill_warn
+            else: c_score.fill = fill_error
+            
+            # Color basado en alertas
+            c_alert = last_row[8] # Columna I (Alertas)
+            if alertas != "OK": c_alert.fill = fill_warn
+
+    # Formateo Final QA
+    aplicar_estilo_header(ws_qa)
+    ws_qa.column_dimensions['A'].width = 35
+    ws_qa.column_dimensions['I'].width = 50
+    
+    # Formato de porcentaje para la columna de confianza
+    for row in ws_qa.iter_rows(min_row=2, min_col=6, max_col=6):
+        for cell in row: 
+            cell.number_format = '0%'
+
     output = io.BytesIO()
     wb.save(output)
     return output.getvalue()
