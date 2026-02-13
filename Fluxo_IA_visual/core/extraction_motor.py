@@ -830,7 +830,7 @@ class BankStatementEngine:
         conteo = {k: 0 for k in PATRONES_FECHA.keys()}
         
         # Muestreo rápido
-        lineas = texto_muestra.split('\n')[:200] # Analizar primeras 200 líneas es suficiente
+        lineas = texto_muestra.split('\n')[:1000] # Analizar primeras 200 líneas es suficiente
         
         for linea in lineas:
             linea = linea.strip()

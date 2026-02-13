@@ -34,7 +34,7 @@ class RespuestasMotorEstados(BaseModel):
         """Representa una única fila bancaria extraída y validada."""
 
         # Datos del Negocio
-        fecha: str = Field(..., description="Fecha en formato normalizado (DD/MM/AAAA o DD/MM)", min_length=3)
+        fecha: str = Field(..., description="Fecha en formato normalizado (DD/MM/AAAA o DD/MM o DD)", min_length=1)
         descripcion: str = Field(..., description="Texto completo de la descripción de la operación")
         monto: float = Field(..., description="Monto de la operación")
         tipo: "RespuestasMotorEstados.TipoTransaccion"
