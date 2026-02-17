@@ -68,7 +68,6 @@ class SyntageClient:
         if found_name: name = found_name
 
         # C. Obtener Riesgos
-        # C. Obtener Riesgos
         try:
             # LÓGICA DE FECHAS: 12 meses pasados + Mes actual (Incompleto)
             # Ejemplo: Si hoy es 5 de Feb 2026.
@@ -122,8 +121,8 @@ class SyntageClient:
     # --- 2. RAW MONTHLY DATA ---
     async def get_raw_monthly_data(self, client: httpx.AsyncClient, rfc: str, endpoint: str) -> Dict[str, Any]:
         """
-        Obtiene los datos mensuales sin filtrar últimos 3 años (~1100 días) para permitir que el modelo de predicción
-        detecte estacionalidad (ciclos anuales).
+        Retorna mapa: date -> { "amount": float, "count": int } (para sales/exp)
+        O date -> { "in": {amt, count}, "out": {amt, count} } (para cash-flow)
         """
         end_date = datetime.now()
         start_date = end_date - timedelta(days=1100) 
@@ -149,14 +148,25 @@ class SyntageClient:
                     if not norm_date: continue
 
                     val = float(item.get("mxnAmount") or item.get("amount") or 0.0)
+                    count = int(item.get("count") or item.get("movements") or 0) # Intentar obtener conteo
                     type_str = item.get("type", "total")
                     
                     if endpoint == "cash-flow":
-                        if norm_date not in result_map: result_map[norm_date] = {"in": 0.0, "out": 0.0}
-                        if type_str == "inflow": result_map[norm_date]["in"] += val
-                        elif type_str == "outflow": result_map[norm_date]["out"] += val
+                        if norm_date not in result_map: 
+                            result_map[norm_date] = {
+                                "in": {"amount": 0.0, "count": 0}, 
+                                "out": {"amount": 0.0, "count": 0}
+                            }
+                        
+                        if type_str == "inflow": 
+                            result_map[norm_date]["in"]["amount"] += val
+                            result_map[norm_date]["in"]["count"] += count
+                        elif type_str == "outflow": 
+                            result_map[norm_date]["out"]["amount"] += val
+                            result_map[norm_date]["out"]["count"] += count
                     else:
-                        result_map[norm_date] = val
+                        # Para Sales y Expenditures
+                        result_map[norm_date] = {"amount": val, "count": count}
         
         except Exception as e:
             logger.error(f"Error fetching {endpoint}: {e}")

@@ -543,7 +543,7 @@ def test_crear_objeto_resultado_invalido(monkeypatch):
 
     assert resultado.AnalisisIA is None
     assert isinstance(resultado.DetalleTransacciones, type(resultado.DetalleTransacciones))
-    assert "Error al estructurar el diccionario de respuesta: Falla simulada" in resultado.DetalleTransacciones.error
+    assert "Error estructural: Falla simulada" in resultado.DetalleTransacciones.error
 
 # ---- Pruebas para verificar_fecha_comprobante ----
 def test_verificar_fecha_comprobante_valida_reciente():

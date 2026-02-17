@@ -43,24 +43,27 @@ CAMPOS_FLOAT = [
     "comisiones", "depositos", "cargos", "saldo_promedio", "depositos_en_efectivo", "entradas_TPV_bruto", "entradas_TPV_neto"
 ]
 
-KEYWORDS_COLUMNAS = {
-    # Agregamos singulares y variantes comunes sin espacios al inicio
-    "cargo": [
-        "retiro", "retiros", 
-        "cargo", "cargos", 
-        "debito", "debitos", 
-        "débito", "débitos",
-        "signo", "debe", 
-        "salida", "salidas"
-    ],
-    "abono": [
-        "deposito", "depositos",
-        "depósito", "depósitos",
-        "abono", "abonos", 
-        "credito", "creditos", 
-        "haber", "entrada", "entradas"
-    ]
-}
+# KEYWORDS_COLUMNAS = {
+#     # Agregamos singulares y variantes comunes sin espacios al inicio
+#     "cargo": [
+#         "retiro", "retiros", 
+#         "cargo", "cargos", 
+#         "debito", "debitos", 
+#         "débito", "débitos",
+#         "signo", "debe", 
+#         "salida", "salidas"
+#     ],
+#     "abono": [
+#         "deposito", "depositos",
+#         "depósito", "depósitos",
+#         "abono", "abonos", 
+#         "credito", "creditos", 
+#         "haber", "entrada", "entradas"
+#     ],
+#     "saldo_inicio": [
+#         "saldo anterior", "saldo inicial", "saldo de inicio", "saldo"
+#     ]
+# }
 
 # ==========================================
 # 1. CONFIGURACIÓN DE TERMINALES (REESTRUCTURADA)

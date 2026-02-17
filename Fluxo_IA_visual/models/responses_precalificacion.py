@@ -147,6 +147,17 @@ class PrequalificationResponse(BaseModel):
         input_revenue: float
         input_net_income: float # El valor final resuelto (signo corregido)
         input_taxes: float
+    
+    class RawDataPoint(BaseModel):
+        """Modelo para la nueva hoja de Raw Data"""
+        date: str  # YYYY-MM-DD
+        revenue: float = 0.0
+        expenses: float = 0.0
+        inflows_amount: float = 0.0
+        outflows_amount: float = 0.0
+        nfcf: float = 0.0
+        inflows_count: int = 0
+        outflows_count: int = 0
 
     class PrequalificationFinalResponse(BaseModel):
         rfc: str
@@ -168,6 +179,9 @@ class PrequalificationResponse(BaseModel):
         
         concentration_last_12m: "PrequalificationResponse.ConcentrationMetrics"
         financial_ratios_history: List["PrequalificationResponse.FinancialRatioYear"]
+
+        # Datos crudos para la nueva hoja de Raw Data (12 meses anteriores + mes actual)
+        raw_data_history: List["PrequalificationResponse.RawDataPoint"] = []
         
         # Forecast y descarga
         financial_predictions: Optional[Any] = None

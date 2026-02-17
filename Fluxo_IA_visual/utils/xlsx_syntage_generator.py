@@ -9,11 +9,12 @@ def generar_excel_syntage(data: dict) -> bytes:
     # --- ESTILOS ---
     header_font = Font(bold=True, color="FFFFFF")
     header_fill = PatternFill(start_color="1F497D", end_color="1F497D", fill_type="solid")
-    sub_header_fill = PatternFill(start_color="4F81BD", end_color="4F81BD", fill_type="solid") # Azul más claro
-    alert_fill = PatternFill(start_color="C0504D", end_color="C0504D", fill_type="solid")
+    sub_header_fill = PatternFill(start_color="4F81BD", end_color="4F81BD", fill_type="solid")
     currency_style = NamedStyle(name='currency_style', number_format='$#,##0.00')
     percent_style = NamedStyle(name='percent_style', number_format='0.00%')
-    
+    date_style = NamedStyle(name='date_style', number_format='YYYY-MM-DD')
+    alert_fill = PatternFill(start_color="C0504D", end_color="C0504D", fill_type="solid")
+
     def estilo_header(ws, row_idx, col_start=1, col_end=None):
         if col_end is None: col_end = ws.max_column
         for col in range(col_start, col_end + 1):
@@ -163,71 +164,157 @@ def generar_excel_syntage(data: dict) -> bytes:
         ws2.column_dimensions[chr(64+i)].width = 20
 
     # ==========================================
-    # HOJA 3: PROYECCIONES DETALLADAS
+    # HOJA 3: PROYECCIONES (ACTUALIZADA)
     # ==========================================
     ws3 = wb.create_sheet("Proyecciones (Escenarios)")
     
     predictions = data.get("financial_predictions", {})
     metrics_to_export = ["revenue", "expenditures", "inflows", "outflows", "nfcf"]
+    raw_history = data.get("raw_data_history", [])
     
-    # Obtener fechas del primer modelo disponible
+    # 1. Obtener Fechas: 12 Pasadas + 12 Futuras
+    # Extraemos fechas históricas (últimos 12 meses de la raw data)
+    hist_dates_iso = [x["date"] for x in raw_history[-12:]] if raw_history else []
+    
+    # Extraemos fechas futuras del primer modelo
+    future_dates_iso = []
     first_metric = predictions.get("revenue", {})
-    ref_data = []
-    if first_metric.get("linear"): ref_data = first_metric["linear"]["scenarios"]["realistic"]
-    elif first_metric.get("exponential"): ref_data = first_metric["exponential"]["scenarios"]["realistic"]
+    if first_metric and first_metric.get("linear"):
+        future_dates_iso = [pt["date"] for pt in first_metric["linear"]["scenarios"]["realistic"]]
     
-    fechas = [pt.get("date") for pt in ref_data]
+    # Encabezados
+    headers = ["Métrica", "Modelo", "Escenario", "Growth Comp.", "Growth Proy."] 
+    # Añadir fechas históricas (Colapsadas visualmente o marcadas distinto)
+    headers += [f"Hist: {d}" for d in hist_dates_iso]
+    # Añadir fechas futuras
+    headers += [f"Proy: {d}" for d in future_dates_iso]
     
-    # Encabezado
-    ws3.append(["Métrica", "Modelo", "Escenario", "Growth Proy."] + fechas)
+    ws3.append(headers)
     estilo_header(ws3, 1)
-    
+
     for metric in metrics_to_export:
         m_data = predictions.get(metric, {})
         if not m_data: continue
         
+        # Obtener valores históricos para esta métrica (últimos 12)
+        # Mapeamos nombre métrica a clave en raw_data_history
+        metric_key_map = {
+            "revenue": "revenue", "expenditures": "expenses",
+            "inflows": "inflows_amount", "outflows": "outflows_amount",
+            "nfcf": "nfcf"
+        }
+        key = metric_key_map.get(metric)
+        hist_vals = [item.get(key, 0.0) for item in raw_history[-12:]]
+        
+        # Rellenar ceros si falta historia
+        if len(hist_vals) < 12:
+            hist_vals = [0.0]*(12-len(hist_vals)) + hist_vals
+
         for model_type in ["linear", "exponential", "seasonal"]:
             model_res = m_data.get(model_type)
             if not model_res: continue
             
             scenarios = model_res.get("scenarios", {})
             
-            # Extraemos los 3 crecimientos calculados
-            g_r = model_res.get('growth_realistic', None)
-            g_o = model_res.get('growth_optimistic', None)
-            g_p = model_res.get('growth_pessimistic', None)
-            
-            # Formateamos a string
-            str_g_r = f"{g_r*100:.1f}%" if g_r is not None else "N/A"
-            str_g_o = f"{g_o*100:.1f}%" if g_o is not None else "N/A"
-            str_g_p = f"{g_p*100:.1f}%" if g_p is not None else "N/A"
-            
-            # --- FILA 1: REALISTA ---
-            vals_r = [pt.get("value") for pt in scenarios.get("realistic", [])]
-            ws3.append([metric.upper(), model_type.title(), "Realista", str_g_r] + vals_r)
-            
-            # --- FILA 2: OPTIMISTA ---
-            vals_o = [pt.get("value") for pt in scenarios.get("optimistic", [])]
-            ws3.append(["", "", "Optimista (+)", str_g_o] + vals_o)
-            
-            # --- FILA 3: PESIMISTA ---
-            vals_p = [pt.get("value") for pt in scenarios.get("pessimistic", [])]
-            ws3.append(["", "", "Pesimista (-)", str_g_p] + vals_p)
-            
-            ws3.append([""])
+            # Métricas de crecimiento
+            # Comparison: Forecast Total vs History Total
+            g_comp_r = model_res.get('growth_realistic') 
+            g_comp_o = model_res.get('growth_optimistic')
+            g_comp_p = model_res.get('growth_pessimistic')
 
-    ws3.column_dimensions['A'].width = 20
-    ws3.column_dimensions['B'].width = 25
+            # Projection: Trend interna (campo nuevo agregado en Forecaster)
+            g_proy_r = model_res.get('trend_realistic') 
+            g_proy_o = model_res.get('trend_optimistic')
+            g_proy_p = model_res.get('trend_pessimistic')
+            
+            # Función helper para formatear fila
+            def make_row(label, comp, proy, futures):
+                row = [
+                    metric.upper() if label == "Realista" else "", # Métrica
+                    model_type.title() if label == "Realista" else "", # Modelo
+                    label, # Escenario
+                    comp, # Growth Comparison
+                    proy  # Growth Projection
+                ]
+                # Agregamos historia (Siempre la REAL para contexto visual)
+                row += hist_vals 
+                # Agregamos futuro
+                row += [pt.get("value") for pt in futures]
+                return row
+
+            # Fila Realista
+            ws3.append(make_row("Realista", g_comp_r, g_proy_r, scenarios.get("realistic", [])))
+            # Fila Optimista
+            ws3.append(make_row("Optimista (+)", g_comp_o, g_proy_o, scenarios.get("optimistic", [])))
+            # Fila Pesimista
+            ws3.append(make_row("Pesimista (-)", g_comp_p, g_proy_p, scenarios.get("pessimistic", [])))
+            
+            ws3.append([""]) # Separador visual
+
+    # Estilos Proyecciones
+    ws3.column_dimensions['A'].width = 15
+    ws3.column_dimensions['B'].width = 15
     ws3.column_dimensions['C'].width = 20
+    ws3.column_dimensions['D'].width = 15
+    ws3.column_dimensions['E'].width = 15
     
-    # Formato moneda
-    for row in ws3.iter_rows(min_row=2, min_col=5, max_col=len(fechas)+4):
-        for cell in row:
+    # Formato Porcentaje (Cols D y E)
+    for row in ws3.iter_rows(min_row=2, min_col=4, max_col=5):
+        for cell in row: cell.style = percent_style
+        
+    # Formato Moneda (Desde Col F hasta el final)
+    max_col = ws3.max_column
+    for row in ws3.iter_rows(min_row=2, min_col=6, max_col=max_col):
+        for cell in row: 
             if isinstance(cell.value, (int, float)):
                 cell.style = currency_style
 
+    # Separador visual entre historia y futuro
+    # La columna donde empieza el futuro es 6 (A-E) + 12 (hist) = 18?
+    # A=1, B=2, C=3, D=4, E=5. Historia es 6 a 17. Futuro empieza en 18.
+    col_split = 5 + len(hist_vals)
+    for row in range(1, ws3.max_row + 1):
+        cell = ws3.cell(row=row, column=col_split)
+        cell.border = Border(right=Side(style='medium', color="000000"))
+
+
     # ==========================================
-    # HOJA 4: DETALLE DE BURÓ (NUEVA)
+    # HOJA 4: RAW DATA (NUEVA PAGINA)
+    # ==========================================
+    ws_raw = wb.create_sheet("Raw Data")
+    
+    # Encabezados solicitados
+    headers_raw = [
+        "startDate", "Revenue", "Expenses", 
+        "Inflows mxn amounts", "Outflows mxn amounts", 
+        "NFCF", "Inflows transactions", "Outflows transactions"
+    ]
+    ws_raw.append(headers_raw)
+    estilo_header(ws_raw, 1)
+    
+    for item in raw_history:
+        # Item es un dict (pydantic model dump)
+        ws_raw.append([
+            item.get("date"),
+            item.get("revenue"),
+            item.get("expenses"),
+            item.get("inflows_amount"),
+            item.get("outflows_amount"),
+            item.get("nfcf"),
+            item.get("inflows_transactions"),
+            item.get("outflows_transactions")
+        ])
+
+    # Formatos Raw Data
+    ws_raw.column_dimensions['A'].width = 15
+    for i in range(2, 9): ws_raw.column_dimensions[chr(64+i)].width = 20
+    
+    # Moneda para cols B a F
+    for row in ws_raw.iter_rows(min_row=2, min_col=2, max_col=6):
+        for cell in row: cell.style = currency_style
+
+    # ==========================================
+    # HOJA 5: DETALLE DE BURÓ
     # ==========================================
     ws4 = wb.create_sheet("Detalle de Buró")
     
@@ -320,6 +407,9 @@ def generar_excel_syntage(data: dict) -> bytes:
     ws4.column_dimensions['H'].width = 15
     ws4.column_dimensions['I'].width = 20
 
+    # ==========================================
+    # GUARDAR
+    # ==========================================
     output = io.BytesIO()
     wb.save(output)
     return output.getvalue()
