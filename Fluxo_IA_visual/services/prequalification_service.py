@@ -4,11 +4,10 @@ from ..services.calculator_services import FinancialCalculatorService
 from ..models.responses_precalificacion import PrequalificationResponse
 from ..services.forecasting_service import ForecastingService
 from datetime import datetime
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any
 import httpx
 import statistics
 import logging
-import math # <--- Necesario para el CAGR
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +61,7 @@ class PrequalificationService:
 
         # --- FASE 2: PROCESAMIENTO DE LÓGICA DE NEGOCIO (CPU Bound) ---
         
-        # A. Procesamiento Temporal AVANZADO (AQUÍ ESTABA EL ERROR)
+        # A. Procesamiento Temporal AVANZADO
         # Reemplazamos _process_temporal_data con _calculate_advanced_stats
         stats_windows = self._calculate_advanced_stats(
             raw_cashflow, raw_sales, raw_expenditures
@@ -75,20 +74,67 @@ class PrequalificationService:
         financial_ratios = self._process_financial_statements(financial_tree)
 
         # --- FASE 3: PRONÓSTICO FINANCIERO INTEGRAL ---
+        # --- PREPARACIÓN DE RAW DATA HISTORY ---
+        all_dates = set(raw_cashflow.keys()) | set(raw_sales.keys()) | set(raw_expenditures.keys())
+        sorted_dates = sorted(list(all_dates))
         
-        # Preparar mapas planos para Inflows/Outflows
-        inflows_map = {}
-        outflows_map = {}
-        for date_key, vals in raw_cashflow.items():
-            if isinstance(vals, dict):
-                inflows_map[date_key] = vals.get("in", 0.0)
-                outflows_map[date_key] = vals.get("out", 0.0)
+        raw_history_list = []
+        
+        # Mapas planos para el forecaster (extraemos solo amounts)
+        simple_sales = {}
+        simple_exp = {}
+        simple_in = {}
+        simple_out = {}
 
+        for d in sorted_dates:
+            # NOTA: raw_sales[d] ahora es un dict, ej: {'amount': 100.0, 'count': 5}
+            s_obj = raw_sales.get(d, {"amount": 0.0, "count": 0})
+            e_obj = raw_expenditures.get(d, {"amount": 0.0, "count": 0})
+            
+            # Cashflow ya era un dict de dicts: {'in': {'amount':...}, 'out': {'amount':...}}
+            cf_obj = raw_cashflow.get(d, {
+                "in": {"amount": 0.0, "count": 0}, 
+                "out": {"amount": 0.0, "count": 0}
+            })
+            
+            # Ahora extraemos el valor numérico explícito.
+            rev = float(s_obj["amount"])
+            exp = float(e_obj["amount"])
+            
+            inf_amt = float(cf_obj["in"]["amount"])
+            out_amt = float(cf_obj["out"]["amount"])
+            
+            # Ahora sí podemos restar floats
+            nfcf = inf_amt - out_amt 
+            
+            # Conteos (para la hoja Raw Data)
+            inf_cnt = int(cf_obj["in"].get("count", 0))
+            out_cnt = int(cf_obj["out"].get("count", 0))
+            
+            # Agregamos a la lista histórica
+            raw_history_list.append(PrequalificationResponse.RawDataPoint(
+                date=d,
+                revenue=rev,
+                expenses=exp,
+                inflows_amount=inf_amt,
+                outflows_amount=out_amt,
+                nfcf=nfcf,
+                inflows_count=inf_cnt,
+                outflows_count=out_cnt
+            ))
+
+            # Llenar mapas para forecaster
+            simple_sales[d] = rev
+            simple_exp[d] = exp
+            simple_in[d] = inf_amt
+            simple_out[d] = out_amt
+
+        # --- LLAMADA AL FORECASTER (Usando los mapas simples) ---
         full_forecast = self.forecaster.generate_complete_forecast(
-            revenue_map=raw_sales,
-            expenditure_map=raw_expenditures,
-            inflow_map=inflows_map,
-            outflow_map=outflows_map,
+            revenue_map=simple_sales,
+            expenditure_map=simple_exp,
+            inflow_map=simple_in,
+            outflow_map=simple_out,
             horizon=12
         )
 
@@ -130,6 +176,7 @@ class PrequalificationService:
             
             concentration_last_12m=concentration_metrics,
             financial_ratios_history=financial_ratios,
+            raw_data_history=raw_history_list,
             financial_predictions=full_forecast
         )
 
@@ -147,12 +194,24 @@ class PrequalificationService:
         
         data_points = []
         for k in sorted_keys:
-            cf = cashflow_map[k]
-            # Extraemos valores seguros
-            rev = sales_map.get(k, 0.0)
-            exp = exp_map.get(k, 0.0)
-            inf = cf.get("in", 0.0) if isinstance(cf, dict) else 0.0
-            out = cf.get("out", 0.0) if isinstance(cf, dict) else 0.0
+            # Sales
+            s_data = sales_map.get(k, {"amount": 0.0})
+            rev = float(s_data.get("amount", 0.0)) if isinstance(s_data, dict) else float(s_data)
+
+            # Expenditures
+            e_data = exp_map.get(k, {"amount": 0.0})
+            exp = float(e_data.get("amount", 0.0)) if isinstance(e_data, dict) else float(e_data)
+
+            # Cashflow
+            cf = cashflow_map[k] # Este siempre existe porque iteramos sobre sus keys? Mejor prevenir:
+            # Nota: cashflow_map tiene estructura { "in": {...}, "out": {...} }
+            
+            inf_data = cf.get("in", {"amount": 0.0})
+            inf = float(inf_data.get("amount", 0.0)) if isinstance(inf_data, dict) else float(inf_data)
+
+            out_data = cf.get("out", {"amount": 0.0})
+            out = float(out_data.get("amount", 0.0)) if isinstance(out_data, dict) else float(out_data)
+
             nfcf = inf - out
             
             data_points.append({

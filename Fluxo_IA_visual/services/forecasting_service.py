@@ -220,26 +220,47 @@ class ForecastingService:
         y_opt = np.maximum(0, y_real + uncertainty)
         y_pess = np.maximum(0, y_real - uncertainty)
 
-        # --- CÁLCULO DE CRECIMIENTOS (LOS 3 ESCENARIOS) ---
-        def calc_growth(arr_vals):
+        # 1. GROWTH COMPARISON (Vs Historia)
+        # Fórmula: (Suma Total Proyectada - Suma 12 Meses Previos) / Suma 12 Meses Previos
+        def calc_comparison(arr_vals):
             total_pred = np.sum(arr_vals)
             if last_12_sum > 0:
                 return (total_pred - last_12_sum) / last_12_sum
             return 0.0
 
-        g_real = calc_growth(y_real)
-        g_opt = calc_growth(y_opt)
-        g_pess = calc_growth(y_pess)
+        comp_real = calc_comparison(y_real)
+        comp_opt = calc_comparison(y_opt)
+        comp_pess = calc_comparison(y_pess)
+
+        # 2. GROWTH PROJECTION (Tendencia Interna)
+        # Fórmula: (Valor Mes 12 - Valor Mes 1) / Valor Mes 1
+        # Nos dice si la curva va hacia arriba o hacia abajo en el futuro.
+        def calc_internal_trend(arr_vals):
+            if len(arr_vals) < 2: return 0.0
+            start = arr_vals[0]
+            end = arr_vals[-1]
+            # Evitar división por cero
+            if start > 1.0: 
+                return (end - start) / start
+            return 0.0
+
+        trend_real = calc_internal_trend(y_real)
+        trend_opt = calc_internal_trend(y_opt)
+        trend_pess = calc_internal_trend(y_pess)
 
         # Mapear a objetos
         def to_pts(arr):
             return [Forecast.ForecastPoint(date=d.strftime("%Y-%m-%d"), value=round(float(v), 2)) for d, v in zip(dates, arr)]
 
-        # Validación segura específica de cada escenario vs histórico (no vs realista)
+        # Validación segura específica de cada escenario y de comparación y trend
         historical_growth_rate=round(hist_growth, 4) if hist_growth is not None else None
-        growth_realistic=round(g_real, 4) if g_real is not None else None
-        growth_optimistic=round(g_opt, 4) if g_opt is not None else None
-        growth_pessimistic=round(g_pess, 4) if g_pess is not None else None
+        comp_realistic=round(comp_real, 4) if comp_real is not None else None
+        comp_optimistic=round(comp_opt, 4) if comp_opt is not None else None
+        comp_pessimistic=round(comp_pess, 4) if comp_pess is not None else None
+
+        trend_realistic=round(trend_real, 4) if trend_real is not None else None
+        trend_optimistic=round(trend_opt, 4) if trend_opt is not None else None
+        trend_pessimistic=round(trend_pess, 4) if trend_pess is not None else None
 
         return Forecast.ModelResult(
             scenarios=Forecast.Scenario(
@@ -249,9 +270,16 @@ class ForecastingService:
             ),
             method_name=name,
             historical_growth_rate=historical_growth_rate,
-            growth_realistic=growth_realistic,
-            growth_optimistic=growth_optimistic,
-            growth_pessimistic=growth_pessimistic
+            
+            # Comparación vs histórico (últimos 12 meses)
+            comparison_realistic=comp_realistic,
+            comparison_optimistic=comp_optimistic,
+            comparison_pessimistic=comp_pessimistic,
+
+            # Tendencia interna de la proyección (Mes 12 vs Mes 1)
+            trend_realistic=trend_realistic,
+            trend_optimistic=trend_optimistic,
+            trend_pessimistic=trend_pessimistic
         )
 
     # ==========================================

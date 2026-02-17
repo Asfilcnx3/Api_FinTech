@@ -420,61 +420,81 @@ async def procesar_documento_escaneado_con_agentes_async(
 
 def procesar_digital_worker_sync(
     ia_data_inicial: dict, 
-    texto_por_pagina_sucio: Dict[int, str], # Se mantiene por compatibilidad, pero el motor lo rehará mejor
-    movimientos_por_pagina: Dict[int, Any], # Legacy, no se usa
+    texto_por_pagina_sucio: Dict[int, str], 
+    movimientos_por_pagina: Dict[int, Any], 
     filename: str,
     file_path: str,
     rango_paginas: Tuple[int, int]
 ) -> Union[AnalisisTPV.ResultadoExtraccion, Exception]:
+    
+    # --- CLASE ADAPTADORA INTERNA ---
+    # Usamos esto para convertir el dict del motor en el objeto que espera 
+    # 'clasificar_transacciones_extraidas' (que usa .monto, .descripcion, etc.)
+    class TransaccionAdapter:
+        def __init__(self, data_dict):
+            self.fecha = data_dict.get("fecha")
+            self.descripcion = data_dict.get("descripcion")
+            self.monto = data_dict.get("monto")
+            self.tipo = data_dict.get("tipo") # String, ej: "CARGO"
+            self.metodo_match = data_dict.get("metodo_match")
+            self.coords_box = data_dict.get("coords_box")
+    # --------------------------------
+
     try:
         # 1. DETERMINAR PÁGINAS
         start, end = rango_paginas
         lista_paginas = list(range(start, end + 1))
         
-        # 2. INSTANCIAR Y EJECUTAR MOTOR (Reemplaza los pasos 2, 3, 4 y 5 antiguos)
-        # Nota: debug_mode=False para prod
+        # 2. INSTANCIAR Y EJECUTAR MOTOR
         engine = BankStatementEngine(debug_mode=False) 
 
-        # Log de auditoría simple
         logger.info(f"Iniciando Motor v2 para {filename} en páginas {lista_paginas}")
 
-        # Esto hace: Crop -> Normalización -> Detección Formato -> Segmentación -> Geometría
+        # OJO: Esto devuelve una lista de DICCIONARIOS
         resultados_paginas = engine.procesar_documento_entero(file_path, paginas=lista_paginas)
 
-        # 3. APLANAR RESULTADOS Y RECOLECTAR MÉTRICAS (NUEVO)
+        # 3. APLANAR RESULTADOS Y RECOLECTAR MÉTRICAS (CORREGIDO)
         todas_las_transacciones_objs = []
         metricas_consolidado = []
 
         for res_pag in resultados_paginas:
-            todas_las_transacciones_objs.extend(res_pag.transacciones)
+            # CORRECCIÓN 1: Accedemos como Diccionario, no como objeto
+            txs_dicts = res_pag.get("transacciones", [])
+            
+            # CORRECCIÓN 2: Convertimos los dicts a Objetos (Adapters)
+            # porque 'clasificar_transacciones_extraidas' espera objetos con atributos
+            for t_dict in txs_dicts:
+                tx_obj = TransaccionAdapter(t_dict)
+                todas_las_transacciones_objs.append(tx_obj)
 
-            # Guardamos la métrica de esta página
+            # CORRECCIÓN 3: Accedemos a métricas como Diccionario
+            met_dict = res_pag.get("metricas", {})
+            
             metricas_consolidado.append({
-                "pagina": res_pag.pagina,
-                "tiempo_ms": res_pag.metricas.tiempo_procesamiento_ms,
-                "calidad_score": res_pag.metricas.calidad_promedio_pagina,
-                "metodo_predominante": "MIXTO", # Opcional: lógica para determinarlo
-                "bloques": res_pag.metricas.cantidad_bloques_detectados,
-                "transacciones": res_pag.metricas.cantidad_transacciones_finales,
-                "alertas": "; ".join(res_pag.metricas.alertas) if res_pag.metricas.alertas else "OK"
+                "pagina": res_pag.get("pagina"),
+                "tiempo_ms": met_dict.get("tiempo_procesamiento_ms", 0),
+                "calidad_score": met_dict.get("calidad_promedio_pagina", 0),
+                "metodo_predominante": "MIXTO",
+                "bloques": met_dict.get("cantidad_bloques_detectados", 0),
+                "transacciones": met_dict.get("cantidad_transacciones_finales", 0),
+                "alertas": "; ".join(met_dict.get("alertas", [])) if met_dict.get("alertas") else "OK"
             })
 
-        # Log de auditoría simple
         logger.info(f"Motor finalizado. Transacciones encontradas: {len(todas_las_transacciones_objs)}")
 
-        # 4. CLASIFICACIÓN (Usando la versión actualizada que acepta objetos)
+        # 4. CLASIFICACIÓN
+        # Ahora 'todas_las_transacciones_objs' es una lista de objetos, no dicts.
         resultado_dict = clasificar_transacciones_extraidas(
             ia_data_inicial, 
-            todas_las_transacciones_objs, # Pasamos objetos Pydantic
+            todas_las_transacciones_objs, 
             filename, 
             rango_paginas
         )
         
-        # 5. INYECCIÓN AL DICCIONARIO (CRÍTICO)
+        # 5. INYECCIÓN AL DICCIONARIO
         resultado_dict["metadata_tecnica"] = metricas_consolidado 
         
-        # 6. CREACIÓN DEL OBJETO
-        # Ahora que actualizaste el modelo, Pydantic ACEPTARÁ este campo
+        # 6. CREACIÓN DEL OBJETO RESULTADO
         obj_res = crear_objeto_resultado(resultado_dict) 
         
         # Restaurar campos excluidos manualmente
@@ -483,7 +503,7 @@ def procesar_digital_worker_sync(
         return obj_res
         
     except Exception as e:
-        logger.error(f"Error Worker Digital: {e}")
+        logger.error(f"Error Worker Digital: {e}", exc_info=True) # Agregué exc_info para ver trace completo
         return e
 
 def procesar_ocr_worker_sync(

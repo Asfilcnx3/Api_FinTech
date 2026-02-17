@@ -1,857 +1,845 @@
 import fitz
 import re
-import logging
 import time
-import unicodedata
-import difflib
-from typing import List, Dict, Tuple
-
-from ..models.responses_motor_estados import RespuestasMotorEstados
+import logging
+from typing import List, Dict, Optional, Tuple
+from dataclasses import dataclass
+from enum import Enum
 
 logger = logging.getLogger(__name__)
 
-### -------- ZONA DE REGEX ------------
-# Regex para detectar líneas que empiezan con un número (posible día) seguido de texto
-REGEX_DIA_INICIO = re.compile(r'^(\d{1,2})(\s+|$)(.*)')
 
-# Regex para fechas tipo "01/JUL", "15/ENE" (Case insensitive) - Captura: Grupo 1 (Día), Grupo 2 (Mes)
-REGEX_FECHA_BBVA = re.compile(r'\b(\d{1,2})\/([a-zA-Z]{3})\b', re.IGNORECASE)
+class FormatoFecha(Enum):
+    DESCONOCIDO = "desconocido"
+    COMPLETA = "completa"   # Ej: 12 ABR, 12/04/2025, 12-04
+    SOLO_DIA = "solo_dia"   # Ej: 01, 15, 30 (Común en Santander/Afirme)
 
-# Regex para los meses en formato "MMM" (case insensitive)
-MESES_REGEX = r"(ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)"
 
-# Regex de fecha simple para detectar "señales de vida" en el mapa geométrico (dd/mm o dd-mes)
-REGEX_FECHA_SIMPLE = re.compile(r'\b\d{1,2}[/-](?:[0-9]{2}|[a-zA-Z]{3})', re.IGNORECASE)
+@dataclass
+class StatementContext:
+    columnas_detectadas: Optional[Dict] = None
+    formato_fecha: FormatoFecha = FormatoFecha.DESCONOCIDO
 
-# Regex de monto simple para detectar "señales de vida" en el mapa geométrico (número con punto decimal)
-REGEX_MONTO_SIMPLE = re.compile(r'\d{1,3}(?:,\d{3})*\.\d{2}')
-
-# Regex combinada para detectar formatos de fecha al inicio de línea (para segmentación)
-PATRONES_FECHA_INICIO = [
-    r"^\d{2}-[A-Z]{3}-\d{2}",    # 01-DIC-25 (Tu caso actual)
-    r"^\d{2}/\d{2}/\d{4}",        # 01/12/2025
-    r"^\d{2}/\d{2}/\d{2}",        # 01/12/25
-    r"^\d{2}\s[A-Z]{3}",          # 01 DIC
-    r"^\d{2}-[A-Z]{3}",           # 01-DIC
-]
-REGEX_FECHA_COMBINADA = re.compile("|".join(PATRONES_FECHA_INICIO), re.IGNORECASE)
-
-# PATRONES DE FECHA CONOCIDOS (conforme se vayan descubriendo se deberán poner aqui)
-PATRONES_FECHA = {
-    "DD/MM/AAAA": re.compile(r'\b(\d{1,2})[/-](\d{1,2})[/-](\d{4})\b'),
-    "DD/MM/AA":   re.compile(r'\b(\d{1,2})[/-](\d{1,2})[/-](\d{2})\b'),
-    "DD-MMM":     re.compile(r'\b(\d{1,2})[-/]([a-zA-Z]{3})\b', re.IGNORECASE), # 01-ENE, 01/ENE
-    "DD/MMM":     re.compile(r'\b(\d{1,2})[-/]([a-zA-Z]{3})\b', re.IGNORECASE), # BBVA
-    "DD MMM":     re.compile(rf'\b(\d{{1,2}})\s+{MESES_REGEX}\b', re.IGNORECASE),
-    "MMM-DD":     re.compile(r'\b([a-zA-Z]{3})[-/](\d{1,2})\b', re.IGNORECASE), # ENE-01
-    "DD_AISLADO": re.compile(r'^(\d{1,2})(\s+|$)') # Días sueltos al inicio de línea
-}
-# ---------- FIN DE ZONA REGEX -----------
 
 class BankStatementEngine:
     def __init__(self, debug_mode=False):
-        """Motor de procesamiento de estados de cuenta bancarios, con enfoque en robustez y trazabilidad."""
+        """
+        Motor V4.2 (Híbrido): Infinite Scroll + Detección de Columnas Semántica
+        """
+        self.debug_mode = debug_mode
         self.metrics = {
             "total_paginas": 0,
-            "tiempo_total": 0.0,
             "total_transacciones": 0,
-            "transacciones_perfectas": 0,    # Match exacto (Texto + Geo)
-            "transacciones_inferidas": 0,    # Match parcial (Geo o Texto)
-            "transacciones_dudosas": 0,      # Match forzado/Guess
-            "score_promedio": 0.0,           # 0 a 100
-            "hit_rate": 0.0                  # % de éxito
+            "tiempo_total": 0.0
         }
-        self.errores = []
-    
-    # --------- FUNCIONES ORQUESTADORAS PRINCIPALES ---------
-    def procesar_pagina_completa(
-        self, 
-        texto_pagina: str, 
-        numero_pagina: int, 
-        mapa_geo_completo: Dict,
-        filename_debug: str
-    ) -> "RespuestasMotorEstados.ResultadoPagina":
-        """
-        Orquesta todo el proceso para UNA página: Segmentación -> Reconciliación -> Métricas.
-        """
-        start_time = time.time()
-        alertas = []
-        
-        # 1. Auto-detección de formatos (Podrías cachearlo a nivel clase si quisieras)
-        # CORRECCIÓN DEL ERROR AQUÍ: Usamos self._detectar...
-        formatos = self._detectar_formato_fecha_predominante(texto_pagina)
-        
-        # 2. Segmentación (Texto -> Bloques)
-        bloques = self.segmentar_por_fechas(texto_pagina, numero_pagina, formatos)
-        
-        # 3. Reconciliación (Bloques + Geo -> Objetos Transacción)
-        # Nota: Pasamos el mapa completo, la función filtra por número de página internamente
-        transacciones_objs = self.reconciliar_geometria_con_bloques(bloques, mapa_geo_completo)
-        
-        # 4. Cálculo de Métricas
-        end_time = time.time()
-        tiempo_ms = (end_time - start_time) * 1000
-        
-        # Promedio de calidad
-        total_score = sum(t.score_confianza for t in transacciones_objs)
-        calidad_promedio = (total_score / len(transacciones_objs)) if transacciones_objs else 0.0
-        
-        # Detección de Alertas Simples
-        if len(bloques) > 0 and len(transacciones_objs) == 0:
-            alertas.append("BLOQUEO_TOTAL: Se detectó texto pero ninguna transacción válida.")
-        if calidad_promedio < 0.6 and transacciones_objs:
-            alertas.append("CALIDAD_BAJA: Muchas transacciones forzadas o inferidas.")
 
-        # 5. Construcción de Respuesta Estructurada
-        metricas = RespuestasMotorEstados.MetricasPagina(
-            numero_pagina=numero_pagina,
-            tiempo_procesamiento_ms=round(tiempo_ms, 2),
-            cantidad_bloques_detectados=len(bloques),
-            cantidad_transacciones_finales=len(transacciones_objs),
-            calidad_promedio_pagina=round(calidad_promedio, 4),
-            alertas=alertas
+        # --- ZONA DE REGEX ---
+
+        # 1. Regex de Monto
+        self.REGEX_MONTO_SIMPLE = re.compile(r'\d{1,3}(?:,\d{3})*\.\d{2}')
+        self.REGEX_MONTO_ESTRICTO = re.compile(r'^\d{1,3}(?:,\d{3})*\.\d{2}$')
+
+        # 2. Meses
+        self.STR_MESES = r"(ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)"
+
+        # 3. FECHA FUERTE: DD/MM/AAAA, DD-MM-AA
+        self.REGEX_FECHA_NUMERICA = re.compile(
+            r'\b(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})\b'
         )
-        
-        return RespuestasMotorEstados.ResultadoPagina(
-            pagina=numero_pagina,
-            metricas=metricas,
-            transacciones=transacciones_objs
+        # 4. FECHA TEXTUAL (BBVA/SANTANDER): "03 FEB", "03/FEB", "03-FEB"
+        self.REGEX_FECHA_TEXTUAL = re.compile(
+            rf'\b(\d{{1,2}})[\/\s-]{self.STR_MESES}\b',
+            re.IGNORECASE
         )
-    
-    def procesar_documento_entero(self, pdf_path: str, paginas: List[int] = None) -> List["RespuestasMotorEstados.ResultadoPagina"]:
+        # 5. DÍA AISLADO
+        self.REGEX_DIA_AISLADO = re.compile(r'^(\d{1,2})(\s+|$)')
+
+        # --- KEYWORDS ---
+        self.KEYWORDS_HEADER_FECHA = ["fecha", "dia", "día", "date", "fech", "operación", "operacion"]
+
+        self.TRIGGERS_CIERRE = [
+            "total de movimientos", "total de cargos", "total de abonos",
+            "resumen de comisiones", "cadena original", "timbre fiscal",
+            "este documento es una representación", "saldo final del periodo",
+            # Secciones que aparecen DESPUÉS de los movimientos y no son transacciones
+            "estado de cuenta de apartados", "apartados vigentes",
+        ]
+
+        self.KEYWORDS_CARGO = [
+            "retiro", "retiros", "cargo", "cargos", "debito", "debitos",
+            "débito", "signo", "debe", "salida", "salidas"
+        ]
+        self.KEYWORDS_ABONO = [
+            "deposito", "depositos", "depósito", "abono", "abonos", "depósitos",
+            "credito", "creditos", "haber", "entrada", "entradas"
+        ]
+        self.KEYWORDS_IGNORE_DESC = [
+            "saldo anterior", "saldo inicial", "saldo al corte",
+            "saldo promedio", "total de", "resumen de", "no. de cuenta", "saldo",
+            # Headers de secciones que no son movimientos
+            "importe apartado", "nombre apartado", "folio",
+        ]
+
+    # =========================================================================
+    #                    PIPELINE: PERGAMINO INFINITO
+    # =========================================================================
+    def procesar_documento_entero(self, pdf_path: str, paginas: List[int] = None):
         """
-        PIPELINE COMPLETO: Extracción -> Segmentación -> Geometría -> Reconciliación.
-        Devuelve una lista de resultados por página.
+        Fusiona todas las páginas en una sola estructura lógica vertical (Y acumulado).
         """
+        t_start_global = time.time()
         resultados_totales = []
-        
-        # 1. Extracción (Usa el nuevo método integrado)
-        logger.info(f"Iniciando extracción de texto para: {pdf_path}")
-        textos = self.extraer_texto_con_crop(pdf_path, paginas)
-        
-        if not textos:
-            return []
-        
-        paginas_a_procesar = list(textos.keys())
-        
-        # 2. Generación de Mapa Geométrico (Solo una vez para las páginas requeridas)
-        # Nota: generar_mapa_montos_geometrico ya espera una lista de ints
-        mapa_geo = self.generar_mapa_montos_geometrico(pdf_path, paginas_a_procesar)
-        
-        # 3. Procesamiento por página
-        for num_pag, texto_limpio in textos.items():
-            
-            # Llamamos a tu orquestador de página existente
-            # Nota: 'filename_debug' es algo que pedías en tu función original, 
-            # puedes pasarlo o manejarlo de otra forma. Aquí paso el nombre del PDF.
-            resultado_pag = self.procesar_pagina_completa(
-                texto_pagina=texto_limpio,
-                numero_pagina=num_pag,
-                mapa_geo_completo=mapa_geo,
-                filename_debug=pdf_path 
-            )
-            
-            resultados_totales.append(resultado_pag)
-            
-            # Acumulamos métricas globales
-            self.metrics["total_transacciones"] += resultado_pag.metricas.cantidad_transacciones_finales
-            self.metrics["total_paginas"] += 1
 
-        return resultados_totales
-    # ------------------------------------------------------- 
-    
-    # --- 0. TEXT EXTRACTION (Fitz) ---
-    def extraer_texto_con_crop(self, pdf_path: str, paginas: List[int] = None) -> Dict[int, str]:
-        """
-        Abre el PDF, aplica el recorte dinámico (usando la lógica interna de la clase)
-        y normaliza el texto (NFC + limpieza de espacios).
-        """
-        texto_por_pagina = {}
-        t_start = time.time()
-        
-        try:
-            doc = fitz.open(pdf_path)
-            total_doc_pages = len(doc)
-            
-            # Si no se especifican páginas, procesar todas
-            if not paginas:
-                paginas = range(1, total_doc_pages + 1)
+        all_words_continuos = []
+        y_offset_acumulado = 0.0
+        ctx = StatementContext()
 
-            for num_pag in paginas:
-                idx = num_pag - 1
-                if idx >= total_doc_pages: 
-                    continue
-                
-                page = doc[idx]
-                
-                # 1. CÁLCULO DINÁMICO (REUSANDO LÓGICA INTERNA)
-                rect_crop = self._calcular_crop_dinamico(page)
-                
-                # 2. EXTRACCIÓN
-                # sort=True es vital para que lea columnas (Izquierda -> Derecha, Arriba -> Abajo)
-                texto_raw = page.get_text("text", clip=rect_crop, sort=True)
-                
-                # 3. NORMALIZACIÓN (Pipeline de limpieza)
-                if texto_raw:
-                    # A. Normalizar Unicode (ej. tildes separadas vs juntas)
-                    texto_limpio = unicodedata.normalize('NFC', texto_raw)
-                    
-                    # B. Eliminar Non-breaking spaces (El veneno de Santander/Banregio)
-                    texto_limpio = texto_limpio.replace('\xa0', ' ')
-                    
-                    # C. Limpieza de caracteres de control basura (opcional pero recomendado)
-                    texto_limpio = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', texto_limpio)
-                else:
-                    texto_limpio = ""
-
-                texto_por_pagina[num_pag] = texto_limpio
-
-            doc.close()
-            
-            # Opcional: Registrar métrica interna
-            self.metrics["tiempo_total"] += (time.time() - t_start)
-            
-        except Exception as e:
-            logger.error(f"Error crítico extrayendo texto de {pdf_path}: {e}")
-            return {}
-
-        return texto_por_pagina
-
-    # --- 1. DATE SLICER ---
-    def segmentar_por_fechas(self, texto_pagina: str, numero_pagina: int, formatos_activos: List[str] = None) -> List[Dict]:
-        """
-        Segmenta el texto en bloques lógicos, aplicando un FILTRO ANTI-GHOSTING 
-        para eliminar líneas duplicadas por capas de impresión del PDF.
-        """
-        
-        # 1. Configuración de formatos
-        if formatos_activos is None:
-            formatos_activos = self._detectar_formato_fecha_predominante(texto_pagina)
-            if not formatos_activos: 
-                formatos_activos = ["DD/MM/AAAA", "DD-MMM", "DD/MMM", "DD MMM", "DD_AISLADO"]
-        
-        lineas_crudas = texto_pagina.split('\n')
-        
-        # --- FASE 1: LIMPIEZA DE ECOS (PRE-PROCESAMIENTO) ---
-        lineas_unicas = []
-        linea_prev = ""
-        
-        for linea in lineas_crudas:
-            linea_limpia = linea.strip()
-            if not linea_limpia: continue
-            
-            # Calculamos similitud con la línea inmediatamente anterior
-            # Si es > 90% similar, asumimos que es un "fantasma" de impresión (negritas falsas)
-            ratio = difflib.SequenceMatcher(None, linea_limpia, linea_prev).ratio()
-            
-            if ratio > 0.90:
-                # Es un fantasma, la ignoramos.
-                continue
-                
-            lineas_unicas.append(linea_limpia)
-            linea_prev = linea_limpia
-
-        # --- FASE 2: MÁQUINA DE ESTADOS (LOGIC ORIGINAL MEJORADA) ---
-        bloques = []
-        bloque_actual = None
-        idx_interno = 0
-
-        for linea in lineas_unicas:
-            match_encontrado = None
-            tipo_match = None
-
-            # Probamos regex
-            for fmt_key in formatos_activos:
-                regex = PATRONES_FECHA[fmt_key]
-                match = regex.match(linea) 
-                
-                if match:
-                    if fmt_key == "DD_AISLADO":
-                        posible_dia = int(match.group(1))
-                        es_valido = (1 <= posible_dia <= 31)
-                        if len(linea) < 6: es_valido = False # Filtro de ruido corto
-                        
-                        # Validación de dinero para fechas débiles ("02")
-                        if es_valido:
-                            tiene_monto = bool(REGEX_MONTO_SIMPLE.search(linea))
-                            if not tiene_monto: es_valido = False
-                            
-                        if es_valido:
-                            match_encontrado = match
-                            tipo_match = fmt_key
-                            break 
-                    else:
-                        match_encontrado = match
-                        tipo_match = fmt_key
-                        break
-            
-            if match_encontrado:
-                # 1. CERRAR BLOQUE ANTERIOR
-                if bloque_actual:
-                    # IMPORTANTE: .copy() para romper la referencia de memoria
-                    bloques.append(bloque_actual.copy())
-
-                # 2. PREPARAR DATOS NUEVOS
-                raw_fecha = match_encontrado.group(0)
-                fecha_final = raw_fecha 
-
-                if tipo_match == "DD_AISLADO":
-                    dia_num = int(match_encontrado.group(1))
-                    fecha_final = f"{dia_num:02d}"
-                elif tipo_match == "DD MMM": 
-                    dia = int(match_encontrado.group(1))
-                    mes_str = match_encontrado.group(2).lower()
-                    mapa_mes = {"ene":1,"feb":2,"mar":3,"abr":4,"may":5,"jun":6,"jul":7,"ago":8,"sep":9,"oct":10,"nov":11,"dic":12}
-                    mes_num = mapa_mes.get(mes_str[:3], 0)
-                    fecha_final = f"{dia:02d}/{mes_num:02d}"
-
-                # 3. CREAR NUEVO BLOQUE (ID ÚNICO)
-                bloque_actual = {
-                    "id_unico": f"P{numero_pagina}_IDX{idx_interno}",
-                    "fecha_detectada": fecha_final,
-                    "texto_completo": linea,
-                    "lineas": [linea],
-                    "pagina": numero_pagina,
-                    "formato_detectado": tipo_match
-                }
-                idx_interno += 1 # Incrementamos contador
-            
-            else:
-                # CONTINUACIÓN
-                if bloque_actual:
-                    bloque_actual["texto_completo"] += " " + linea
-                    bloque_actual["lineas"].append(linea)
-
-        # Cierre final al salir del loop
-        if bloque_actual:
-            bloques.append(bloque_actual.copy())
-
-        return bloques
-
-    # --- 2. MAPA ESTELAR ---
-    def generar_mapa_montos_geometrico(self, pdf_path: str, paginas: List[int]) -> Dict[int, Dict]:
-        mapa_completo = {}
         try:
             with fitz.open(pdf_path) as doc:
-                for num_pagina in paginas:
-                    idx = num_pagina - 1
-                    if idx >= len(doc): continue
-                    
+                if paginas is None:
+                    paginas = list(range(1, len(doc) + 1))
+                    logger.info(f"Auto-detectadas {len(paginas)} páginas para procesar")
+                elif not paginas:
+                    logger.error("Lista de páginas vacía")
+                    return []
+
+                primer_pagina_idx = paginas[0] - 1
+                if primer_pagina_idx >= len(doc):
+                    logger.error(f"Página {paginas[0]} fuera de rango (doc tiene {len(doc)} páginas)")
+                    return []
+
+                page_1 = doc[primer_pagina_idx]
+                ancho_pagina = page_1.rect.width
+
+                ctx.columnas_detectadas = self._detectar_zonas_columnas(doc, paginas)
+
+                # --- PASO 2: FUSIÓN VERTICAL (STITCHING) ---
+                for num_pag in paginas:
+                    idx = num_pag - 1
+                    if idx >= len(doc):
+                        logger.warning(f"Página {num_pag} excede límite del documento")
+                        continue
+
                     page = doc[idx]
-                    width = page.rect.width
-                    
-                    # 1. Detectar columnas (Headers)
-                    zonas = self._detectar_zonas_columnas(page)
-                    
-                    # DEFINICIÓN DE LÍMITES "BASE"
-                    limite_fecha_x = width * 0.22      
-                    limite_saldo_x_base = width * 0.78 # Default (15% Derecho aprox)
-                    
-                    # --- CORRECCIÓN DINÁMICA DE SALDO ---
-                    # Si las zonas detectadas (Cargo/Abono) invaden la zona de saldo,
-                    # empujamos el límite de saldo a la derecha para no "comer" montos válidos.
-                    max_x_columnas = 0
-                    if zonas.get("cargo"):
-                        max_x_columnas = max(max_x_columnas, zonas["cargo"][1])
-                    if zonas.get("abono"):
-                        max_x_columnas = max(max_x_columnas, zonas["abono"][1])
-                    
-                    # Si la columna termina en 514 y el saldo empezaba en 477, 
-                    # movemos el saldo a 514 + un buffer pequeño (ej. 10px).
-                    if max_x_columnas > limite_saldo_x_base:
-                        limite_saldo_real = max_x_columnas + 5
-                    else:
-                        limite_saldo_real = limite_saldo_x_base
+                    alto_pagina = page.rect.height
 
-                    zonas["fecha_limite_x"] = limite_fecha_x
-                    zonas["saldo_limite_x"] = limite_saldo_real # Guardamos el real para debug
+                    y_hard_stop = self._calcular_hard_stop(page)
+                    y_start = alto_pagina * 0.15 if idx > primer_pagina_idx else 0
 
-                    words = page.get_text("words")
-                    numeros_encontrados = []
-                    filas_fechas = []
-                    
+                    rect_lectura = fitz.Rect(0, y_start, ancho_pagina, y_hard_stop)
+                    words = page.get_text("words", clip=rect_lectura)
+
+                    words_ajustados = []
                     for w in words:
-                        texto_raw = w[4].strip()
-                        texto_clean = texto_raw.replace("$", "").replace(",", "")
-                        x_centro = (w[0] + w[2]) / 2
-                        y_centro = (w[1] + w[3]) / 2
-                        
-                        # --- A. Fechas (Solo izquierda) ---
-                        es_fecha_regex = bool(REGEX_FECHA_COMBINADA.match(texto_raw))
-                        es_fecha_bbva = bool(REGEX_FECHA_BBVA.match(texto_raw)) # BBVA
-                        
-                        # Detectar si es un día aislado (número 1-31)
-                        es_dia_aislado = False
-                        if texto_clean.isdigit() and len(texto_clean) <= 2:
-                            val = int(texto_clean)
-                            if 1 <= val <= 31:
-                                es_dia_aislado = True
+                        w_list = list(w)
+                        w_list[1] += y_offset_acumulado
+                        w_list[3] += y_offset_acumulado
+                        words_ajustados.append(w_list)
 
-                        # SI ES FECHA O DÍA AISLADO EN ZONA IZQUIERDA
-                        if (es_fecha_regex or es_fecha_bbva or es_dia_aislado) and x_centro <= limite_fecha_x:
-                            filas_fechas.append({
-                                "fecha_texto": texto_raw,
-                                "y": y_centro,
-                                "x": x_centro,
-                                "y_min": w[1] - 2,
-                                "y_max": w[3] + 2,
-                                "es_dia_aislado": es_dia_aislado # Metadata útil
-                            })
-                        
-                        # --- B. Números (Montos) ---
-                        # (Esta lógica se mantiene igual, busca floats)
-                        if "." in texto_clean and len(texto_clean) > 3 and texto_clean.replace(".", "").isdigit():
-                            try:
-                                valor = float(texto_clean)
-                                tipo = "indefinido"
-                                
-                                # 1. ¿Es SALDO?
-                                if x_centro >= limite_saldo_real:
-                                    tipo = "saldo"
-                                # 2. Columnas detectadas
-                                elif zonas["cargo"] and zonas["cargo"][0] <= x_centro <= zonas["cargo"][1]:
-                                    tipo = "cargo"
-                                elif zonas["abono"] and zonas["abono"][0] <= x_centro <= zonas["abono"][1]:
-                                    tipo = "abono"
-                                
-                                numeros_encontrados.append({
-                                    "id_geo": f"{x_centro:.2f}_{y_centro:.2f}",
-                                    "valor": valor,
-                                    "x": x_centro,
-                                    "y": y_centro,
-                                    # INYECCIÓN: Guardamos el bounding box original (x0, y0, x1, y1)
-                                    "coords_box": (w[0], w[1], w[2], w[3]), 
-                                    "tipo": tipo,
-                                    "usado": False
-                                })
-                            except ValueError:
-                                continue
+                    all_words_continuos.extend(words_ajustados)
+                    y_offset_acumulado += alto_pagina
+                    self.metrics["total_paginas"] += 1
 
-                    mapa_completo[num_pagina] = {
-                        "numeros": numeros_encontrados,
-                        "filas_fechas": filas_fechas,
-                        "zonas_debug": zonas
-                    }
+                if not all_words_continuos:
+                    logger.warning("No se extrajeron palabras del documento")
+                    return []
+
+                anclas = self._encontrar_anclas_fechas(all_words_continuos, ancho_pagina, ctx)
+
+                if not anclas:
+                    logger.warning("No se encontraron anclas de fechas")
+                    return []
+
+                transacciones = self._extraer_transacciones_por_slice(
+                    anclas, all_words_continuos, ctx.columnas_detectadas, y_offset_acumulado
+                )
+
+                self.metrics["total_transacciones"] = len(transacciones)
+
+                tiempo_ms = (time.time() - t_start_global) * 1000
+
+                resultado = {
+                    "pagina": 999,
+                    "metricas": {
+                        "numero_pagina": 999,
+                        "tiempo_procesamiento_ms": round(tiempo_ms, 2),
+                        "cantidad_bloques_detectados": len(transacciones),
+                        "cantidad_transacciones_finales": len(transacciones),
+                        "calidad_promedio_pagina": 1.0,
+                        "alertas": []
+                    },
+                    "transacciones": transacciones
+                }
+
+                resultados_totales.append(resultado)
 
         except Exception as e:
-            logger.error(f"Error generando mapa geométrico: {e}")
-            return {}
+            logger.error(f"Error crítico en pipeline: {e}", exc_info=True)
+            raise
 
-        return mapa_completo
+        self.metrics["tiempo_total"] = (time.time() - t_start_global)
+        return resultados_totales
 
-    # --- 3. RECONCILIACIÓN (Lógica de consumo único) ---
-    def reconciliar_geometria_con_bloques(self, bloques_texto: List[Dict], mapa_geometrico: Dict) -> List["RespuestasMotorEstados.TransaccionDetectada"]:
-        transacciones_finales = []
-        numeros_usados_ids = set()
-        regex_monto_texto = re.compile(r'(\d{1,3}(?:,\d{3})*\.\d{2})')
+    # =========================================================================
+    #                       LÓGICA CORE MEJORADA
+    # =========================================================================
+    def _calcular_hard_stop(self, page: fitz.Page) -> float:
+        texto_lower = page.get_text("text").lower()
+        y_limite = page.rect.height
+        umbral_minimo_y = page.rect.height * 0.45
 
-        for bloque in bloques_texto:
-            pag = bloque["pagina"]
-            if pag not in mapa_geometrico: continue
-                
-            data_pag = mapa_geometrico[pag]
-            zonas = data_pag.get("zonas_debug", {})
-            
-            filas_geo = sorted(data_pag["filas_fechas"], key=lambda k: k['y'])
-            numeros_geo = sorted(data_pag["numeros"], key=lambda k: k['y'])
-            
-            # --- LIMPIEZA DE FECHA ---
-            fecha_bloque_raw = bloque["fecha_detectada"].lower().strip()
-            
-            # 1. Si es BBVA (tiene letras)
-            match_bbva = REGEX_FECHA_BBVA.match(fecha_bloque_raw)
-            
-            # 2.Si es Afirme Extraemos solo el número si viene sucio (por seguridad)
-            match_dia = REGEX_DIA_INICIO.match(fecha_bloque_raw)
-            
-            if match_bbva:
-                # Normalizamos para comparar: "01/jul"
-                token_fecha_bloque = match_bbva.group(0).lower()
+        for trigger in self.TRIGGERS_CIERRE:
+            if trigger.lower() in texto_lower:
+                instancias = page.search_for(trigger)
+                for inst in instancias:
+                    y_candidato = inst.y0 - 5
+                    if y_candidato > umbral_minimo_y:
+                        y_limite = min(y_limite, y_candidato)
+                        break
 
-            elif match_dia:
-                # Si el bloque dice "03 com", extraemos "03"
-                # Si dice "3", extraemos "3" y le ponemos pad
-                raw_num = int(match_dia.group(1))
-                token_fecha_bloque = f"{raw_num:02d}"
-            else:
-                token_fecha_bloque = fecha_bloque_raw
-            
-            # --- PASO 1: ENCONTRAR ANCLA Y (GEOMETRÍA) ---
-            y_bloque = None
-            for fila in filas_geo:
-                if fila.get("usada", False): continue
-                
-                fecha_geo = fila["fecha_texto"].lower().strip()
-                
-                # COMPARACIÓN RELAJADA:
-                # 1. Coincidencia exacta ("03" == "03")
-                # 2. Contención ("03/12" contiene "03")
-                
-                match_found = False
-                if token_fecha_bloque == fecha_geo: # "03" == "03"
-                    match_found = True
-                elif token_fecha_bloque in fecha_geo or fecha_geo in token_fecha_bloque:
-                    # Solo si longitudes son suficientes para evitar falsos positivos
-                    if len(token_fecha_bloque) > 2 or len(fecha_geo) > 2:
-                        match_found = True
-                    # Si son cortos ("2" vs "12"), cuidado. Exigimos igualdad si son cortos.
-                    elif token_fecha_bloque == fecha_geo: 
-                        match_found = True
+        return y_limite
 
-                if match_found:
-                    y_bloque = fila["y"]
-                    fila["usada"] = True 
+
+    # =========================================================================
+    #           DETECCIÓN DE COLUMNAS V7 - ANCHOR-FIRST SEMÁNTICA
+    # =========================================================================
+    def _detectar_zonas_columnas(self, doc: fitz.Document, paginas: List[int]) -> Dict:
+        """
+        V7 - DETECCIÓN ANCHOR-FIRST:
+
+        Problema resuelto: la v6 capturaba tokens de la carátula (resumen inicial)
+        que también tienen "cargos/abonos/saldo" pero en X distintas a la tabla real.
+
+        Estrategia:
+        1. ANCLA: Buscar la línea donde CARGOS y ABONOS aparecen JUNTOS
+           (co-aparición en la misma Y ±8px). Esa Y es el header real de la tabla.
+        2. BLOQUE: Extraer TODOS los tokens en Y_ancla ±30px (captura headers
+           multi-línea como "SALDO" encima de "OPERACION / LIQUIDACION").
+        3. CLASIFICAR: Dentro del bloque, mapear cada token a cargo/abono/saldo/saldo_sub.
+        4. MURO: Si hay sub-saldo, el muro va antes de la primera sub-columna.
+        5. FALLBACK: Si no hay co-aparición, intentar ancla solo por ABONO, luego
+           solo CARGO, finalmente proporcional.
+        """
+        logger.info("\n" + "=" * 60)
+        logger.info("🤖 INICIANDO DETECCIÓN V7 - ANCHOR-FIRST")
+        logger.info("=" * 60)
+
+        ancho_final = 612.0
+
+        KEYWORDS_SALDO_SUB = [
+            "operacion", "operación", "liquidacion", "liquidación",
+            "contable", "disponible"
+        ]
+        # Veneno: palabras que invalidan una línea como header de tabla
+        POISON_LINE = [
+            "promedio", "anterior", "inicial", "total de", "resumen",
+            "gravable", "minimo", "mínimo", "objetad", "comision"
+        ]
+
+        # Acumularemos el mejor resultado de todas las páginas analizadas
+        # (guardamos la geometría de la página que tenga la mejor ancla)
+        mejor_ancla = None   # {"y": float, "cargo_x": float, "abono_x": float, "tokens_bloque": list}
+
+        for num_pag in paginas[:4]:
+            idx = num_pag - 1
+            if idx >= len(doc):
+                continue
+            page = doc[idx]
+            ancho_final = page.rect.width
+            all_words_pg = page.get_text("words")
+            lineas_pg = self._agrupar_por_lineas(all_words_pg, tolerancia_y=4)
+
+            # ================================================================
+            # FASE 1: BUSCAR LÍNEA ANCLA (co-aparición CARGO + ABONO)
+            # ================================================================
+            # Escaneamos TODA la página (no limitamos al 50%) porque en algunos
+            # bancos la tabla empieza más abajo.
+            # Índice: por cada línea, registramos si tiene cargo y/o abono.
+            ancla_y = None
+            ancla_cargo_x = None
+            ancla_abono_x = None
+
+            for ln in lineas_pg:
+                txt_ln = ln["texto"].lower()
+
+                # Saltar líneas con veneno
+                if any(p in txt_ln for p in POISON_LINE):
+                    continue
+
+                x_cargo_en_linea = None
+                x_abono_en_linea = None
+
+                for w in ln["tokens"]:
+                    txt_w = w[4].lower().strip().replace(":", "").replace(".", "")
+                    x_c = (w[0] + w[2]) / 2
+
+                    # ¿Es keyword de cargo?
+                    if any(k in txt_w for k in self.KEYWORDS_CARGO):
+                        # Solo aceptar si está en la mitad derecha de la página
+                        # (evita "Cargos Objetados" a la izquierda en la carátula)
+                        if x_c > ancho_final * 0.35:
+                            x_cargo_en_linea = x_c
+
+                    # ¿Es keyword de abono?
+                    if any(k in txt_w for k in self.KEYWORDS_ABONO):
+                        if x_c > ancho_final * 0.35:
+                            x_abono_en_linea = x_c
+
+                # ¿Ambos encontrados en esta línea?
+                if x_cargo_en_linea is not None and x_abono_en_linea is not None:
+                    ancla_y = ln["y_min"]
+                    ancla_cargo_x = x_cargo_en_linea
+                    ancla_abono_x = x_abono_en_linea
+                    logger.info(f"✅ ANCLA encontrada en Y={ancla_y:.0f}: "
+                                f"CARGO x={ancla_cargo_x:.0f}, ABONO x={ancla_abono_x:.0f}")
+                    break  # Primera co-aparición válida = header real
+
+            # Si no encontramos co-aparición, intentar solo ABONO como ancla débil
+            if ancla_y is None:
+                for ln in lineas_pg:
+                    txt_ln = ln["texto"].lower()
+                    if any(p in txt_ln for p in POISON_LINE):
+                        continue
+                    for w in ln["tokens"]:
+                        txt_w = w[4].lower().strip().replace(":", "").replace(".", "")
+                        x_c = (w[0] + w[2]) / 2
+                        if any(k in txt_w for k in self.KEYWORDS_ABONO) and x_c > ancho_final * 0.35:
+                            ancla_y = ln["y_min"]
+                            ancla_abono_x = x_c
+                            logger.info(f"⚠️  Ancla débil (solo ABONO) en Y={ancla_y:.0f}, x={ancla_abono_x:.0f}")
+                            break
+                    if ancla_y is not None:
+                        break
+
+            if ancla_y is None:
+                logger.warning(f"  Página {num_pag}: Sin ancla encontrada")
+                continue
+
+            # ================================================================
+            # FASE 2: EXTRAER BLOQUE DE HEADERS (Y_ancla ± 30px)
+            # ================================================================
+            # Tolerancia generosa para capturar headers multi-línea:
+            # Línea 1: FECHA OPER | FECHA LIQ | DESCRIPCION | REFERENCIA | CARGOS | ABONOS
+            # Línea 2 (encima):                                                    SALDO
+            # Línea 3 (encima):                                            OPERACION | LIQUIDACION
+            Y_RADIO_BLOQUE = 30
+            tokens_bloque = [
+                w for w in all_words_pg
+                if (ancla_y - Y_RADIO_BLOQUE) <= w[1] <= (ancla_y + Y_RADIO_BLOQUE)
+            ]
+
+            if mejor_ancla is None or ancla_cargo_x is not None:
+                mejor_ancla = {
+                    "y": ancla_y,
+                    "cargo_x": ancla_cargo_x,
+                    "abono_x": ancla_abono_x,
+                    "tokens_bloque": tokens_bloque,
+                    "pagina": num_pag,
+                    "ancho": ancho_final,
+                }
+                # Si encontramos ancla fuerte (cargo+abono) en la primera página, no seguimos
+                if ancla_cargo_x is not None:
                     break
-            
-            # --- PASO 2: LOGICA DE FUSION (Si no hay ancla, buscar montos en texto) ---
-            if y_bloque is None:
-                montos_en_texto = regex_monto_texto.findall(bloque["texto_completo"])
-                
-                # Se debe usar dot notation (.) en lugar de brackets [""]
-                if not montos_en_texto and transacciones_finales:
-                    # Accedemos al último objeto Pydantic de la lista
-                    transacciones_finales[-1].descripcion += " " + bloque["texto_completo"]
+
+        # ================================================================
+        # FASE 3: CLASIFICAR TOKENS DEL BLOQUE → CARGO / ABONO / SALDO / SALDO_SUB
+        # ================================================================
+        if mejor_ancla is None:
+            logger.warning("⚠️  Sin ancla en ninguna página → usando proporcional puro")
+            ancho_final = ancho_final  # ya está definido
+            x_cargo_final  = ancho_final * 0.64
+            x_abono_final  = ancho_final * 0.78
+            x_saldo_final  = ancho_final * 0.92
+            x_muro_real    = None
+        else:
+            ancho_final = mejor_ancla["ancho"]
+            tokens_bloque = mejor_ancla["tokens_bloque"]
+
+            # Usamos la X del ancla como base confirmada
+            x_cargo_base = mejor_ancla["cargo_x"]
+            x_abono_base = mejor_ancla["abono_x"]
+
+            # Ahora buscamos SALDO en el bloque completo
+            saldo_candidatos   = []  # x_centro de tokens que son saldo puro
+            saldo_sub_candidatos = [] # x_centro de tokens que son sub-saldo
+
+            # También re-confirmamos cargo/abono con todos los tokens del bloque
+            # (por si el ancla fue débil y solo teníamos abono)
+            cargo_candidatos = []
+            abono_candidatos = []
+
+            lineas_bloque = self._agrupar_por_lineas(tokens_bloque, tolerancia_y=4)
+
+            for ln in lineas_bloque:
+                txt_ln = ln["texto"].lower()
+                if any(p in txt_ln for p in POISON_LINE):
                     continue
-                elif not montos_en_texto:
-                    continue
+
+                for w in ln["tokens"]:
+                    txt_w = w[4].lower().strip().replace(":", "").replace(".", "")
+                    x_c = (w[0] + w[2]) / 2
+
+                    # SALDO (puro): exactamente "saldo" sin sub-keywords
+                    # Solo en la mitad derecha de la página (>50%) para evitar
+                    # "Saldo Anterior" o similares en la zona de descripción
+                    if txt_w == "saldo" and x_c > ancho_final * 0.50:
+                        saldo_candidatos.append(x_c)
+
+                    # SUB-SALDO: palabras como "operacion", "liquidacion" que aparecen
+                    # debajo de "SALDO" en headers de 2 líneas.
+                    # Umbral más estricto: >55% del ancho para evitar falsos positivos
+                    # en la mitad izquierda (ej: "Operacion" en zona de descripción AFIRME)
+                    elif any(k in txt_w for k in KEYWORDS_SALDO_SUB) and x_c > ancho_final * 0.55:
+                        saldo_sub_candidatos.append(x_c)
+
+                    # CARGO (re-confirmación)
+                    elif any(k in txt_w for k in self.KEYWORDS_CARGO) and x_c > ancho_final * 0.35:
+                        cargo_candidatos.append(x_c)
+
+                    # ABONO (re-confirmación)
+                    elif any(k in txt_w for k in self.KEYWORDS_ABONO) and x_c > ancho_final * 0.35:
+                        abono_candidatos.append(x_c)
+
+            # Consolidar cargo/abono: priorizar ancla, luego bloque
+            x_cargo_final = x_cargo_base if x_cargo_base else self._mediana(cargo_candidatos)
+            x_abono_final = x_abono_base if x_abono_base else self._mediana(abono_candidatos)
+
+            # Saldo: usamos la mediana de los candidatos puros del bloque
+            x_saldo_final = self._mediana(saldo_candidatos)
+
+            # Muro: si hay sub-saldo, usamos su X más izquierda
+            x_muro_real = min(saldo_sub_candidatos) if saldo_sub_candidatos else None
+
+            logger.info(f"\n📋 EVIDENCIA DE BLOQUE (página {mejor_ancla['pagina']}, Y≈{mejor_ancla['y']:.0f}):")
+            logger.info(f"   CARGO  : base={x_cargo_base} | bloque={cargo_candidatos} → {x_cargo_final}")
+            logger.info(f"   ABONO  : base={x_abono_base} | bloque={abono_candidatos} → {x_abono_final}")
+            logger.info(f"   SALDO  : candidatos={[int(x) for x in saldo_candidatos]} → {x_saldo_final}")
+            logger.info(f"   SUB-S  : candidatos={[int(x) for x in saldo_sub_candidatos]} → muro={x_muro_real}")
+
+            # ---- DEDUCCIÓN DE COLUMNAS FALTANTES ----
+            if x_cargo_final is None and x_abono_final is not None:
+                # Cargo suele estar ~65px a la izquierda del abono
+                x_cargo_final = x_abono_final - 65
+                logger.info(f"   CARGO deducido: {x_cargo_final:.0f} (abono - 65px)")
+
+            if x_abono_final is None and x_cargo_final is not None:
+                x_abono_final = x_cargo_final + 65
+                logger.info(f"   ABONO deducido: {x_abono_final:.0f} (cargo + 65px)")
+
+            if x_cargo_final is None and x_abono_final is None:
+                logger.warning("   Sin cargo ni abono → proporcional")
+                x_cargo_final = ancho_final * 0.64
+                x_abono_final = ancho_final * 0.78
+
+            if x_saldo_final is None:
+                if x_muro_real is not None:
+                    x_saldo_final = x_muro_real + 40  # ficticio, no se captura
+                    logger.info(f"   SALDO ficticio (sub-saldo guía): {x_saldo_final:.0f}")
                 else:
-                    y_bloque = -1 # Estrategia Texto Puro
+                    x_saldo_final = ancho_final * 0.92
+                    logger.info(f"   SALDO proporcional: {x_saldo_final:.0f}")
 
-            # --- PASO 3: CAZAR EL NÚMERO (Estrategia Espacial vs Texto) ---
-            monto_final = 0.0
-            tipo_final = "indefinido"
-            match_status = "MISS_MONTO"
-            mejor_candidato = None
+        # ================================================================
+        # FASE 4: VALIDACIÓN DE ORDEN
+        # REGLA: saldo debe estar a la derecha de cargo Y abono.
+        # NO forzamos cargo < abono porque el orden depende del banco:
+        #   - BBVA/Santander: [CARGOS | ABONOS | SALDO]  → cargo < abono
+        #   - AFIRME:         [DEPÓSITOS | RETIROS | SALDO] → abono < cargo
+        # Si saldo queda a la izquierda de cargo o abono (error de detección),
+        # lo corregimos intercambiando saldo con el más a la derecha.
+        # ================================================================
+        x_max_cargo_abono = max(x_cargo_final, x_abono_final)
 
-            # Estrategia A: Espacial (Filtrando Saldos)
-            candidatos_espaciales = []
-            if y_bloque != -1:
-                # --- TOLERANCIA DINÁMICA ---
-                # Calculamos cuántas líneas tiene el bloque de texto
-                cantidad_lineas = len(bloque.get("lineas", []))
-                
-                # Altura promedio de línea en PDF (usualmente 10-14pt). 
-                # Le damos 15 por seguridad.
-                pixels_por_linea = 15 
-                
-                # El rango de búsqueda debe ser:
-                # Desde: Un poco arriba de la fecha (y_bloque - 15)
-                # Hasta: La fecha + (número de líneas * altura) + un buffer extra
-                y_min_search = y_bloque - 15
-                y_max_search = y_bloque + (cantidad_lineas * pixels_por_linea) + 15
-                
-                candidatos_espaciales = [
-                    n for n in numeros_geo 
-                    if y_min_search <= n["y"] <= y_max_search
-                    and n["id_geo"] not in numeros_usados_ids
-                    and n["tipo"] != "saldo" # Ignoramos saldo
+        if x_saldo_final < x_max_cargo_abono:
+            # Saldo está a la izquierda → intercambiar saldo con el de más a la derecha
+            if x_cargo_final > x_abono_final:
+                # Cargo es el más a la derecha → swap cargo ↔ saldo
+                x_cargo_final, x_saldo_final = x_saldo_final, x_cargo_final
+                logger.warning("   ⚠️  Saldo corregido: swap cargo↔saldo (saldo estaba a la izquierda)")
+            else:
+                # Abono es el más a la derecha → swap abono ↔ saldo
+                x_abono_final, x_saldo_final = x_saldo_final, x_abono_final
+                logger.warning("   ⚠️  Saldo corregido: swap abono↔saldo (saldo estaba a la izquierda)")
+
+        # ================================================================
+        # FASE 5: CONSTRUCCIÓN DE RANGOS ADAPTATIVOS
+        # Funciona para cualquier orden: cargo < abono (BBVA) o abono < cargo (AFIRME)
+        # ================================================================
+        dist_cargo_abono = abs(x_abono_final - x_cargo_final)
+
+        # El más a la derecha de {cargo, abono} — es el que está junto al saldo
+        x_izquierdo  = min(x_cargo_final, x_abono_final)
+        x_derecho    = max(x_cargo_final, x_abono_final)
+
+        dist_derecho_saldo = abs(x_saldo_final - x_derecho)
+
+        radio_cargo = min(50, max(20, dist_cargo_abono * 0.38))
+        radio_abono = min(50, max(20, min(dist_cargo_abono, dist_derecho_saldo) * 0.38))
+
+        # Muro: siempre a la derecha del más-derecho de {cargo, abono}
+        if x_muro_real is not None and x_muro_real > x_derecho + 10:
+            muro_derecho = x_muro_real - 15
+            logger.info(f"   🛡️  MURO REAL (sub-saldo x={x_muro_real:.0f}): {muro_derecho:.0f}")
+        else:
+            if x_muro_real is not None:
+                logger.warning(
+                    f"   ⚠️  Sub-saldo x={x_muro_real:.0f} descartado como muro "
+                    f"(izquierda de columna derecha x={x_derecho:.0f})"
+                )
+            muro_derecho = (x_derecho + x_saldo_final) / 2
+            logger.info(f"   🛡️  MURO MIDPOINT: {muro_derecho:.0f}")
+
+        # Rangos: cada columna se expande ±radio desde su centro.
+        # La columna DERECHA (más cercana al saldo) se topa con el muro.
+        # La columna IZQUIERDA no toca el muro.
+        r_izq_raw = (x_izquierdo - radio_cargo, x_izquierdo + radio_cargo)
+        r_der_raw = (x_derecho - radio_abono, min(x_derecho + radio_abono, muro_derecho))
+
+        # Anti-solapamiento: si se solapan, cortar en el punto medio entre centros
+        if r_izq_raw[1] > r_der_raw[0]:
+            corte = (x_izquierdo + x_derecho) / 2
+            r_izq = (r_izq_raw[0], corte)
+            r_der = (corte, r_der_raw[1])
+        else:
+            r_izq = r_izq_raw
+            r_der = r_der_raw
+
+        # Asignar rangos al tipo semántico correcto
+        # (cargo/abono mantienen su identidad independientemente de su posición)
+        if x_cargo_final <= x_abono_final:
+            # Layout estándar: cargo izquierda, abono derecha
+            r_cargo = r_izq
+            r_abono = r_der
+        else:
+            # Layout invertido (AFIRME): abono izquierda, cargo derecha
+            r_abono = r_izq
+            r_cargo = r_der
+
+        logger.info(f"\n🏁 GEOMETRÍA FINAL V7:")
+        logger.info(f"   Centros : Cargo={x_cargo_final:.0f} | Abono={x_abono_final:.0f} | Saldo={x_saldo_final:.0f}")
+        logger.info(f"   Rangos  : Cargo={tuple(int(x) for x in r_cargo)} | Abono={tuple(int(x) for x in r_abono)}")
+        logger.info(f"   Muro    : {muro_derecho:.0f} → saldo desde ahí hasta {ancho_final:.0f}")
+
+        return {
+            "cargo":  r_cargo,
+            "abono":  r_abono,
+            "saldo":  (muro_derecho, ancho_final),
+            "muro_derecho": muro_derecho,
+            "_centros": {
+                "cargo": x_cargo_final,
+                "abono": x_abono_final,
+                "saldo": x_saldo_final
+            },
+            "_tiene_sub_saldo": x_muro_real is not None,
+        }
+
+    def _agrupar_por_lineas(self, words: List, tolerancia_y: float = 3) -> List[Dict]:
+        """Agrupa palabras en líneas basándose en su coordenada Y."""
+        if not words:
+            return []
+
+        words_sorted = sorted(words, key=lambda w: (w[1], w[0]))
+        lineas = []
+        linea_actual = {
+            "tokens": [words_sorted[0]],
+            "y_min": words_sorted[0][1],
+            "y_max": words_sorted[0][3],
+            "texto": words_sorted[0][4]
+        }
+
+        for w in words_sorted[1:]:
+            # Misma línea si el Y está dentro de la tolerancia
+            if abs(w[1] - linea_actual["y_min"]) <= tolerancia_y:
+                linea_actual["tokens"].append(w)
+                linea_actual["texto"] += " " + w[4]
+                linea_actual["y_max"] = max(linea_actual["y_max"], w[3])
+            else:
+                lineas.append(linea_actual)
+                linea_actual = {
+                    "tokens": [w],
+                    "y_min": w[1],
+                    "y_max": w[3],
+                    "texto": w[4]
+                }
+        lineas.append(linea_actual)
+        return lineas
+
+    def _mediana(self, valores: List[float]) -> Optional[float]:
+        """Calcula la mediana de una lista, devuelve None si está vacía."""
+        if not valores:
+            return None
+        s = sorted(valores)
+        n = len(s)
+        mid = n // 2
+        return s[mid] if n % 2 else (s[mid - 1] + s[mid]) / 2
+
+    def _encontrar_anclas_fechas(self, words: List, ancho_pagina: float, ctx: StatementContext) -> List[Dict]:
+        """
+        LÓGICA HÍBRIDA V3-V4:
+        Itera sobre las líneas agrupadas y busca patrones en orden de prioridad.
+        """
+        x_pared = 40.0
+        words_sorted = sorted(words, key=lambda w: w[1])
+
+        for w in words_sorted[:200]:
+            if w[0] < (ancho_pagina * 0.30):
+                txt = w[4].strip().upper().replace(":", "")
+                if any(kw.upper() in txt for kw in self.KEYWORDS_HEADER_FECHA):
+                    x_pared = max(w[0] + 80.0, w[2] + 20)
+                    break
+
+        candidatos = [w for w in words_sorted if w[0] < x_pared]
+        candidatos.sort(key=lambda w: (round(w[1], 1), w[0]))
+
+        if not candidatos:
+            return []
+
+        # === AGRUPACIÓN VISUAL (STITCHING DE LÍNEA) ===
+        lineas_agrupadas = []
+        if candidatos:
+            linea_actual = {
+                "txt": candidatos[0][4],
+                "y": candidatos[0][1],
+                "x": candidatos[0][0],
+                "tokens": [candidatos[0]]
+            }
+
+            for w in candidatos[1:]:
+                if abs(w[1] - linea_actual["y"]) < 4:
+                    linea_actual["txt"] += " " + w[4]
+                    linea_actual["tokens"].append(w)
+                else:
+                    lineas_agrupadas.append(linea_actual)
+                    linea_actual = {"txt": w[4], "y": w[1], "x": w[0], "tokens": [w]}
+            lineas_agrupadas.append(linea_actual)
+
+        anclas = []
+
+        for linea in lineas_agrupadas:
+            raw_completo = linea["txt"].strip()
+
+            # --- PRIORIDAD 1: FECHAS TEXTUALES ("03 FEB", "03/FEB") ---
+            match_textual = self.REGEX_FECHA_TEXTUAL.search(raw_completo)
+            if match_textual:
+                anclas.append({
+                    "texto_fecha": match_textual.group(0),
+                    "y_anchor": linea["y"],
+                    "x_start": linea["x"],
+                    "tipo_detectado": "COMPLETA_TEXTUAL"
+                })
+                continue
+
+            # --- PRIORIDAD 2: FECHAS NUMÉRICAS FUERTES ("12/05/2023") ---
+            match_num = self.REGEX_FECHA_NUMERICA.search(raw_completo)
+            if match_num:
+                anclas.append({
+                    "texto_fecha": match_num.group(0),
+                    "y_anchor": linea["y"],
+                    "x_start": linea["x"],
+                    "tipo_detectado": "COMPLETA_NUMERICA"
+                })
+                continue
+
+            # --- PRIORIDAD 3: DÍA AISLADO CON VALIDACIÓN DE MONTO ---
+            match_dia = self.REGEX_DIA_AISLADO.match(raw_completo)
+            if match_dia:
+                posible_dia = match_dia.group(1)
+
+                try:
+                    dia_int = int(posible_dia)
+                    if not (1 <= dia_int <= 31):
+                        continue
+                except:
+                    continue
+
+                y_target = linea["y"]
+                palabras_linea_completa = [
+                    w for w in words
+                    if abs(w[1] - y_target) < 6 and w[0] > x_pared
                 ]
 
-            # Estrategia B: Valor Exacto (Textual)
-            valores_texto = []
-            strs_montos = regex_monto_texto.findall(bloque["texto_completo"])
-            for s in strs_montos:
-                try:
-                    # Limpieza de comas y espacios antes de convertir
-                    v = float(s.replace(",", "").replace(" ", ""))
-                    # Ignoramos montos cero encontrados en el texto (ej. "IVA: 0.00")
-                    if v > 0.01:
-                        valores_texto.append(v)
-                except: pass
-                
-            # Ordenamos de MAYOR a MENOR. 
-            # Queremos intentar casar primero el monto principal (2,500) antes que comisiones o saldos menores.
-            valores_texto.sort(reverse=True)
-            
-            candidato_valor_exacto = None
-            for val_txt in valores_texto:
-                for n in numeros_geo:
-                    # Verificamos coincidencia
-                    if (n["id_geo"] not in numeros_usados_ids 
-                        and abs(n["valor"] - val_txt) < 0.01
-                        and n["tipo"] != "saldo"): 
-                        
-                        candidato_valor_exacto = n
-                        break 
-                if candidato_valor_exacto: break
+                texto_linea_derecha = " ".join([w[4] for w in palabras_linea_completa])
 
-            # DECISIÓN
-            if candidato_valor_exacto:
-                mejor_candidato = candidato_valor_exacto
-                match_status = "OK_TEXT_MATCH"
+                if self.REGEX_MONTO_SIMPLE.search(texto_linea_derecha):
+                    anclas.append({
+                        "texto_fecha": posible_dia,
+                        "y_anchor": linea["y"],
+                        "x_start": linea["x"],
+                        "tipo_detectado": "SOLO_DIA"
+                    })
 
-            elif candidatos_espaciales:
-                # 1. Filtramos candidatos que explícitamente sean saldo (por si se coló alguno)
-                candidatos_validos = [c for c in candidatos_espaciales if c["tipo"] != "saldo"]
-                
-                if not candidatos_validos:
-                    # Si todos eran saldo, no hay nada que hacer
-                    mejor_candidato = None
-                else:
-                    # 2. Intentamos buscar por clasificación explícita (Cargo/Abono detectado por headers)
-                    clasificados = [c for c in candidatos_validos if c["tipo"] != "indefinido"]
-                    
-                    if clasificados:
-                        # Si hay clasificados, tomamos el primero (prioridad a columnas detectadas)
-                        # Ordenamos por X para asegurar izquierda-derecha
-                        clasificados.sort(key=lambda x: x["x"])
-                        mejor_candidato = clasificados[0]
-                        match_status = "OK_SPATIAL_CLASS"
-                    
-                    else:
-                        # 3. CASO CRÍTICO (BBVA): Todos son "indefinidos".
-                        # AQUÍ ESTABA EL ERROR: Antes usabas max(valor).
-                        # AHORA: Usamos el que esté más a la IZQUIERDA (menor X).
-                        # Porque el orden es: [Cargo/Abono] -> [Saldo]
-                        
-                        candidatos_validos.sort(key=lambda k: k["x"]) # Ordenar por posición X
-                        mejor_candidato = candidatos_validos[0]       # Tomar el primero (izquierda)
-                        
-                        match_status = "OK_LEFTMOST_GUESS" # "WARN_SPATIAL_INDEF"
+        logger.info(f"Total anclas encontradas (Híbrido): {len(anclas)}")
+        return anclas
 
-            # ASIGNACIÓN
-            if mejor_candidato:
-                monto_final = mejor_candidato["valor"]
-                tipo_final = mejor_candidato["tipo"]
-                numeros_usados_ids.add(mejor_candidato["id_geo"])
+    def _extraer_transacciones_por_slice(
+        self, anclas: List[Dict], words: List, zonas_x: Dict, y_limite_total: float
+    ) -> List[Dict]:
+        """
+        Extrae transacciones usando slicing vertical entre anclas.
 
-                if tipo_final == "indefinido":
-                    x_cand = mejor_candidato["x"]
-                    zona_c = zonas.get("cargo")
-                    zona_a = zonas.get("abono")
-                    TOLERANCIA_X = 50 
-                    
-                    if zona_c and (zona_c[0] - TOLERANCIA_X) <= x_cand <= (zona_c[1] + TOLERANCIA_X):
-                        tipo_final = "cargo"
-                    elif zona_a and (zona_a[0] - TOLERANCIA_X) <= x_cand <= (zona_a[1] + TOLERANCIA_X):
-                        tipo_final = "abono"
-                    else:
-                        if x_cand < 400: tipo_final = "cargo"
-                        else: tipo_final = "abono"
+        ESTRATEGIA DE CLASIFICACIÓN:
+        1. Intenta clasificar usando x0 (borde izquierdo) — compatibilidad total
+           con todos los bancos donde los números pequeños están bien alineados.
+        2. Si x0 no cae en ninguna columna, intenta con x_centro (borde izquierdo
+           + borde derecho / 2) — fix para montos grandes alineados a la derecha
+           cuyo x0 cae en la columna vecina (ej: '17,242.00' en BBVA).
+        3. Si tampoco, aplica snap por centro de columna si hay metadatos disponibles.
+        """
+        transacciones = []
 
-            # --- PASO 4: GARBAGE COLLECTOR INTELIGENTE (GHOSTBUSTER) ---
-            if monto_final == 0.0 and match_status == "MISS_MONTO":
-                if transacciones_finales:
-                    # Acceso a objeto Pydantic
-                    tx_prev = transacciones_finales[-1]
-                    desc_prev = tx_prev.descripcion  # Dot notation
-                    desc_actual = bloque["texto_completo"] # Esto sí es dict (viene de segmentar)
-                    
-                    # --- CHECK DE FANTASMA ---
-                    # 1. Si la descripción actual está contenida en la anterior (duplicado exacto o parcial)
-                    if desc_actual in desc_prev:
-                        continue # Es un fantasma, lo ignoramos por completo
-                    
-                    # 2. Si son muy similares (ej. > 80% parecido) usando SequenceMatcher
-                    # Esto detecta "23/OCT Compra" vs "23/OCT Compra." (con punto extra)
-                    ratio = difflib.SequenceMatcher(None, desc_prev, desc_actual).ratio()
-                    if ratio > 0.8:
-                        continue # Es un fantasma casi idéntico, lo ignoramos
+        inicio_cargo = zonas_x["cargo"][0]
+        inicio_abono = zonas_x["abono"][0]
+        x_primera_columna_numerica = min(inicio_cargo, inicio_abono)
+        x_limite_desc = x_primera_columna_numerica - 10
 
-                    # Si NO es un fantasma, entonces sí es información nueva (ej. continuación real)
-                    tx_prev.descripcion += " " + desc_actual
+        # Los metadatos de centros solo existen en zonas_x del motor V7
+        centros = zonas_x.get("_centros", None)
+
+        for i, ancla in enumerate(anclas):
+            y_techo = ancla["y_anchor"] - 2
+            y_suelo_ref = anclas[i + 1]["y_anchor"] - 2 if i < len(anclas) - 1 else y_limite_total
+            y_suelo = min(y_suelo_ref, y_limite_total)
+
+            palabras_slice = [w for w in words if y_techo <= w[1] < y_suelo]
+
+            desc_tokens = []
+            cand_montos = []
+
+            x_inicio_desc = ancla["x_start"] + 35
+            x_muro_saldo = zonas_x["saldo"][0]
+            r_cargo = zonas_x["cargo"]
+            r_abono = zonas_x["abono"]
+
+            for w in palabras_slice:
+                x, y, x2, y2, texto = w[0], w[1], w[2], w[3], w[4]
+
+                # Posicionamiento siempre por borde izquierdo (igual que versión original)
+                if x >= x_muro_saldo:
                     continue
-                else:
-                    # Si es la primera transacción y no tiene monto, la ignoramos porque no tenemos nada a qué compararla (podría ser un encabezado o algo sin valor)
+                if x < x_inicio_desc:
                     continue
 
-            # --- AQUÍ EMPIEZA LA INYECCIÓN DE SCORE (Sustituyendo la creación del dict 'tx' de la V3) ---
-            # 1. Determinar Score y Enum
-            score_calculado = 0.5 # Default
-            metodo_enum = RespuestasMotorEstados.MetodoExtraccion.FORZADO
-            
-            if match_status == "OK_TEXT_MATCH":
-                score_calculado = 1.0
-                metodo_enum = RespuestasMotorEstados.MetodoExtraccion.EXACTO_TEXTO
-            elif match_status == "OK_SPATIAL_CLASS":
-                score_calculado = 0.9
-                metodo_enum = RespuestasMotorEstados.MetodoExtraccion.EXACTO_GEO_COLUMNA
-            elif match_status == "OK_LEFTMOST_GUESS":
-                score_calculado = 0.7
-                metodo_enum = RespuestasMotorEstados.MetodoExtraccion.INFERENCIA_GEO
-            
-            # 2. Mapeo de Tipo string a Enum
-            tipo_enum = RespuestasMotorEstados.TipoTransaccion.INDEFINIDO
-            if tipo_final in ["cargo", "abono", "saldo"]:
-                tipo_enum = RespuestasMotorEstados.TipoTransaccion(tipo_final)
-
-            # 3. Creación del Objeto Pydantic (Validación estricta)
-            try:
-                tx_obj = RespuestasMotorEstados.TransaccionDetectada(
-                    fecha=token_fecha_bloque,
-                    descripcion=bloque["texto_completo"],
-                    monto=monto_final,
-                    tipo=tipo_enum,
-                    id_interno=bloque["id_unico"],
-                    score_confianza=score_calculado,
-                    metodo_match=metodo_enum,
-                    coords_box = mejor_candidato.get("coords_box") if mejor_candidato else None,
-                    errores=[]          # Por ahora no tenemos errores
+                clean_txt = texto.replace("$", "").replace(",", "")
+                es_numero = bool(
+                    re.search(r'^\d{1,3}(?:,\d{3})*\.\d{2}$', clean_txt) or
+                    (re.search(r'\d', clean_txt) and "." in clean_txt and len(clean_txt) < 15)
                 )
-                transacciones_finales.append(tx_obj)
-            
-            except Exception as e:
-                logger.error(f"Error creando objeto transacción {bloque['id_unico']}: {e}")
-                # Se agrega a lista de errores de la clase
-                RespuestasMotorEstados.TransaccionDetectada(
-                    fecha=token_fecha_bloque,
-                    descripcion=bloque["texto_completo"],
-                    monto=0.0,
-                    tipo=RespuestasMotorEstados.TipoTransaccion.INDEFINIDO,
-                    id_interno=bloque["id_unico"],
-                    score_confianza=0.0,
-                    metodo_match=RespuestasMotorEstados.MetodoExtraccion.MANUAL,
-                    coords_box=None,
-                    errores=[RespuestasMotorEstados.ErrorRespuesta(
-                        codigo_error="TRANSACCION_INVALIDA",
-                        mensaje=f"Error al crear objeto de transacción: {e}"
-                    )]
-                )
-            # --- FIN DE LA INYECCIÓN ---
 
-        return transacciones_finales
-    
-    # --- FUNCIONES AUXILIARES DE DETECCIÓN DINÁMICA ---
+                # ── PASO 1: Clasificar por x0 (borde izquierdo) ──────────────
+                col = None
+                if r_cargo[0] <= x <= r_cargo[1]:
+                    col = "CARGO"
+                elif r_abono[0] <= x <= r_abono[1]:
+                    col = "ABONO"
 
-    def _detectar_zonas_columnas(self, page: fitz.Page) -> Dict[str, Tuple[float, float]]:
-        """
-        Escanea la página (priorizando el tercio superior RECALCULADO) buscando encabezados 
-        de columnas para definir las zonas X de 'cargo' y 'abono'.
-        """
-        # Importación dentro para evitar ciclos si es necesario, o mover arriba
-        from ..utils.helpers_texto_fluxo import KEYWORDS_COLUMNAS 
-        
-        ancho_pag = page.rect.width
-        zonas = {
-            "cargo": None, 
-            "abono": None, 
-            "fecha_columna": (0, ancho_pag * 0.22)
-        }
-        
-        # IMPORTANTE: Ahora buscamos headers en una zona más amplia
-        # Porque el crop dinámico nos asegura que tenemos contenido, 
-        # pero a veces los headers están un poco más abajo de lo usual.
-        rect_header = fitz.Rect(0, 0, ancho_pag, page.rect.height * 0.40)
-        words = page.get_text("words", clip=rect_header)
-        
-        candidatos = []
+                # ── PASO 2: Fallback por x_centro ────────────────────────────
+                # Solo para números que no clasificaron con x0.
+                # Fix para montos grandes alineados a la derecha en su celda:
+                #   x0 cae en zona cargo, pero x_centro está en zona abono.
+                # Ejemplo: '17,242.00' x0=420 (fuera), x_centro=438.9 → ABONO ✓
+                if col is None and es_numero:
+                    x_cls = (x + x2) / 2
+                    if r_cargo[0] <= x_cls <= r_cargo[1]:
+                        col = "CARGO"
+                        if self.debug_mode:
+                            logger.debug(f"   📌 x_cls CARGO: '{texto}' x0={x:.1f} x_cls={x_cls:.1f}")
+                    elif r_abono[0] <= x_cls <= r_abono[1]:
+                        col = "ABONO"
+                        if self.debug_mode:
+                            logger.debug(f"   📌 x_cls ABONO: '{texto}' x0={x:.1f} x_cls={x_cls:.1f}")
 
-        for w in words:
-            texto = w[4].lower().replace(":", "").replace(".", "").strip()
-            x0, x1 = w[0], w[2]
-            
-            if texto in KEYWORDS_COLUMNAS["cargo"]:
-                candidatos.append({"tipo": "cargo", "x0": x0, "x1": x1, "y": w[1]})
-                
-            elif texto in KEYWORDS_COLUMNAS["abono"]:
-                candidatos.append({"tipo": "abono", "x0": x0, "x1": x1, "y": w[1]})
+                    # ── PASO 3: Snap por centro de columna (solo si tenemos metadatos) ──
+                    # Actúa cuando x_cls tampoco cae en rango — token en el gap.
+                    # Requiere _centros en zonas_x (disponible con _detectar_zonas_columnas V7).
+                    if col is None and centros and x_inicio_desc <= x_cls < x_muro_saldo:
+                        c_cargo = centros["cargo"]
+                        c_abono = centros["abono"]
+                        x_entre = min(c_cargo, c_abono) <= x_cls <= max(c_cargo, c_abono)
+                        if x_entre:
+                            col = "CARGO" if abs(x_cls - c_cargo) <= abs(x_cls - c_abono) else "ABONO"
+                            if self.debug_mode:
+                                logger.debug(
+                                    f"   📌 SNAP {col}: '{texto}' x_cls={x_cls:.1f} "
+                                    f"(Δc={abs(x_cls-c_cargo):.1f} Δa={abs(x_cls-c_abono):.1f})"
+                                )
 
-        margen_expansion = 25 
+                # ── Asignación final ─────────────────────────────────────────
+                if es_numero and col:
+                    try:
+                        val = float(clean_txt)
+                        cand_montos.append({"val": val, "x": x, "col": col, "box": w[:4]})
+                    except ValueError:
+                        pass
 
-        for c in candidatos:
-            zona_tupla = (c["x0"] - margen_expansion, c["x1"] + margen_expansion)
-            if zonas[c["tipo"]] is None:
-                zonas[c["tipo"]] = zona_tupla
+                elif x < x_limite_desc:
+                    desc_tokens.append(w)
 
-        centro_pag = ancho_pag / 2
-        if zonas["cargo"] and not zonas["abono"]:
-            if zonas["cargo"][1] < centro_pag: 
-                zonas["abono"] = (centro_pag, ancho_pag)
-                
-        elif zonas["abono"] and not zonas["cargo"]:
-            if zonas["abono"][0] > centro_pag: 
-                zonas["cargo"] = (0, centro_pag)
+                else:
+                    if not es_numero and x < (x_limite_desc + 80):
+                        desc_tokens.append(w)
 
-        return zonas
+            # Armar descripción
+            desc_tokens.sort(key=lambda w: (round(w[1], 0), w[0]))
+            desc_str = " ".join([w[4] for w in desc_tokens])
 
-    def _calcular_crop_dinamico(self, page: fitz.Page) -> fitz.Rect:
-        """
-        Escanea la página buscando 'señales de vida' (fechas y montos).
-        Devuelve un rectángulo ajustado al contenido real, ignorando headers lejanos y footers.
-        """
-        rect_original = page.rect
-        words = page.get_text("words")
-        
-        if not words:
-            return rect_original
+            # Filtro Semántico
+            desc_clean = " ".join(desc_str.split()).upper()
+            if any(k.upper() in desc_clean for k in self.KEYWORDS_IGNORE_DESC):
+                if self.debug_mode:
+                    kw_match = [k for k in self.KEYWORDS_IGNORE_DESC if k.upper() in desc_clean]
+                    logger.debug(
+                        f"🚫 FILTRO SEMÁNTICO eliminó: Y={int(ancla['y_anchor'])} "
+                        f"fecha={ancla['texto_fecha']} keyword={kw_match} desc='{desc_clean[:60]}'"
+                    )
+                continue
 
-        min_y_detectado = rect_original.height  # Empezamos desde abajo
-        max_y_detectado = 0.0                   # Empezamos desde arriba
-        
-        encontro_datos = False
+            movs = [m for m in cand_montos if m["col"] in ["CARGO", "ABONO"]]
 
-        for w in words:
-            texto = w[4].strip()
-            
-            # HEURÍSTICA 1: ¿Parece una fecha? (dd/mm o dd-mes)
-            es_fecha = bool(REGEX_FECHA_SIMPLE.search(texto))
-            
-            # HEURÍSTICA 2: ¿Parece un monto? (tiene punto decimal y dígitos)
-            # Evitamos números de página simples (ej: "1", "45") pidiendo el punto decimal.
-            es_monto = bool(REGEX_MONTO_SIMPLE.search(texto))
-            
-            if es_fecha or es_monto:
-                y0, y1 = w[1], w[3]
-                
-                # Actualizamos los límites del "mapa de calor"
-                if y0 < min_y_detectado: min_y_detectado = y0
-                if y1 > max_y_detectado: max_y_detectado = y1
-                encontro_datos = True
+            if movs:
+                # Tomamos el primer monto (más a la izquierda = columna más cercana a descripción)
+                mejor = sorted(movs, key=lambda k: k["x"])[0]
+                monto_final = mejor["val"]
+                tipo_final = mejor["col"]
+                coords_box = mejor["box"]
+            else:
+                if self.debug_mode:
+                    logger.debug(
+                        f"\n⚠️  SLICE SIN MONTO → ancla={ancla['texto_fecha']} Y={int(ancla['y_anchor'])} "
+                        f"[techo={int(y_techo)}, suelo={int(y_suelo)}]"
+                    )
+                    logger.debug(
+                        f"   Rangos: CARGO={tuple(int(v) for v in r_cargo)} | "
+                        f"ABONO={tuple(int(v) for v in r_abono)} | MURO={int(x_muro_saldo)}"
+                    )
+                    nums_en_slice = [
+                        w for w in palabras_slice
+                        if re.search(r'\d+\.\d{2}', w[4].replace(",", ""))
+                        and w[0] < x_muro_saldo
+                    ]
+                    if nums_en_slice:
+                        logger.debug("   Números en slice (fuera de rango):")
+                        for wn in nums_en_slice:
+                            xn, xn2 = wn[0], wn[2]
+                            x_cls_d = (xn + xn2) / 2
+                            col_d = ("CARGO✓" if r_cargo[0] <= xn <= r_cargo[1] else
+                                     "ABONO✓" if r_abono[0] <= xn <= r_abono[1] else
+                                     f"FUERA x0={xn:.0f} x_cls={x_cls_d:.0f}")
+                            logger.debug(f"     → '{wn[4]}' {col_d}")
+                    else:
+                        logger.debug(f"   Sin números en slice. Tokens: {[(w[4], int(w[0])) for w in palabras_slice[:10]]}")
+                continue
 
-        # --- DEFINICIÓN DE MÁRGENES ---
-        if not encontro_datos:
-            # Fallback: Si no detectamos nada (página vacía o imagen), devolvemos crop estándar
-            # Margen 5% arriba y abajo
-            return fitz.Rect(0, rect_original.height * 0.05, rect_original.width, rect_original.height * 0.95)
+            tx = {
+                "fecha": ancla["texto_fecha"],
+                "descripcion": desc_str,
+                "monto": monto_final,
+                "tipo": tipo_final,
+                "id_interno": f"Y{int(ancla['y_anchor'])}",
+                "score_confianza": 0.95,
+                "metodo_match": "EXACTO_GEO_COLUMNA",
+                "coords_box": coords_box,
+                "errores": []
+            }
+            transacciones.append(tx)
 
-        # BÚFER DE SEGURIDAD
-        # Arriba: Necesitamos espacio para los Headers de columna (Saldo, Cargo, etc.)
-        # Si la primera fecha está en Y=200, subimos 150px para atrapar los headers.
-        BUFFER_SUPERIOR = 120 
-        
-        # Abajo: Solo necesitamos un poquito extra por si el monto tiene colita (ej. letras 'g', 'j', 'p')
-        BUFFER_INFERIOR = 10 
-
-        y_final_top = max(0, min_y_detectado - BUFFER_SUPERIOR)
-        y_final_bottom = min(rect_original.height, max_y_detectado + BUFFER_INFERIOR)
-
-        # --- VALIDACIÓN DE SEGURIDAD ---
-        # Si el crop resultante es ridículamente pequeño (ej. < 100px), algo salió mal.
-        if (y_final_bottom - y_final_top) < 100:
-            return rect_original
-
-        return fitz.Rect(0, y_final_top, rect_original.width, y_final_bottom)
-
-    def _detectar_formato_fecha_predominante(self, texto_muestra: str) -> List[str]:
-        """
-        Analiza el texto y devuelve una lista de claves de formatos detectados
-        ordenados por frecuencia.
-        """
-        conteo = {k: 0 for k in PATRONES_FECHA.keys()}
-        
-        # Muestreo rápido
-        lineas = texto_muestra.split('\n')[:1000] # Analizar primeras 200 líneas es suficiente
-        
-        for linea in lineas:
-            linea = linea.strip()
-            if not linea: continue
-            
-            for clave, regex in PATRONES_FECHA.items():
-                if regex.search(linea):
-                    conteo[clave] += 1
-                    
-        # Filtramos los que tengan 0 hits y ordenamos por popularidad
-        detectados = sorted(
-            [k for k, v in conteo.items() if v > 0],
-            key=lambda k: conteo[k],
-            reverse=True
-        )
-        
-        # "DD_AISLADO" es peligroso, solo lo devolvemos si es el ÚNICO o el MUY dominante
-        if "DD_AISLADO" in detectados:
-            # Si hay formatos fuertes (DD/MM/AAAA), preferimos esos aunque haya menos
-            formatos_fuertes = [f for f in detectados if f != "DD_AISLADO"]
-            if formatos_fuertes:
-                return formatos_fuertes + ["DD_AISLADO"]
-                
-        return detectados
+        return transacciones

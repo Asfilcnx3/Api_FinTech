@@ -332,8 +332,7 @@ class ProcessingService:
 
     def _ensamblar_resultados_crudos(self, res_finales, t_dig, r_dig, t_ocr, r_ocr, timeout, lista_archivos, documentos_digitales, documentos_escaneados):
         """
-        Recopila resultados e INYECTA la metadata necesaria (path, rangos) para la fase geométrica.
-        Necesitamos recibir 'documentos_digitales' y 'documentos_escaneados' para saber el contexto.
+        Recopila resultados, CONVIERTE diccionarios a Pydantic e INYECTA metadata.
         """
         acumulados = []
         
@@ -341,32 +340,69 @@ class ProcessingService:
         def procesar_lista(tareas, resultados_brutos, lista_contexto, es_digital_flag):
             for i, (idx_orig, _) in enumerate(tareas):
                 res = resultados_brutos[i]
-            
-                # PARCHE DE SEGURIDAD: Si es excepción, la convertimos a objeto de error
-                if isinstance(res, Exception):
-                    res = AnalisisTPV.ResultadoExtraccion(
-                        AnalisisIA=AnalisisTPV.AnalisisIA(banco="ERROR_PROCESAMIENTO"),
-                        DetalleTransacciones=AnalisisTPV.ErrorRespuesta(error=str(res))
-                    )
-
-                # Recuperamos el contexto original (path, rango) usando el índice
-                # El orden de 'tareas' coincide con el orden de 'lista_contexto' (digitales o escaneados)
                 contexto = lista_contexto[i] 
                 
+                # --- CASO 1: EXCEPCIÓN ---
+                if isinstance(res, Exception):
+                    # CORRECCIÓN AQUÍ: Usar ResultadoAnalisisIA
+                    res_model = AnalisisTPV.ResultadoExtraccion(
+                        AnalisisIA=AnalisisTPV.ResultadoAnalisisIA(banco="ERROR_PROCESAMIENTO"),
+                        DetalleTransacciones=AnalisisTPV.ErrorRespuesta(error=str(res))
+                    )
+                    # Inyectar contexto
+                    res_model.file_path_origen = contexto["file_path"]
+                    res_model.rango_paginas = contexto.get("rango_paginas", (1, 100))
+                    res_model.es_digital = es_digital_flag
+                    acumulados.append(res_model)
+                    continue
+
+                # --- CASO 2: LISTA DE RESULTADOS (Normalmente del Engine) ---
                 if isinstance(res, list):
                     for item in res:
-                        item.file_path_origen = contexto["file_path"]
-                        item.rango_paginas = contexto.get("rango_paginas", (1, 100))
-                        item.es_digital = es_digital_flag
-                        acumulados.append(item)
+                        # CORRECCIÓN CRÍTICA: Si es dict, convertir a Objeto Pydantic
+                        if isinstance(item, dict):
+                            # Mapeamos la salida del Engine a la estructura de Fluxo
+                            txs_raw = item.get("transacciones", [])
+                            
+                            # Crear objetos Transaccion
+                            txs_objs = []
+                            for t in txs_raw:
+                                txs_objs.append(AnalisisTPV.Transaccion(
+                                    fecha=t.get("fecha", ""),
+                                    descripcion=t.get("descripcion", ""),
+                                    monto=str(t.get("monto", "0.0")),
+                                    tipo=t.get("tipo", "DESCONOCIDO"),
+                                    categoria="GENERAL" # Default
+                                ))
 
-                elif isinstance(res, list):
-                    for item in res:
-                        item.file_path_origen = contexto["file_path"]
-                        item.rango_paginas = contexto.get("rango_paginas", (1, 100))
-                        item.es_digital = es_digital_flag   
-                        acumulados.append(item)
+                            # Crear ResultadoTPV
+                            detalle_tpv = AnalisisTPV.ResultadoTPV(transacciones=txs_objs)
+                            
+                            # Crear ResultadoAnalisisIA (Caratula dummy o parcial si la tienes)
+                            analisis_ia = AnalisisTPV.ResultadoAnalisisIA(
+                                banco="DETECTADO_POR_GEOMETRIA",
+                                nombre_archivo_virtual=str(contexto["file_path"])
+                            )
+
+                            # Empaquetar en ResultadoExtraccion
+                            item_obj = AnalisisTPV.ResultadoExtraccion(
+                                AnalisisIA=analisis_ia,
+                                DetalleTransacciones=detalle_tpv,
+                                metadata_tecnica=[item.get("metricas", {})]
+                            )
+                        else:
+                            # Ya es un objeto (quizás vino de otro lado)
+                            item_obj = item
+
+                        # AHORA SÍ podemos usar notación de punto
+                        item_obj.file_path_origen = contexto["file_path"]
+                        item_obj.rango_paginas = contexto.get("rango_paginas", (1, 100))
+                        item_obj.es_digital = es_digital_flag
+                        acumulados.append(item_obj)
+
+                # --- CASO 3: OBJETO ÚNICO ---
                 else:
+                    # Asumimos que si no es lista ni Exception, ya es un objeto Pydantic
                     res.file_path_origen = contexto["file_path"]
                     res.rango_paginas = contexto.get("rango_paginas", (1, 100))
                     res.es_digital = es_digital_flag
@@ -380,7 +416,7 @@ class ProcessingService:
         if t_ocr and not timeout: 
             procesar_lista(t_ocr, r_ocr, documentos_escaneados, False)
         
-        # Agregar resultados fallidos previos (Estos no necesitan geometría, tienen error)
+        # Agregar resultados fallidos previos
         indices_procesados = {t[0] for t in t_dig} 
         if not timeout: indices_procesados.update({t[0] for t in t_ocr})
         
@@ -436,9 +472,8 @@ class ProcessingService:
     
     def _aplicar_reglas_negocio_y_calcular_totales(self, analisis_ia, transacciones):
         """
-        ÚNICA fuente de verdad. 
-        1. Aplica filtros estrictos de Python (sobreescribiendo a la IA si es necesario).
-        2. Calcula los totales finales para la carátula.
+        ÚNICA fuente de verdad para los totales.
+        Ahora con matching flexible para TPV y logs de depuración.
         """
         if not analisis_ia: return
 
@@ -448,14 +483,23 @@ class ProcessingService:
             "BMRCASH": 0.0, "MORATORIOS": 0.0, "TPV": 0.0, "DEPOSITOS": 0.0
         }
         
+        # DEBUG: Contador para saber qué está pasando
+        conteo_categorias = {"TPV": 0, "GENERAL": 0, "OTROS": 0}
+
         for tx in transacciones:
             try:
-                monto = float(str(tx.monto).replace(",", ""))
+                # Limpieza robusta del monto
+                monto_str = str(tx.monto).replace("$", "").replace(",", "").strip()
+                monto = float(monto_str)
             except: 
                 monto = 0.0
             
             # Solo nos importan los abonos para las sumas de ingresos
-            if tx.tipo != "abono":
+            # Aseguramos que el tipo se compare en minúsculas
+            tipo_lower = str(tx.tipo).lower().strip()
+            
+            # Si NO es abono/deposito/credito, lo saltamos (es cargo)
+            if tipo_lower not in ["abono", "deposito", "depósito", "credito", "crédito"]:
                 continue
 
             # Suma al total general de depósitos
@@ -463,40 +507,64 @@ class ProcessingService:
 
             desc = str(tx.descripcion).lower()
             
-            # --- JERARQUÍA DE REGLAS (Python manda) ---
+            # Normalizamos la categoría que viene de la IA
+            cat_ia = str(tx.categoria).upper().strip()
+
+            # --- JERARQUÍA DE REGLAS (Python manda sobre IA) ---
             
             if any(p in desc for p in PALABRAS_EXCLUIDAS):
                 continue 
 
             if any(p in desc for p in PALABRAS_EFECTIVO):
                 totales["EFECTIVO"] += monto
-                tx.categoria = "EFECTIVO" # Sobrescribimos categoría
+                tx.categoria = "EFECTIVO" # Sobrescribimos para el reporte individual
+                conteo_categorias["OTROS"] += 1
                 
             elif any(p in desc for p in PALABRAS_TRASPASO_ENTRE_CUENTAS):
                 totales["TRASPASO"] += monto
                 tx.categoria = "TRASPASO"
+                conteo_categorias["OTROS"] += 1
                 
             elif any(p in desc for p in PALABRAS_TRASPASO_FINANCIAMIENTO):
                 totales["FINANCIAMIENTO"] += monto
                 tx.categoria = "FINANCIAMIENTO"
+                conteo_categorias["OTROS"] += 1
                 
             elif any(p in desc for p in PALABRAS_BMRCASH):
                 totales["BMRCASH"] += monto
                 tx.categoria = "BMRCASH"
+                conteo_categorias["OTROS"] += 1
                 
             elif any(p in desc for p in PALABRAS_TRASPASO_MORATORIO):
                 totales["MORATORIOS"] += monto
                 tx.categoria = "MORATORIOS"
+                conteo_categorias["OTROS"] += 1
                 
             else:
-                # Si no cayó en reglas de Python, respetamos lo que dijo la IA (TPV o GENERAL)
-                if tx.categoria == "TPV":
+                # --- AQUÍ ESTABA EL ERROR ---
+                # Antes: if tx.categoria == "TPV":
+                # Ahora: Flexible (contiene TPV o es TERMINAL)
+                
+                es_tpv = "TPV" in cat_ia or "TERMINAL" in cat_ia or "PUNTO DE VENTA" in cat_ia
+                
+                if es_tpv:
                     totales["TPV"] += monto
+                    # Forzamos la etiqueta limpia para el Excel
+                    tx.categoria = "TPV" 
+                    conteo_categorias["TPV"] += 1
                 else:
                     # Es GENERAL
+                    conteo_categorias["GENERAL"] += 1
                     pass
 
-        # Inyectamos los totales calculados al objeto padre
+        # LOG DE DIAGNÓSTICO (Importante para ver si está funcionando)
+        logger.info(f"📊 Resumen de Clasificación para Sumas:")
+        logger.info(f"   TPV Detectados: {conteo_categorias['TPV']} | Monto: ${totales['TPV']:,.2f}")
+        logger.info(f"   General/Otros : {conteo_categorias['GENERAL']}")
+        logger.info(f"   Reglas Python : {conteo_categorias['OTROS']}")
+
+        # Inyectamos los totales calculados al objeto padre (AnalisisIA)
+        # IMPORTANTE: Asegúrate de que analisis_ia sea el objeto que se usa en el reporte final
         analisis_ia.depositos_en_efectivo = totales["EFECTIVO"]
         analisis_ia.traspaso_entre_cuentas = totales["TRASPASO"]
         analisis_ia.total_entradas_financiamiento = totales["FINANCIAMIENTO"]
@@ -504,68 +572,113 @@ class ProcessingService:
         analisis_ia.total_moratorios = totales["MORATORIOS"]
         analisis_ia.entradas_TPV_bruto = totales["TPV"]
         
-        # Opcional: Actualizar el total de depósitos si queremos que coincida con la suma de partes
-        # analisis_ia.depositos = totales["DEPOSITOS"] 
-
         # Calculamos Neto
-        comisiones = analisis_ia.comisiones or 0.0
+        try:
+            com_str = str(analisis_ia.comisiones).replace("$", "").replace(",", "")
+            comisiones = float(com_str) if analisis_ia.comisiones else 0.0
+        except:
+            comisiones = 0.0
+            
         analisis_ia.entradas_TPV_neto = totales["TPV"] - comisiones
     
     async def _clasificar_documento_async(self, job_id, resultado_doc, BATCH_SIZE=100):
         """
-        Procesa UN documento completo de forma asíncrona, respetando el Semáforo Global.
+        Procesa UN documento completo de forma asíncrona.
+        FIX: Hidratación de objetos + Lógica de Mapeo Robusta (Listas y Dicts).
         """
-        # Validaciones de seguridad
-        if not resultado_doc or isinstance(resultado_doc.DetalleTransacciones, AnalisisTPV.ErrorRespuesta):
-            return
+        # 0. VALIDACIÓN E HIDRATACIÓN
+        if not resultado_doc: return
+        if isinstance(resultado_doc.DetalleTransacciones, AnalisisTPV.ErrorRespuesta): return
+
+        # --- HIDRATACIÓN (El fix anterior) ---
+        if isinstance(resultado_doc.DetalleTransacciones, dict):
+            raw_dict = resultado_doc.DetalleTransacciones
+            lista_cruda = raw_dict.get("transacciones", [])
+            
+            tx_objs = []
+            for tx in lista_cruda:
+                if isinstance(tx, dict):
+                    tx_objs.append(AnalisisTPV.Transaccion(
+                        fecha=tx.get("fecha", ""),
+                        descripcion=tx.get("descripcion", ""),
+                        monto=str(tx.get("monto", "0.0")),
+                        tipo=tx.get("tipo", "DESCONOCIDO"),
+                        categoria="GENERAL"
+                    ))
+                else:
+                    tx_objs.append(tx)
+            
+            resultado_doc.DetalleTransacciones = AnalisisTPV.ResultadoTPV(transacciones=tx_objs)
 
         transacciones = resultado_doc.DetalleTransacciones.transacciones
-        if not transacciones:
-            return
+        if not transacciones: return
+
+        if isinstance(resultado_doc.AnalisisIA, dict):
+             resultado_doc.AnalisisIA = AnalisisTPV.ResultadoAnalisisIA(**resultado_doc.AnalisisIA)
 
         banco_actual = resultado_doc.AnalisisIA.banco
         
-        # Actualizamos Pasaporte
-        self.passport.actualizar(
-            job_id, 
-            sumar_transacciones=len(transacciones), 
-            descripcion=f"Encolando {len(transacciones)} movs de {banco_actual}..."
-        )
+        self.passport.actualizar(job_id, sumar_transacciones=len(transacciones), descripcion=f"Clasificando {len(transacciones)} movs...")
 
-        # --- FUNCIÓN WRAPPER CON SEMÁFORO ---
-        # Esta función interna "espera su turno" antes de llamar a la API
+        # --- PREPARAR LOTES ---
         async def _clasificar_lote_seguro(banco, lote):
-            async with self.sem_ia: # <--- AQUÍ OCURRE EL BLOQUEO INTELIGENTE
+            async with self.sem_ia: 
                 return await clasificar_lote_con_ia(banco, lote)
 
-        # 1. PREPARAR TAREAS
         tareas_lotes = []
         for k in range(0, len(transacciones), BATCH_SIZE):
             lote = transacciones[k : k + BATCH_SIZE]
-            # Usamos el wrapper seguro en lugar de la función directa
             tareas_lotes.append(_clasificar_lote_seguro(banco_actual, lote))
 
-        # 2. DISPARAR (El semáforo controlará el flujo automáticamente)
-        # Aunque lanzamos 1000 tareas, solo 20 correrán a la vez.
-        # Conforme una termina, entra la siguiente.
+        # DISPARAR
         resultados_lotes = await asyncio.gather(*tareas_lotes)
 
-        # 3. RECONSTRUCCIÓN DEL MAPA (Igual que antes)
+        # --- [FIX 1] RECONSTRUCCIÓN DEL MAPA TODOTERRENO ---
         mapa_clasificacion_total = {}
-        for i_lote, mapa_lote in enumerate(resultados_lotes):
+        
+        for i_lote, resultado_ia in enumerate(resultados_lotes):
             offset = i_lote * BATCH_SIZE
-            if isinstance(mapa_lote, dict):
-                for idx_relativo, etiqueta in mapa_lote.items():
-                    if str(idx_relativo).isdigit():
-                        mapa_clasificacion_total[str(int(str(idx_relativo)) + offset)] = etiqueta
+            
+            # CASO A: La IA devolvió una LISTA (Común en GPT-4/Gemini si no se fuerza JSON object)
+            if isinstance(resultado_ia, list):
+                for idx_rel, etiqueta in enumerate(resultado_ia):
+                    abs_idx = str(offset + idx_rel)
+                    mapa_clasificacion_total[abs_idx] = etiqueta
+            
+            # CASO B: La IA devolvió un DICCIONARIO
+            elif isinstance(resultado_ia, dict):
+                for key, etiqueta in resultado_ia.items():
+                    # Limpieza de clave (por si la IA manda "1." o "tx_1")
+                    clean_key = ''.join(filter(str.isdigit, str(key)))
+                    if clean_key:
+                        abs_idx = str(int(clean_key) + offset) # Sumar offset porque la IA reinicia conteo en cada lote
+                        mapa_clasificacion_total[abs_idx] = etiqueta
 
-        # 4. APLICACIÓN DE ETIQUETAS
+        # Log de diagnóstico para ver si está vacío
+        logger.info(f"Mapa de clasificación construido: {len(mapa_clasificacion_total)} etiquetas para {len(transacciones)} transacciones.")
+
+        # --- [FIX 2] APLICACIÓN DE ETIQUETAS Y NORMALIZACIÓN ---
         for idx, tx in enumerate(transacciones):
             str_idx = str(idx)
-            if tx.tipo != "cargo":
-                tx.categoria = mapa_clasificacion_total.get(str_idx, "GENERAL")
+            
+            # Normalizamos el tipo para evitar errores de mayúsculas/minúsculas
+            # Asumimos que quieres clasificar todo lo que NO sea cargo (o sea, abonos)
+            tipo_normalizado = str(tx.tipo).strip().lower()
+            
+            # Lista negra de tipos que NO clasificamos
+            es_salida = tipo_normalizado in ["cargo", "retiro", "debito", "comision"]
+
+            if not es_salida:
+                # [FIX 3] Loguear si estamos cayendo en el GENERAL por defecto
+                nueva_cat = mapa_clasificacion_total.get(str_idx)
+                if nueva_cat:
+                    tx.categoria = nueva_cat
+                else:
+                    # Si no hay match en el mapa, mantenemos GENERAL pero avisamos en debug
+                    tx.categoria = "GENERAL"
+                    # logger.debug(f"⚠️ Tx {idx} sin etiqueta IA -> GENERAL. Desc: {tx.descripcion[:20]}")
             else:
                 tx.categoria = "CARGO"
 
-        # 5. REGLAS DE NEGOCIO Y TOTALES
+        # 5. REGLAS DE NEGOCIO
         self._aplicar_reglas_negocio_y_calcular_totales(resultado_doc.AnalisisIA, transacciones)

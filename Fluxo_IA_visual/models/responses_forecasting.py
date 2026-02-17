@@ -21,9 +21,16 @@ class Forecast(BaseModel):
         scenarios: "Forecast.Scenario"
         method_name: str
         historical_growth_rate: Optional[float] = None
-        growth_realistic: Optional[float] = None
-        growth_optimistic: Optional[float] = None
-        growth_pessimistic: Optional[float] = None
+
+        # COMPARISON: Crecimiento total pronosticado vs total año anterior
+        comparison_realistic: Optional[float] = None 
+        comparison_optimistic: Optional[float] = None
+        comparison_pessimistic: Optional[float] = None
+        
+        # TREND: Pendiente interna de la proyección (Mes 12 vs Mes 1)
+        trend_realistic: Optional[float] = None
+        trend_optimistic: Optional[float] = None
+        trend_pessimistic: Optional[float] = None
 
     class MetricForecast(BaseModel):
         """
