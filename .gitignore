@@ -18,7 +18,10 @@ __pycache__
 # Cosas que no usamos
 deprecated
 
-*.pdf
+pdf_test
+auditor_engine_pass1_*.py
+engine_v2_copy.py
 prueba_dc.py
+
 
 *.json
