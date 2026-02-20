@@ -588,7 +588,7 @@ class ProcessingService:
         if not resultado_doc: return
         if isinstance(resultado_doc.DetalleTransacciones, AnalisisTPV.ErrorRespuesta): return
 
-        # --- HIDRATACIÓN (El fix anterior) ---
+        # --- HIDRATACIÓN ---
         if isinstance(resultado_doc.DetalleTransacciones, dict):
             raw_dict = resultado_doc.DetalleTransacciones
             lista_cruda = raw_dict.get("transacciones", [])
@@ -603,6 +603,7 @@ class ProcessingService:
                         tipo=tx.get("tipo", "DESCONOCIDO"),
                         categoria="GENERAL"
                     ))
+                    logger.info(f"tipo de tx: {type(tx)} | contenido: {str(tx)[:50]}")
                 else:
                     tx_objs.append(tx)
             
@@ -612,71 +613,63 @@ class ProcessingService:
         if not transacciones: return
 
         if isinstance(resultado_doc.AnalisisIA, dict):
-             resultado_doc.AnalisisIA = AnalisisTPV.ResultadoAnalisisIA(**resultado_doc.AnalisisIA)
+            resultado_doc.AnalisisIA = AnalisisTPV.ResultadoAnalisisIA(**resultado_doc.AnalisisIA)
 
         banco_actual = resultado_doc.AnalisisIA.banco
         
         self.passport.actualizar(job_id, sumar_transacciones=len(transacciones), descripcion=f"Clasificando {len(transacciones)} movs...")
 
         # --- PREPARAR LOTES ---
-        async def _clasificar_lote_seguro(banco, lote):
+        # Actualizamos el helper para aceptar el offset
+        async def _clasificar_lote_seguro(banco, lote, offset):
             async with self.sem_ia: 
-                return await clasificar_lote_con_ia(banco, lote)
+                return await clasificar_lote_con_ia(banco, lote, start_offset=offset)
 
         tareas_lotes = []
         for k in range(0, len(transacciones), BATCH_SIZE):
             lote = transacciones[k : k + BATCH_SIZE]
-            tareas_lotes.append(_clasificar_lote_seguro(banco_actual, lote))
+            # Pasamos 'k' que es nuestro offset real
+            tareas_lotes.append(_clasificar_lote_seguro(banco_actual, lote, k))
 
-        # DISPARAR
         resultados_lotes = await asyncio.gather(*tareas_lotes)
 
-        # --- [FIX 1] RECONSTRUCCIÓN DEL MAPA TODOTERRENO ---
+        # --- MAPEO TODOTERRENO (SIMPLIFICADO) ---
         mapa_clasificacion_total = {}
         
         for i_lote, resultado_ia in enumerate(resultados_lotes):
-            offset = i_lote * BATCH_SIZE
             
-            # CASO A: La IA devolvió una LISTA (Común en GPT-4/Gemini si no se fuerza JSON object)
+            # CASO A: Si la IA es terca y devuelve una lista (GPT a veces lo hace)
             if isinstance(resultado_ia, list):
+                offset_lista = i_lote * BATCH_SIZE
                 for idx_rel, etiqueta in enumerate(resultado_ia):
-                    abs_idx = str(offset + idx_rel)
+                    abs_idx = str(offset_lista + idx_rel)
                     mapa_clasificacion_total[abs_idx] = etiqueta
             
-            # CASO B: La IA devolvió un DICCIONARIO
+            # CASO B: La IA devolvió un Diccionario (Lo esperado)
             elif isinstance(resultado_ia, dict):
                 for key, etiqueta in resultado_ia.items():
-                    # Limpieza de clave (por si la IA manda "1." o "tx_1")
                     clean_key = ''.join(filter(str.isdigit, str(key)))
                     if clean_key:
-                        abs_idx = str(int(clean_key) + offset) # Sumar offset porque la IA reinicia conteo en cada lote
-                        mapa_clasificacion_total[abs_idx] = etiqueta
+                        # ¡YA NO SUMAMOS NADA! El key ya es el absoluto.
+                        mapa_clasificacion_total[str(clean_key)] = etiqueta
 
-        # Log de diagnóstico para ver si está vacío
         logger.info(f"Mapa de clasificación construido: {len(mapa_clasificacion_total)} etiquetas para {len(transacciones)} transacciones.")
 
         # --- [FIX 2] APLICACIÓN DE ETIQUETAS Y NORMALIZACIÓN ---
         for idx, tx in enumerate(transacciones):
             str_idx = str(idx)
             
-            # Normalizamos el tipo para evitar errores de mayúsculas/minúsculas
-            # Asumimos que quieres clasificar todo lo que NO sea cargo (o sea, abonos)
-            tipo_normalizado = str(tx.tipo).strip().lower()
+            # Buscamos la etiqueta que la IA le dio a esta transacción
+            nueva_cat = mapa_clasificacion_total.get(str_idx)
             
-            # Lista negra de tipos que NO clasificamos
-            es_salida = tipo_normalizado in ["cargo", "retiro", "debito", "comision"]
-
-            if not es_salida:
-                # [FIX 3] Loguear si estamos cayendo en el GENERAL por defecto
-                nueva_cat = mapa_clasificacion_total.get(str_idx)
-                if nueva_cat:
-                    tx.categoria = nueva_cat
-                else:
-                    # Si no hay match en el mapa, mantenemos GENERAL pero avisamos en debug
-                    tx.categoria = "GENERAL"
-                    # logger.debug(f"⚠️ Tx {idx} sin etiqueta IA -> GENERAL. Desc: {tx.descripcion[:20]}")
+            if nueva_cat:
+                # La IA decidió la categoría, se la asignamos SIEMPRE
+                logger.info(f"Tx {idx} clasificada como {nueva_cat} por IA. Desc: {tx.descripcion[:30]}")
+                tx.categoria = nueva_cat
             else:
-                tx.categoria = "CARGO"
+                # Solo si la IA falló o se comió este índice, va a GENERAL
+                logger.warning(f"⚠️ Tx {idx} sin etiqueta IA -> GENERAL. Desc: {tx.descripcion[:30]}")
+                tx.categoria = "GENERAL"
 
         # 5. REGLAS DE NEGOCIO
         self._aplicar_reglas_negocio_y_calcular_totales(resultado_doc.AnalisisIA, transacciones)

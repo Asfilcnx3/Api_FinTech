@@ -62,20 +62,15 @@ def get_nomi_client():
 async def clasificar_lote_con_ia(
     banco: str, 
     transacciones: List[Any], 
-    client: AsyncOpenAI = None # Inyección de dependencia opcional
+    start_offset: int = 0, # <--- NUEVO PARÁMETRO
+    client = None
 ) -> Dict[str, str]:
-    """
-    Fase 3: Envía un lote de descripciones a la IA para clasificación.
-    Optimizado para alto rendimiento y bajo consumo de tokens.
-    """
     if not transacciones:
         return {}
 
-    # 1. Preparar Payload (Minimizado)
-    # Solo enviamos ID, Desc y Monto. Fecha y Tipo no son necesarios para categorizar.
     payload_input = []
-    for idx, tx in enumerate(transacciones):
-        # Manejo híbrido (Dict o Objeto Pydantic)
+    # MAGIA: Usamos el parámetro 'start' de enumerate
+    for idx, tx in enumerate(transacciones, start=start_offset):
         if isinstance(tx, dict):
             desc = tx.get("descripcion", "")
             monto = tx.get("monto", "0")
@@ -84,7 +79,7 @@ async def clasificar_lote_con_ia(
             monto = getattr(tx, "monto", "0")
 
         payload_input.append({
-            "id": idx, 
+            "id": idx, # ¡Ahora este es el ID absoluto de todo el documento!
             "d": desc,
             "m": monto
         })
@@ -122,7 +117,7 @@ async def clasificar_lote_con_ia(
     except Exception as e:
         logger.error(f"Error IA ({banco}): {e}")
         # Fallback silencioso: todo es GENERAL si falla
-        return {str(i): "GENERAL" for i in range(len(transacciones))}
+        return {str(i): "GENERAL" for i in range(start_offset, start_offset + len(transacciones))}
 
 async def llamar_agente_ocr_vision(banco: str, pdf_bytes: bytes, paginas: List[int]) -> List[Dict[str, Any]]:
     """Agente Multimodal OCR (Qwen-VL)."""
