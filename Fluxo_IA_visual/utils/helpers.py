@@ -522,6 +522,35 @@ def crear_objeto_resultado(datos_dict: dict) -> AnalisisTPV.ResultadoExtraccion:
             AnalisisIA=None,
             DetalleTransacciones=AnalisisTPV.ErrorRespuesta(error=f"Error estructural: {e}")
         )
+
+def separar_fecha_y_ruido(raw_text: str) -> Tuple[str, str]:
+    """
+    Toma "01-DIC-25 COMISION" y devuelve ("01-DIC-25", "COMISION").
+    Soporta formatos Banorte (con año), Numéricos y BBVA.
+    """
+    if not raw_text: return "", ""
+    raw_text = str(raw_text).strip()
+
+    # Prioridad 1: Formato Textual Largo (01-DIC-25 o 01/ENE/2025)
+    # Busca digito + sep + letras + sep + digitos
+    match_largo = re.match(r'^(\d{1,2}\s*[-/]\s*[a-zA-Z]{3}\s*[-/]\s*\d{2,4})(.*)', raw_text, re.IGNORECASE)
+    if match_largo:
+        return match_largo.group(1).strip(), match_largo.group(2).strip()
+
+    # Prioridad 2: Formato Numérico (01/12/25 o 01-12-2025)
+    match_num = re.match(r'^(\d{1,2}\s*[-/]\s*\d{1,2}\s*[-/]\s*\d{2,4})(.*)', raw_text)
+    if match_num:
+        return match_num.group(1).strip(), match_num.group(2).strip()
+
+    # Prioridad 3: Formato Corto/BBVA (02/ENE - sin año)
+    # Cuidado: Esto podría confundirse si hay texto pegado, asumimos separador visual
+    match_corto = re.match(r'^(\d{1,2}\s*[-/]\s*[a-zA-Z]{3})(.*)', raw_text, re.IGNORECASE)
+    if match_corto:
+        return match_corto.group(1).strip(), match_corto.group(2).strip()
+        
+    # Si no detecta patrón claro, devuelve todo como fecha y nada de ruido
+    # (para que construir_fecha_completa intente salvarlo o falle ahí)
+    return raw_text, ""
     
 def construir_fecha_completa(dia_raw: str, periodo_inicio_str: str, periodo_fin_str: str) -> str:
     """

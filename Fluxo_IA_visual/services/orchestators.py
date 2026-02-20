@@ -1,7 +1,7 @@
 from ..utils.helpers import (
     es_escaneado_o_no, extraer_datos_por_banco, extraer_json_del_markdown, limpiar_monto, sanitizar_datos_ia, 
     reconciliar_resultados_ia, detectar_tipo_contribuyente, crear_objeto_resultado,
-    construir_fecha_completa
+    construir_fecha_completa, separar_fecha_y_ruido
     
 )
 from .ia_extractor import (
@@ -20,6 +20,7 @@ from .pdf_processor import (
 )
 
 from ..core.extraction_motor import BankStatementEngine
+from ..core.spatial_bank import BankStatementEngineV2
 from ..models.responses_motor_estados import RespuestasMotorEstados
 
 from ..models.responses_analisisTPV import AnalisisTPV
@@ -220,24 +221,34 @@ def clasificar_transacciones_extraidas(
     todas_las_transacciones = []
 
     for trx in transacciones_objetos:
-        # --- CAMBIO CRÍTICO: ACCESO POR ATRIBUTOS ---
+        # --- ACCESO POR ATRIBUTOS ---
         monto_float = trx.monto  
-        descripcion_limpia = trx.descripcion.lower()
+        # 1. SEPARAMOS LA FECHA SUCIA DE LA BASURA
+        fecha_pura_raw, basura_texto = separar_fecha_y_ruido(trx.fecha)
+        
+        # 2. INYECTAMOS LA BASURA AL INICIO DE LA DESCRIPCIÓN
+        desc_original = trx.descripcion
+        if basura_texto:
+            # "COMISION" + " " + "09740650D"
+            descripcion_full = f"{basura_texto} {desc_original}".strip()
+        else:
+            descripcion_full = desc_original.strip()
+            
+        descripcion_limpia = descripcion_full.lower() # Para tus reglas de negocio
         
         # Manejo seguro del Enum de tipo
         tipo_detectado = trx.tipo.value if hasattr(trx.tipo, 'value') else str(trx.tipo)
         
-        # Fecha
-        dia_raw = trx.fecha
-        fecha_final = construir_fecha_completa(dia_raw, p_inicio, p_fin)
-
+        # 3. CONSTRUIMOS LA FECHA USANDO SOLO LA PARTE LIMPIA
+        # Tu función 'construir_fecha_completa' ahora recibe "01-DIC-25", que sabe manejar perfecto.
+        fecha_final = construir_fecha_completa(fecha_pura_raw, p_inicio, p_fin)
+        
         trx_procesada = {
             "fecha": fecha_final,
-            "descripcion": trx.descripcion,
+            "descripcion": descripcion_full,
             "monto": f"{monto_float:,.2f}", 
             "tipo": tipo_detectado,
             "categoria": "GENERAL",
-            # Obtenemos el valor del Enum de metodo_match
             "debug_match": trx.metodo_match.value if hasattr(trx.metodo_match, 'value') else str(trx.metodo_match)
         }
 
@@ -419,91 +430,116 @@ async def procesar_documento_escaneado_con_agentes_async(
     }]
 
 def procesar_digital_worker_sync(
-    ia_data_inicial: dict, 
-    texto_por_pagina_sucio: Dict[int, str], 
-    movimientos_por_pagina: Dict[int, Any], 
+    ia_data_inicial: dict,
     filename: str,
     file_path: str,
     rango_paginas: Tuple[int, int]
-) -> Union[AnalisisTPV.ResultadoExtraccion, Exception]:
+) -> Union[Any, Exception]: # Retorna AnalisisTPV.ResultadoExtraccion o Exception
     
     # --- CLASE ADAPTADORA INTERNA ---
-    # Usamos esto para convertir el dict del motor en el objeto que espera 
-    # 'clasificar_transacciones_extraidas' (que usa .monto, .descripcion, etc.)
     class TransaccionAdapter:
+        """Adapta el dict del Motor V2 al objeto que espera el clasificador de negocio."""
         def __init__(self, data_dict):
-            self.fecha = data_dict.get("fecha")
-            self.descripcion = data_dict.get("descripcion")
-            self.monto = data_dict.get("monto")
-            self.tipo = data_dict.get("tipo") # String, ej: "CARGO"
-            self.metodo_match = data_dict.get("metodo_match")
-            self.coords_box = data_dict.get("coords_box")
-    # --------------------------------
+            self.fecha = data_dict.get("fecha", "")
+            self.descripcion = data_dict.get("descripcion", "")
+            self.monto = data_dict.get("monto", 0.0)
+            
+            # Normalización de TIPO
+            raw_tipo = data_dict.get("tipo", "INDEFINIDO")
+            if isinstance(raw_tipo, str):
+                self.tipo = raw_tipo.upper()
+            else:
+                self.tipo = "INDEFINIDO"
+            
+            # Metadatos técnicos
+            self.metodo_match = "SPATIAL_V2" # Hardcodeamos el origen
+            self.coords_box = data_dict.get("coords_box", []) 
+            self.id_interno = data_dict.get("id_interno", "")
+            self.score_confianza = data_dict.get("score_confianza", 1.0)
 
     try:
-        # 1. DETERMINAR PÁGINAS
-        start, end = rango_paginas
-        lista_paginas = list(range(start, end + 1))
-        
-        # 2. INSTANCIAR Y EJECUTAR MOTOR
-        engine = BankStatementEngine(debug_mode=False) 
+        logger.info(f"[DigitalWorker] Iniciando Motor V2 para: {filename}")
 
-        logger.info(f"Iniciando Motor v2 para {filename} en páginas {lista_paginas}")
+        # 1. INSTANCIAR MOTOR V2 (PRODUCCIÓN)
+        # CORRECCIÓN IMPORTANTE: En el nuevo motor no existe 'debug_mode'.
+        # Pasamos debug_flags=[] para que corra en silencio y rápido (solo logs INFO).
+        engine = BankStatementEngineV2(debug_flags=[]) 
 
-        # OJO: Esto devuelve una lista de DICCIONARIOS
-        resultados_paginas = engine.procesar_documento_entero(file_path, paginas=lista_paginas)
+        # 2. EJECUCIÓN DEL PIPELINE (3 PASADAS)
+        # Usamos un bloque try/finally para asegurar que el PDF se cierra en memoria
+        doc = fitz.open(file_path)
+        try:
+            # Pasada 1: Geometría (Header/Footer)
+            geometries = engine.pass_1_detect_geometry(doc)
+            
+            # Pasada 2: Columnas (Detección horizontal)
+            layouts = engine.pass_2_detect_columns(doc, geometries)
+            
+            # Pasada 3: Extracción (Slicing y Datos)
+            raw_results = engine.pass_3_extract_rows(doc, geometries, layouts)
+        finally:
+            doc.close()
 
-        # 3. APLANAR RESULTADOS Y RECOLECTAR MÉTRICAS (CORREGIDO)
+        # 3. APLANAR RESULTADOS Y FILTRAR POR PÁGINA
         todas_las_transacciones_objs = []
         metricas_consolidado = []
+        total_tx_count = 0
+        start_pg, end_pg = rango_paginas
 
-        for res_pag in resultados_paginas:
-            # CORRECCIÓN 1: Accedemos como Diccionario, no como objeto
+        for i, res_pag in enumerate(raw_results):
+            # El motor devuelve índice 1-based en 'page'
+            page_num = res_pag.get("page", i + 1)
+            
+            # Filtro de rango de páginas
+            if not (start_pg <= page_num <= end_pg):
+                continue
+
             txs_dicts = res_pag.get("transacciones", [])
             
-            # CORRECCIÓN 2: Convertimos los dicts a Objetos (Adapters)
-            # porque 'clasificar_transacciones_extraidas' espera objetos con atributos
+            # Convertir a Adapters
             for t_dict in txs_dicts:
                 tx_obj = TransaccionAdapter(t_dict)
                 todas_las_transacciones_objs.append(tx_obj)
-
-            # CORRECCIÓN 3: Accedemos a métricas como Diccionario
-            met_dict = res_pag.get("metricas", {})
             
+            total_tx_count += len(txs_dicts)
+
+            # Construir métricas técnicas para el reporte final
             metricas_consolidado.append({
-                "pagina": res_pag.get("pagina"),
-                "tiempo_ms": met_dict.get("tiempo_procesamiento_ms", 0),
-                "calidad_score": met_dict.get("calidad_promedio_pagina", 0),
-                "metodo_predominante": "MIXTO",
-                "bloques": met_dict.get("cantidad_bloques_detectados", 0),
-                "transacciones": met_dict.get("cantidad_transacciones_finales", 0),
-                "alertas": "; ".join(met_dict.get("alertas", [])) if met_dict.get("alertas") else "OK"
+                "pagina": page_num,
+                "tiempo_ms": 0, # El motor V2 refactorizado no mide tiempo por página individualmente
+                "calidad_score": 1.0 if layouts[i].has_explicit_headers else 0.5,
+                "metodo_predominante": "SPATIAL_V2",
+                "bloques": len(txs_dicts),
+                "transacciones": len(txs_dicts),
+                "alertas": "Layout Heredado" if not layouts[i].has_explicit_headers else "OK"
             })
 
-        logger.info(f"Motor finalizado. Transacciones encontradas: {len(todas_las_transacciones_objs)}")
+        logger.info(f"[DigitalWorker] Motor V2 finalizado. Transacciones: {total_tx_count}")
 
-        # 4. CLASIFICACIÓN
-        # Ahora 'todas_las_transacciones_objs' es una lista de objetos, no dicts.
+        # 4. CLASIFICACIÓN DE NEGOCIO
+        # (Llama a tu función existente de reglas de negocio)
         resultado_dict = clasificar_transacciones_extraidas(
-            ia_data_inicial, 
-            todas_las_transacciones_objs, 
-            filename, 
-            rango_paginas
+            ia_data_cuenta=ia_data_inicial, 
+            transacciones_objetos=todas_las_transacciones_objs, 
+            filename=filename, 
+            rango_paginas=rango_paginas
         )
         
-        # 5. INYECCIÓN AL DICCIONARIO
+        # 5. INYECCIÓN DE METADATA TÉCNICA
         resultado_dict["metadata_tecnica"] = metricas_consolidado 
         
-        # 6. CREACIÓN DEL OBJETO RESULTADO
+        # 6. CREACIÓN DEL OBJETO RESULTADO FINAL
+        # (Llama a tu función existente que convierte el dict en objeto Pydantic/Dataclass)
         obj_res = crear_objeto_resultado(resultado_dict) 
         
-        # Restaurar campos excluidos manualmente
+        # Restaurar campos de trazabilidad
         obj_res.file_path_origen = file_path 
         
         return obj_res
         
     except Exception as e:
-        logger.error(f"Error Worker Digital: {e}", exc_info=True) # Agregué exc_info para ver trace completo
+        logger.error(f"Error Crítico en Worker Digital (Motor V2): {e}", exc_info=True)
+        # Retornamos la excepción para que el orquestador superior decida qué hacer
         return e
 
 def procesar_ocr_worker_sync(

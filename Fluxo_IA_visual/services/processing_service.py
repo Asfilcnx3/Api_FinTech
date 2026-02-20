@@ -169,9 +169,7 @@ class ProcessingService:
                 tarea = loop.run_in_executor(
                     executor,
                     procesar_digital_worker_sync, 
-                    doc["ia_data"],
-                    doc["texto_por_pagina"], 
-                    doc["movimientos"],      
+                    doc["ia_data"],     
                     doc["filename"],
                     str(doc["file_path"]),   
                     doc["rango_paginas"]
