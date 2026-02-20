@@ -532,11 +532,31 @@ class BankStatementEngineV2:
                 y_suelo_bloque = next_stop_y
                 
                 zonas_x = {}
-                # Usamos los mismos offsets fijos de seguridad para las zonas X (esto no suele requerir config externa)
-                if "CARGO" in current_columns:
-                    c = current_columns["CARGO"]
-                    zonas_x["cargo"] = (c["x0"] - 40, c["x1"] + 15) 
-                else: zonas_x["cargo"] = (9999, 9999)
+                # --- FIX: ZONAS X (Fronteras dinámicas para evitar solapamiento) ---
+                c_cargo = current_columns.get("CARGO")
+                c_abono = current_columns.get("ABONO")
+
+                zonas_x["cargo"] = (9999, 9999)
+                zonas_x["abono"] = (9999, 9999)
+
+                if c_cargo and c_abono:
+                    # Si existen ambas, calculamos una frontera exacta a la mitad
+                    if c_cargo["center"] > c_abono["center"]:
+                        # Caso Santander: Abono a la Izquierda, Cargo a la Derecha
+                        midpoint = (c_abono["x1"] + c_cargo["x0"]) / 2
+                        zonas_x["abono"] = (c_abono["x0"] - 40, midpoint)
+                        zonas_x["cargo"] = (midpoint, c_cargo["x1"] + 15)
+                    else:
+                        # Caso Inverso: Cargo a la Izquierda, Abono a la Derecha
+                        midpoint = (c_cargo["x1"] + c_abono["x0"]) / 2
+                        zonas_x["cargo"] = (c_cargo["x0"] - 40, midpoint)
+                        zonas_x["abono"] = (midpoint, c_abono["x1"] + 15)
+                else:
+                    # Lógica original de holgura si solo hay una columna de dinero
+                    if c_cargo: 
+                        zonas_x["cargo"] = (c_cargo["x0"] - 40, c_cargo["x1"] + 15)
+                    if c_abono: 
+                        zonas_x["abono"] = (c_abono["x0"] - 40, c_abono["x1"] + 15)
                 
                 if "ABONO" in current_columns:
                     c = current_columns["ABONO"]
