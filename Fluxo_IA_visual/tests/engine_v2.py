@@ -35,6 +35,7 @@ class BankStatementEngineV2:
     LOG_COLUMNS = 2     # Detalles de Pasada 2 (Búsqueda de columnas)
     LOG_EXTRACTION = 3  # Detalles de Pasada 3 (Slicing, montos, stitching)
     LOG_RAYOS_X = 4     # Dumps masivos de palabras (como tu "Rayos X")
+    LOG_SCORES = 5      # Detalles de scoring de líneas para header
     
     def __init__(self, debug_flags: List[int] = None):
         """
@@ -94,7 +95,7 @@ class BankStatementEngineV2:
             re.compile(r'inversi[oó]n\s+creciente', re.IGNORECASE),
             re.compile(r'saldo\s+final\s+del\s+periodo', re.IGNORECASE),
             re.compile(r'detalles\s+del\s+cr[eé]dito', re.IGNORECASE),
-            re.compile(r'spei\s+enviados', re.IGNORECASE),
+            re.compile(r'spei\s+enviados', re.IGNORECASE)
         ]
         
         self.RX_HARD_STOP_TRIGGERS = [
@@ -104,19 +105,20 @@ class BankStatementEngineV2:
             re.compile(r'sociedades\s+de\s+inversi[oó]n', re.IGNORECASE),
             re.compile(r'operaciones\s+vigentes', re.IGNORECASE),
             re.compile(r'detalle\s+de\s+vencimientos', re.IGNORECASE),
-            re.compile(r'apartados\s+vigentes', re.IGNORECASE)
+            re.compile(r'apartados\s+vigentes', re.IGNORECASE),
+            re.compile(r'^\[\s*saldo\s+inicial\s+de', re.IGNORECASE)
         ]
         
         # Keywords para SCORING de Header
         self.HEADER_SCORES = {
-            "FECHA": 1, "DATE": 1, "DIA": 1, "DÍA": 1, 
+            "FECHA": 1, "DATE": 1, "DIA": 1, "DÍA": 1, "FECHAS": 1,
             "DESCRIPCIÓN": 1, "CONCEPTO": 1, "DESCRIPCION": 1, "DETALLE": 1, 
             "REFERENCIA": 1, 
             "CARGO": 2, "RETIRO": 2, "DEBITO": 2, "RETIROS": 2, "SALIDAS": 2,
             "DEPÓSITOS": 2, "DEPOSITOS": 2, "ENTRADAS": 2, "ABONO": 2, "DEPOSITO": 2, "CREDITO": 2, "DEPÓSITO": 2,
             "SALDO": 2, "BALANCE": 2,
             "SUCURSAL": 1, "OFICINA": 1,
-            "IMPORTE": 2, "BENEFICIARIO": 2, "RASTREO": 2, "CLAVE": 1, "RECEPTOR": 2, "MOTIVO": 1
+            "IMPORTE": 2, "BENEFICIARIO": 2, "RASTREO": 2, "CLAVE": 1, "RECEPTOR": 2, "MOTIVO": 1, "VALOR": 1
         }
 
         # Blacklist
@@ -124,7 +126,7 @@ class BankStatementEngineV2:
             "PROMEDIO", "ANTERIOR", "TOTAL", "GRAVABLE", "ISR", "COMISIONES", "GAT", 
             "PERIODO", "TASA", "PENDIENTE", "LIQUIDAR", "SALDO INICIAL", "SPEI",
             "RECUPERACION", "SUMA", "CORTE", "LATINOAMERICA", "NOMINAL", "SEGURIDAD",
-            "IMPUESTOS", "OBJETADOS", "TARJETA", "TERCERO", "VENTAS"
+            "IMPUESTOS", "OBJETADOS", "TARJETA", "TERCERO", "VENTAS", "TRASPASOS"
         ]
 
         # Regex Helpers
@@ -158,24 +160,36 @@ class BankStatementEngineV2:
     def _calculate_line_score(self, text: str) -> int:
         """Calcula 'qué tanto se parece' una línea a un header de tabla."""
         clean_text = text.upper()
+        self._log_debug(self.LOG_SCORES, f"Calculando score para línea: '{clean_text}'")
         
         # --- FILTRO DE MUERTE SÚBITA ---
         # Si contiene palabras de resumen financiero, devolvemos 0 inmediatamente.
         for bad_word in self.BLACKLIST_HEADER:
             if bad_word in clean_text:
+                # Permitir "SALDO TOTAL" como columna válida
+                if bad_word == "TOTAL" and "SALDO TOTAL" in clean_text:
+                    self._log_debug(self.LOG_SCORES, f"Excepción de lista negra aplicada para: SALDO TOTAL")
+                    continue
+                
+                self._log_debug(self.LOG_SCORES, f"Linea descartada por palabra negra: '{bad_word}'")
                 return 0
         
+        spaceless_text = clean_text.replace(" ", "")
+
         score = 0
         for kw, points in self.HEADER_SCORES.items():
-            # Usamos lógica de palabra completa o substring según longitud
-            if len(kw) < 4:
-                # Para palabras cortas como DIA, buscamos con espacios para no matchear "MEDIODIA"
+            kw_clean = kw.replace(" ", "")
+            
+            if len(kw_clean) < 4:
+                # Palabras cortas (DIA) respetan los espacios originales para evitar 
+                # falsos positivos con palabras como "MEDIODIA"
                 if f" {kw} " in f" {clean_text} ": 
                     score += points
             else:
-                if kw in clean_text:
+                # Palabras largas (FECHA, CONCEPTO) se buscan en la versión pegada
+                if kw_clean in spaceless_text:
                     score += points
-        
+                    
         return score
 
     # =========================================================================
@@ -306,7 +320,8 @@ class BankStatementEngineV2:
             "REFERENCIA": ["REFERENCIA", "FOLIO", "DOCTO"],
             "CARGO": ["CARGO", "CARGOS", "RETIRO", "RETIROS", "DEBITO", "SALIDAS"], 
             "ABONO": ["ABONO", "ABONOS", "DEPOSITO", "DEPÓSITO", "DEPOSITOS", "DEPÓSITOS", "CREDITO", "ENTRADAS"],
-            "SALDO": ["SALDO", "BALANCE"]
+            "SALDO": ["SALDO", "BALANCE"],
+            "MONTO_UNIFICADO": ["VALOR"]
         }
 
         last_valid_layout = None
@@ -328,8 +343,30 @@ class BankStatementEngineV2:
                 if y_scan_top <= w[1] <= y_scan_bottom
             ]
             
-            # LOG DEBUG: Ver tokens en la zona de header
-            self._log_debug(self.LOG_COLUMNS, f"Pág {geo.page_num}: Tokens en zona header ({y_scan_top:.1f}-{y_scan_bottom:.1f}): {[w[4] for w in header_tokens]}")
+            # --- STITCHING (Pegamento horizontal para kerning roto) ---
+            if header_tokens:
+                # 1. Ordenar PRIMERO por renglón visual (Y) y LUEGO por columna (X)
+                header_tokens.sort(key=lambda w: (round(w[1] / 5) * 5, w[0]))
+                
+                stitched = []
+                current = list(header_tokens[0])
+                
+                for w in header_tokens[1:]:
+                    # 2. Validar que estén en el mismo renglón Y muy cerca en X
+                    mismo_renglon = abs(w[1] - current[1]) < 5.0
+                    cerca_horizontal = (w[0] - current[2]) < 6.0 
+                    
+                    if mismo_renglon and cerca_horizontal:
+                        current[2] = w[2]         # Expandir la caja (x1)
+                        current[4] += w[4]        # Unir el texto ("F" + "EC" = "FEC")
+                    else:
+                        stitched.append(tuple(current))
+                        current = list(w)
+                stitched.append(tuple(current))
+                header_tokens = stitched
+                
+            # LOG DEBUG: Ver tokens ensamblados
+            self._log_debug(self.LOG_COLUMNS, f"Pág {geo.page_num}: Tokens post-ensamblaje: {[w[4] for w in header_tokens]}")
 
             detected_cols = {}
             
@@ -535,12 +572,19 @@ class BankStatementEngineV2:
                 # --- FIX: ZONAS X (Fronteras dinámicas para evitar solapamiento) ---
                 c_cargo = current_columns.get("CARGO")
                 c_abono = current_columns.get("ABONO")
+                c_unif = current_columns.get("MONTO_UNIFICADO")
 
                 zonas_x["cargo"] = (9999, 9999)
                 zonas_x["abono"] = (9999, 9999)
+                zonas_x["unificado"] = (9999, 9999)
 
-                if c_cargo and c_abono:
-                    # Si existen ambas, calculamos una frontera exacta a la mitad
+                if c_unif:
+                    # Fintechs: Una sola columna para todo
+                    zonas_x["unificado"] = (c_unif["x0"] - 40, c_unif["x1"] + 20)
+
+                elif c_cargo and c_abono:
+                    # Bancos tradicionales: Columnas separadas (lógica de punto medio)
+                    # (Si existen ambas, calculamos una frontera exacta a la mitad)
                     if c_cargo["center"] > c_abono["center"]:
                         # Caso Santander: Abono a la Izquierda, Cargo a la Derecha
                         midpoint = (c_abono["x1"] + c_cargo["x0"]) / 2
@@ -797,6 +841,7 @@ class BankStatementEngineV2:
         transacciones = []
         r_cargo = zonas_x["cargo"]
         r_abono = zonas_x["abono"]
+        r_unif = zonas_x["unificado"]
         x_muro_saldo = zonas_x["saldo"][0] 
         x_inicio_texto = x_inicio_desc_dinamico
         x_center_desc = zonas_x.get("desc_center", -1)
@@ -844,21 +889,36 @@ class BankStatementEngineV2:
                 
                 # Clasificación de Monto REAL
                 if es_numero and x > x_inicio_texto:
-                    col = None
+                    col_detectada = None
                     x_center = (w[0] + w[2]) / 2
-                    if r_cargo[0] <= x_center <= r_cargo[1]: col = "CARGO"
-                    elif r_abono[0] <= x_center <= r_abono[1]: col = "ABONO"
                     
-                    if not col: 
-                        if r_cargo[0] <= w[0] <= r_cargo[1]: col = "CARGO"
-                        elif r_abono[0] <= w[0] <= r_abono[1]: col = "ABONO"
+                    if r_unif[0] <= x_center <= r_unif[1]: col_detectada = "UNIFICADO"
+                    elif r_cargo[0] <= x_center <= r_cargo[1]: col_detectada = "CARGO"
+                    elif r_abono[0] <= x_center <= r_abono[1]: col_detectada = "ABONO"
+                    
+                    if not col_detectada: 
+                        if r_unif[0] <= w[0] <= r_unif[1]: col_detectada = "UNIFICADO"
+                        elif r_cargo[0] <= w[0] <= r_cargo[1]: col_detectada = "CARGO"
+                        elif r_abono[0] <= w[0] <= r_abono[1]: col_detectada = "ABONO"
 
-                    if col:
+                    if col_detectada:
                         try:
                             val = float(clean_txt)
-                            montos_detectados.append({"val": val, "y": w[1], "x": w[0], "col": col, "box": w[:4]})
+                            
+                            if val == 0.0:
+                                continue 
+                            
+                            # Magia Fintech: Determinar el tipo real basado en la columna y el signo
+                            if col_detectada == "UNIFICADO":
+                                tipo_real = "CARGO" if val < 0 else "ABONO"
+                            else:
+                                tipo_real = col_detectada
+                                
+                            val_limpio = abs(val) # Limpiamos el signo para el JSON final
+
+                            montos_detectados.append({"val": val_limpio, "y": w[1], "x": w[0], "col": tipo_real, "box": w[:4]})
                             continue 
-                        except: pass
+                        except ValueError: pass
                 
                 if x > x_inicio_texto:
                     tokens_texto.append(w)
