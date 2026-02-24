@@ -975,8 +975,28 @@ class BankStatementEngineV2:
                         if not hit_monto:
                             tokens_desc.append(w)
                     
+                    # --- Preservar saltos de línea físicos (\n) en la descripción ---
                     tokens_desc.sort(key=lambda w: (round(w[1], 0), w[0]))
-                    desc_str = " ".join([w[4] for w in tokens_desc]).strip()
+                    
+                    lineas_desc = []
+                    linea_actual = []
+                    # Usamos la Y de la primera palabra como referencia inicial
+                    y_ref = tokens_desc[0][1] if tokens_desc else 0
+                    
+                    for w in tokens_desc:
+                        # Si la palabra actual está > 5 píxeles más abajo, es un renglón nuevo
+                        if abs(w[1] - y_ref) > 5.0:
+                            lineas_desc.append(" ".join(linea_actual))
+                            linea_actual = [w[4]]
+                            y_ref = w[1]  # Actualizamos la referencia al nuevo renglón
+                        else:
+                            linea_actual.append(w[4])
+                            
+                    if linea_actual:
+                        lineas_desc.append(" ".join(linea_actual))
+                        
+                    # Unimos todos los renglones detectados con el salto de línea real
+                    desc_str = "\n".join(lineas_desc).strip()
 
                     if REGEX_FILA_TOTAL.match(desc_str): continue
 
