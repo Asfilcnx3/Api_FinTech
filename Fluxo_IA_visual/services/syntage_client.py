@@ -7,6 +7,54 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Mapeo de códigos de Tipo de Crédito / Contrato a Descripción
+CATALOGO_TIPOS_CREDITO = {
+    "3231": "Cartera de Arrendamiento Financiero Vigente",
+    "1314": "No Disponible",
+    "1323": "Créditos Reestructurados",
+    "6291": "Fianzas",
+    "1310": "Préstamos para la vivienda",
+    "1327": "Arrendamiento Financiero Sindicado",
+    "1300": "Cartera de arrendamiento Puro y créditos",
+    "1308": "Créditos Refaccionarios",
+    "6103": "Adeudos por Aval",
+    "3012": "Cartera de Factoraje sin Recursos",
+    "1306": "Préstamos con garantía de unidades industriales",
+    "3230": "Anticipo a Clientes Por Promesa de Factoraje",
+    "1317": "Créditos venidos a menos aseg. Gtias. Adicionales",
+    "3011": "Cartera de Factoraje con Recursos",
+    "6280": "Línea de Crédito",
+    "1316": "Otros adeudos vencidos",
+    "1320": "Cartera de Arrendamiento Financiero Vigente",
+    "1321": "Cartera de Arrendamiento Financiero Sindicado con Aportación",
+    "1324": "Créditos Renovados",
+    "1322": "Crédito de Arrendamiento",
+    "1311": "Otros créditos con garantía inmobiliaria",
+    "1340": "Cartera descontada con Inst. de Crédito",
+    "6270": "Crédito Automotriz",
+    "1303": "Con colateral",
+    "6290": "Seguros",
+    "6228": "Fideicomisos Prog. apoyo crediticio planta productiva Nac.",
+    "1341": "Redescuento otra cartera descontada",
+    "6230": "Fideicomisos Prog. apoyo deudores vivienda UDIS",
+    "1304": "Prendario",
+    "1301": "Descuentos",
+    "6240": "Aba Pasem II",
+    "1350": "Prestamos con Fideicomisos de Garantía",
+    "6250": "Tarjeta de Servicio",
+    "1342": "Redescuento cartera reestructurada (Fidec.)",
+    "1302": "Quirografario",
+    "1307": "Créditos de habilitación o avío",
+    "1380": "Tarjeta de Crédito empresarial / Corporativa",
+    "6229": "Fideicomisos Prog. apoyo crediticio Estados y Municipios",
+    "6105": "Cartas de Créditos No Dispuestas",
+    "2303": "Cartas de Crédito",
+    "1309": "Prestamos Inmobil Emp Prod de Bienes o Servicios",
+    "6292": "Fondos y Fideicomisos",
+    "6260": "Crédito Fiscal",
+    "1305": "Créditos simples y créditos en cuenta corriente"
+}
+
 class SyntageClient:
     """
     Cliente HTTP encargado EXCLUSIVAMENTE de la comunicación con la API de Syntage.
@@ -169,7 +217,8 @@ class SyntageClient:
                         result_map[norm_date] = {"amount": val, "count": count}
         
         except Exception as e:
-            logger.error(f"Error fetching {endpoint}: {e}")
+            # Usar repr(e) dirá la clase del error
+            logger.error(f"Error fetching {endpoint}: {repr(e)}")
             
         return result_map
 
@@ -286,7 +335,7 @@ class SyntageClient:
                 data = resp.json()
                 
                 # DEBUG LOG
-                logger.info(f"DEBUG Buró Reports RAW: {str(data)}")
+#                logger.info(f"DEBUG Buró Reports RAW: {str(data)}")
 
                 items = data if isinstance(data, list) else data.get("hydra:member", [])
                 
@@ -294,11 +343,20 @@ class SyntageClient:
                     # Ordenar por fecha reciente
                     items.sort(key=lambda x: x.get("createdAt", ""), reverse=True)
                     last_report = items[0]
-                    data_node = last_report.get("data", {})
+                    data_node = dict(last_report.get("data", {}))
+
+                    # Log para verificar la estructura del bloque de datos del reporte
+                    # logger.info(f"DEBUG Buró Report Data Node: {str(data_node)[:500]}...")
                     
                     result["has_report"] = True
                     result["status"] = "found"
+
+                    result["raw_buro_data"] = data_node # Guardamos el bloque de datos crudo para volcado total
                     
+                    # Log para verificar que el bloque de datos crudo se guardó correctamente
+                    # logger.info(f"DEBUG Buró Raw Data Guardado: {str(result['raw_buro_data'])[:500]}...")
+
+
                     # Score (Manejo de lista vs valor directo)
                     score_node = data_node.get("score")
                     if isinstance(score_node, list) and score_node:
@@ -342,12 +400,15 @@ class SyntageClient:
                             inst = c.get("nombreOtorgante") or c.get("tipoUsuario") or "N/A"
                             
                             # Tipo Contrato
-                            tipo = c.get("tipoContrato") or c.get("tipoCredito") or "N/A"
+                            # Obtenemos el código numérico en string
+                            tipo_codigo = str(c.get("tipoContrato") or c.get("tipoCredito") or "N/A")
+                            # Buscamos en el catálogo, si no está dejamos el código original
+                            tipo_desc = CATALOGO_TIPOS_CREDITO.get(tipo_codigo, tipo_codigo)
                             
                             # Límite (Puede ser limiteCredito, creditoMaximo, o creditoMaximoUtilizado)
                             limite = (c.get("limiteCredito") or 
-                                      c.get("creditoMaximo") or 
-                                      c.get("creditoMaximoUtilizado"))
+                                    c.get("creditoMaximo") or 
+                                    c.get("creditoMaximoUtilizado"))
                             
                             # Fechas
                             apertura = c.get("fechaAperturaCuenta") or c.get("apertura")
@@ -367,7 +428,7 @@ class SyntageClient:
 
                             result["credit_lines"].append({
                                 "institution": inst,
-                                "account_type": str(tipo),
+                                "account_type": tipo_desc,
                                 "credit_limit": self._parse_buro_amount(limite),
                                 "current_balance": self._parse_buro_amount(c.get("saldoActual") or c.get("saldoVigente")),
                                 "past_due_balance": self._parse_buro_amount(saldo_vencido),
@@ -382,10 +443,14 @@ class SyntageClient:
                             # Institución
                             inst_cons = cons.get("nombreOtorgante") or cons.get("tipoUsuario") or "N/A"
                             
+                            # --- LÓGICA DE MAPEO PARA CONSULTAS ---
+                            tipo_cons_codigo = str(cons.get("tipoContrato", "N/A"))
+                            tipo_cons_desc = CATALOGO_TIPOS_CREDITO.get(tipo_cons_codigo, tipo_cons_codigo)
+                            
                             result["inquiries"].append({
                                 "institution": inst_cons,
                                 "inquiry_date": self._parse_buro_date(cons.get("fechaConsulta")),
-                                "contract_type": cons.get("tipoContrato", "N/A"),
+                                "contract_type": tipo_cons_desc,
                                 "amount": self._parse_buro_amount(cons.get("importeContrato"))
                             })
                                 

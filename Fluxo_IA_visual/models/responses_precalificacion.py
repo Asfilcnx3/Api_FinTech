@@ -47,6 +47,9 @@ class PrequalificationResponse(BaseModel):
         # Detalles del reporte
         credit_lines: List["PrequalificationResponse.BuroCreditLine"] = []
         inquiries: List["PrequalificationResponse.BuroInquiry"] = []
+        
+        # --- CONTENEDOR PARA VOLCADO TOTAL ---
+        raw_buro_data: Dict[str, Any] = {}
     
     class EconomicActivity(BaseModel):
         name: str
@@ -71,9 +74,10 @@ class PrequalificationResponse(BaseModel):
         Se calcularán para: Revenue, Expenses, Inflows, Outflows, NFCF
         """
         mean: float               # Promedio
-        median_growth_rate: Optional[float] = None # Crecimiento vs periodo anterior (Opción A)
+        median: float             # Mediana absoluta pura
+        period_growth_rate: Optional[float] = None # Crecimiento total vs periodo anterior
         linear_slope: float       # Pendiente (Slope) de regresión lineal
-        cagr_cmgr: float          # Compound Growth Rate (Annual or Monthly)
+        cagr_cmgr: float          # Compound Growth Rate
     
     class PeriodGroup(BaseModel):
         """
@@ -141,12 +145,20 @@ class PrequalificationResponse(BaseModel):
         ebt: float
         nopat: float
 
-        # -- Datos Crudos (Evidencia del cálculo) --
+        # -- Datos Consolidados --
         input_assets: float
         input_equity: float
         input_revenue: float
-        input_net_income: float # El valor final resuelto (signo corregido)
+        input_net_income: float
         input_taxes: float
+        
+        # --- Datos Crudos  ---
+        raw_net_profit: float = 0.0
+        raw_net_loss: float = 0.0
+        raw_ebit_profit: float = 0.0
+        raw_ebit_loss: float = 0.0
+        raw_ebt_profit: float = 0.0
+        raw_ebt_loss: float = 0.0
     
     class RawDataPoint(BaseModel):
         """Modelo para la nueva hoja de Raw Data"""
@@ -179,6 +191,9 @@ class PrequalificationResponse(BaseModel):
         
         concentration_last_12m: "PrequalificationResponse.ConcentrationMetrics"
         financial_ratios_history: List["PrequalificationResponse.FinancialRatioYear"]
+        
+        # Arbol financiero completo (sin procesar, para auditoría y transparencia)
+        financial_statements_tree: Dict[str, Any] = {}
 
         # Datos crudos para la nueva hoja de Raw Data (12 meses anteriores + mes actual)
         raw_data_history: List["PrequalificationResponse.RawDataPoint"] = []

@@ -29,7 +29,7 @@ class PrequalificationService:
         """
         Flujo principal que coordina toda la extracción y procesamiento.
         """
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=45.0) as client:
             # --- FASE 1: RECOLECCIÓN DE DATOS (I/O Bound) ---
             
             # 1. Datos básicos y Entidad (para ID y Fecha Registro)
@@ -161,21 +161,19 @@ class PrequalificationService:
                 score=buro_data["score"],
                 last_check_date=buro_data["date"],
                 credit_lines=buro_data["credit_lines"], 
-                inquiries=buro_data["inquiries"]        
-            ),
+                inquiries=buro_data["inquiries"],
+                raw_buro_data=buro_data.get("raw_buro_data", {})    
+            ),  
             compliance_opinion=PrequalificationResponse.CredentialInfo(
                 status=compliance_data["status"],
                 last_check_date=compliance_data["date"]
             ),
 
-            # AQUÍ ENTRA LA NUEVA ESTRUCTURA COMPLEJA
             stats_last_months=stats_windows,
-            
-            # Nota: Eliminé cashflow_current_month porque ya no lo usamos en el nuevo modelo
-            # si aún lo necesitas, avísame, pero stats_windows cubre todo.
             
             concentration_last_12m=concentration_metrics,
             financial_ratios_history=financial_ratios,
+            financial_statements_tree=financial_tree, # Arbol crudo
             raw_data_history=raw_history_list,
             financial_predictions=full_forecast
         )
@@ -248,22 +246,22 @@ class PrequalificationService:
                 # A. MEAN
                 mean_val = statistics.mean(vals_curr) if vals_curr else 0.0
                 
-                # B. MEDIAN GROWTH (Opción A: Median(Curr) vs Median(Prev))
-                med_curr = statistics.median(vals_curr) if vals_curr else 0.0
-                # Manejo de datos insuficientes
-                # Si no hay ventana previa (porque el historial es corto), devolvemos None
-                # en lugar de 0.0, para que el Excel no pinte "0.00%".
-                med_growth = None 
+                # B. MEDIAN (Pura y Absoluta)
+                median_val = statistics.median(vals_curr) if vals_curr else 0.0
                 
-                if prev_window: # Solo calculamos si EXISTE historia previa
-                    med_prev = statistics.median(vals_prev)
-                    if med_prev != 0:
-                        med_growth = (med_curr - med_prev) / abs(med_prev)
+                # B.2 PERIOD GROWTH RATE (Crecimiento del total del periodo actual vs total del anterior)
+                sum_curr = sum(vals_curr)
+                sum_prev = sum(vals_prev) if prev_window else 0.0
+                
+                period_growth = None 
+                
+                if prev_window: # Solo si hay un periodo comparable exacto
+                    if sum_prev != 0:
+                        period_growth = (sum_curr - sum_prev) / abs(sum_prev)
                     else:
-                        # Si el periodo anterior fue 0 absoluto y ahora tenemos ventas,
-                        # matemáticamente es crecimiento infinito (1.0 = 100% como placeholder o None)
-                        med_growth = 1.0 if med_curr > 0 else 0.0
-                
+                        # Si antes vendió 0 y ahora vendió algo, el crecimiento es "infinito" (1.0 = 100% como tope)
+                        period_growth = 1.0 if sum_curr > 0 else 0.0
+
                 # C. SLOPE (Regresión Lineal Simple)
                 slope = 0.0
                 if len(vals_curr) > 1:
@@ -297,10 +295,12 @@ class PrequalificationService:
                             cagr = (end_val / start_val) ** exponent - 1
                         except: 
                             cagr = 0.0
-                median_growth_rate=round(med_growth, 4) if med_growth is not None else None
+                period_growth_rate = round(period_growth, 4) if period_growth is not None else None
+                
                 return PrequalificationResponse.AdvancedPeriodMetrics(
                     mean=round(mean_val, 2),
-                    median_growth_rate=median_growth_rate,
+                    median=round(median_val, 2), # Mediana en formato moneda
+                    period_growth_rate=period_growth_rate, # Crecimiento en %
                     linear_slope=round(slope, 2),
                     cagr_cmgr=round(cagr, 4)
                 )

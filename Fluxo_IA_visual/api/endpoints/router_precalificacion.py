@@ -27,8 +27,8 @@ async def precalificar_cliente(
         
         # 2. Guardar para descarga (NUEVO)
         storage = StorageService()
-        # Convertimos el modelo Pydantic a dict para guardar en JSON
-        data_dict = resultado.model_dump()
+        # Agregamos parámetros para que vuelque absolutamente todo
+        data_dict = resultado.model_dump(exclude_unset=False, exclude_none=False)
         
         job_id = storage.save_json_result(data_dict)
         

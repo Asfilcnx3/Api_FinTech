@@ -63,11 +63,18 @@ class FinancialCalculatorService:
             input_equity=round(inputs.equity, 2),
             input_revenue=round(inputs.revenue, 2),
             input_net_income=round(net_income, 2), # Retornamos el valor ya con signo resuelto
-            input_taxes=round(inputs.taxes, 2)
+            input_taxes=round(inputs.taxes, 2),
+
+            # Datos crudos absolutos para auditoría y transparencia (sin procesar, con signo original)
+            raw_net_profit=round(inputs.net_profit, 2),
+            raw_net_loss=round(inputs.net_loss, 2),
+            raw_ebit_profit=round(inputs.ebit_profit, 2),
+            raw_ebit_loss=round(inputs.ebit_loss, 2),
+            raw_ebt_profit=round(inputs.ebt_profit, 2),
+            raw_ebt_loss=round(inputs.ebt_loss, 2)
         )
 
     # --- HELPERS PRIVADOS ---
-
     def _resolve_sign(self, profit_val: float, loss_val: float, label: str) -> float:
         """
         Determina el valor real basado en cuentas de Utilidad (Positiva) y Pérdida (Positiva conceptualmente negativa).
