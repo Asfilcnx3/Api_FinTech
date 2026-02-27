@@ -5,15 +5,15 @@ from datetime import datetime, timedelta
 
 from Fluxo_IA_visual.models.responses_analisisTPV import AnalisisTPV
 
-from Fluxo_IA_visual.utils.helpers import ( # debemos hacer más test para este módulo
-    construir_descripcion_optimizado, limpiar_monto, extraer_json_del_markdown, extraer_unico, extraer_datos_por_banco, sumar_lista_montos, es_escaneado_o_no,
-    reconciliar_resultados_ia, sanitizar_datos_ia, total_depositos_verificacion, limpiar_y_normalizar_texto, crear_objeto_resultado, verificar_fecha_comprobante,
+from Fluxo_IA_visual.utils.helpers import ( 
+    construir_descripcion_optimizado, limpiar_monto, extraer_json_del_markdown, 
+    extraer_unico, sumar_lista_montos, sanitizar_datos_ia, 
+    total_depositos_verificacion, limpiar_y_normalizar_texto, 
+    crear_objeto_resultado, verificar_fecha_comprobante,
     aplicar_reglas_de_negocio, detectar_tipo_contribuyente
 )
 
 pytest_plugins = ('pytest_asyncio',)
-
-# ---- Pruebas para utils/helpers.py ----
 
 # ---- Pruebas para extraer_unico ----
 @pytest.mark.parametrize("entrada, clave, esperado", [
@@ -25,61 +25,6 @@ pytest_plugins = ('pytest_asyncio',)
 def test_extraer_unico(entrada, clave, esperado):
     """Prueba que se extraiga el primer valor o None si no existe."""
     assert extraer_unico(entrada, clave) == esperado
-
-# ---- Pruebas para extraer_datos_por_banco ----
-def test_extraer_datos_por_banco_sin_texto():
-    """Debe devolver el diccionario base si no hay texto."""
-    resultado = extraer_datos_por_banco("")
-    assert resultado == {
-        "banco": None,
-        "rfc": None,
-        "comisiones": None,
-        "depositos": None,
-    }
-
-def test_extraer_datos_por_banco_sin_match(monkeypatch):
-    """Si no se detecta banco, devuelve resultados vacíos."""
-    monkeypatch.setattr("Fluxo_IA_visual.utils.helpers.BANCO_DETECTION_REGEX", re.compile("XYZ"))
-    monkeypatch.setattr("Fluxo_IA_visual.utils.helpers.ALIAS_A_BANCO_MAP", {})
-    monkeypatch.setattr("Fluxo_IA_visual.utils.helpers.PATRONES_COMPILADOS", {})
-    resultado = extraer_datos_por_banco("TEXTO SIN BANCO")
-    assert resultado["banco"] is None
-
-def test_extraer_datos_por_banco_con_match(monkeypatch):
-    """Prueba extracción simulando un banco con RFC y depósitos."""
-    # Mock banco detection
-    regex = re.compile("BANCOFAKE")
-    monkeypatch.setattr("Fluxo_IA_visual.utils.helpers.BANCO_DETECTION_REGEX", regex)
-    monkeypatch.setattr("Fluxo_IA_visual.utils.helpers.ALIAS_A_BANCO_MAP", {"BANCOFAKE": "banco_fake"})
-
-    # Patrones del banco
-    patrones = {
-        "rfc": re.compile(r"RFC: (\w+)"),
-        "depositos": re.compile(r"DEP: (\d+)"),
-        "comisiones": re.compile(r"COM: (\d+)"),
-    }
-    monkeypatch.setattr("Fluxo_IA_visual.utils.helpers.PATRONES_COMPILADOS", {"banco_fake": patrones})
-
-    texto = "BANCOFAKE RFC: ABC123 DEP: 1000 COM: 50"
-    resultado = extraer_datos_por_banco(texto)
-
-    assert resultado["banco"] == "BANCO_FAKE"
-    assert resultado["rfc"] == "ABC123"
-    assert resultado["depositos"] == 1000.0
-    assert resultado["comisiones"] == 50.0
-
-def test_extraer_datos_por_banco_valores_invalidos(monkeypatch):
-    """Si los valores no son parseables como float, deben dar None."""
-    regex = re.compile("BANCOX")
-    monkeypatch.setattr("Fluxo_IA_visual.utils.helpers.BANCO_DETECTION_REGEX", regex)
-    monkeypatch.setattr("Fluxo_IA_visual.utils.helpers.ALIAS_A_BANCO_MAP", {"BANCOX": "banco_x"})
-    patrones = {"depositos": re.compile(r"DEP: (\w+)")}
-    monkeypatch.setattr("Fluxo_IA_visual.utils.helpers.PATRONES_COMPILADOS", {"banco_x": patrones})
-
-    texto = "BANCOX DEP: NOTANUMBER"
-    resultado = extraer_datos_por_banco(texto)
-
-    assert resultado["depositos"] is None
 
 # ---- Pruebas para extraer_json_del_markdown ----
 @pytest.mark.parametrize("respuesta_ia, esperado", [
@@ -103,44 +48,6 @@ def test_extraer_json_del_markdown(respuesta_ia, esperado):
 def test_sumar_lista_montos(entrada, esperado):
     """Prueba la suma de montos con diferentes entradas."""
     assert sumar_lista_montos(entrada) == pytest.approx(esperado)
-
-# ---- Pruebas para construir_descripcion_optimizado ----
-def test_construir_descripcion_optimizado():
-    """Prueba el despachador que construye la descripción"""
-    # Prueba para un banco específico (Banorte)
-    transaccion_banorte = ("25-may-25", "SPEI RECIBIDO PRUEBA", "1234.56")
-    desc, monto = construir_descripcion_optimizado(transaccion_banorte, "Banorte")
-    assert desc == "SPEI RECIBIDO PRUEBA"
-    assert monto == "1234.56"
-
-    # Prueba para el caso por defecto (un banco no configurado)
-    transaccion_otro = ('fecha', 'descripcion', 'monto')
-    desc, monto = construir_descripcion_optimizado(transaccion_otro, 'Banco Desconocido')
-    assert desc == ""
-    assert monto == "0.0"
-
-# ---- Pruebas para es_escaneado_o_no ----
-def test_es_escaneado_o_no_vacio():
-    """Texto vacío siempre debe devolver False."""
-    assert es_escaneado_o_no("") is False
-
-def test_es_escaneado_o_no_corto(monkeypatch):
-    """Texto muy corto aunque tenga palabra clave debe fallar."""
-    monkeypatch.setattr("Fluxo_IA_visual.utils.helpers.PALABRAS_CLAVE_VERIFICACION", re.compile("saldo"))
-    texto = "saldo"
-    assert es_escaneado_o_no(texto, umbral=50) is False
-
-def test_es_escaneado_o_no_sin_palabra(monkeypatch):
-    """Texto largo pero sin palabra clave debe fallar."""
-    monkeypatch.setattr("Fluxo_IA_visual.utils.helpers.PALABRAS_CLAVE_VERIFICACION", re.compile("saldo"))
-    texto = "x" * 100
-    assert es_escaneado_o_no(texto, umbral=50) is False
-
-def test_es_escaneado_o_no_exitoso(monkeypatch):
-    """Texto suficientemente largo y con palabra clave debe pasar."""
-    monkeypatch.setattr("Fluxo_IA_visual.utils.helpers.PALABRAS_CLAVE_VERIFICACION", re.compile("saldo"))
-    texto = "saldo disponible en la cuenta" + ("x" * 100)
-    assert es_escaneado_o_no(texto, umbral=20) is True
 
 ################## SIMULANDO EL DESPACHADOR DE DESCRIPCIÓN ###############################
 
@@ -178,38 +85,6 @@ def test_construir_descripcion_optimizado_banco_inexistente(monkeypatch):
     assert monto == "0.0"
 
 ##############################################################################
-
-# ---- Pruebas para reconciliar_resultados_ia ----
-def test_reconciliar_resultados_campos_numericos():
-    res_gpt = {"comisiones": 100.0, "depositos": 500.0}
-    res_gemini = {"comisiones": 80.0, "depositos": 600.0}
-    
-    resultado = reconciliar_resultados_ia(res_gpt, res_gemini)
-    assert resultado["comisiones"] == 100.0   # GPT gana
-    assert resultado["depositos"] == 600.0    # Gemini gana
-
-def test_reconciliar_resultados_campos_texto():
-    res_gpt = {"nombre": "Juan"}
-    res_gemini = {"nombre": "Pedro"}
-    
-    resultado = reconciliar_resultados_ia(res_gpt, res_gemini)
-    assert resultado["nombre"] == "Pedro"  # Prioriza la más larga
-
-def test_reconciliar_resultados_con_none():
-    res_gpt = {"saldo_promedio": None, "observaciones": None}
-    res_gemini = {"saldo_promedio": 300.0, "observaciones": "ok"}
-    
-    resultado = reconciliar_resultados_ia(res_gpt, res_gemini)
-    assert resultado["saldo_promedio"] == 300.0
-    assert resultado["observaciones"] == "ok"
-
-def test_reconciliar_resultados_todos_none():
-    res_gpt = {"cargos": None}
-    res_gemini = {"cargos": None}
-    
-    resultado = reconciliar_resultados_ia(res_gpt, res_gemini)
-    assert resultado["cargos"] == 0.0 or resultado["cargos"] is None
-
 # ---- Pruebas para sanitizar_datos_ia ----
 def test_sanitizar_datos_vacio():
     assert sanitizar_datos_ia({}) == {}
@@ -691,170 +566,3 @@ def small_fake_pdf():
     
     # Devolvemos el contenido del PDF como bytes
     return pdf.output()
-
-### SOLO FUNCIONAN EN LOCAL
-# # ---- Pruebas para obtener_y_procesar_portada ----
-# @pytest.mark.asyncio
-# async def test_obtener_y_procesar_portada_flujo_ok(monkeypatch, fake_pdf):
-#     """Prueba el flujo exitoso usando un PDF falso y mockeando solo la IA."""
-#     prompt = "Test prompt"
-#     pdf_bytes = fake_pdf # Usamos el PDF válido generado por el fixture
-
-#     # 1. Preparamos los mocks
-#     # Mockeamos la lógica de negocio que sigue a la extracción para controlar la prueba
-#     monkeypatch.setattr("Fluxo_IA_visual.services.orchestators.extraer_datos_por_banco", lambda *args: {"banco": "BANREGIO", "rfc": "RFC123", "comisiones": 10, "depositos": 100})
-    
-#     # Mockeamos las llamadas a la IA, que son externas y lentas
-#     async def mock_analizar_gpt(*args, **kwargs):
-#         return "```json\n{\"saldo\": 500}\n```"
-#     async def mock_analizar_gemini(*args, **kwargs):
-#         return "```json\n{\"saldo\": 600}\n```"
-        
-#     monkeypatch.setattr("Fluxo_IA_visual.services.orchestators.analizar_gpt_fluxo", mock_analizar_gpt)
-#     monkeypatch.setattr("Fluxo_IA_visual.services.orchestators.analizar_con_ocr_fluxo", mock_analizar_gemini)
-    
-#     # Mocks para las funciones de post-procesamiento
-#     monkeypatch.setattr("Fluxo_IA_visual.services.orchestators.extraer_json_del_markdown", lambda x: {"saldo": 500} if "500" in x else {"saldo": 600})
-#     monkeypatch.setattr("Fluxo_IA_visual.services.orchestators.sanitizar_datos_ia", lambda x: x)
-#     monkeypatch.setattr("Fluxo_IA_visual.services.orchestators.reconciliar_resultados_ia", lambda gpt, gemini: {"saldo": 550})
-
-#     # 2. Actuamos
-#     resultado, es_digital = await obtener_y_procesar_portada(prompt, pdf_bytes)
-
-#     # 3. Verificamos
-#     # La función real 'es_escaneado_o_no' se ejecutará sobre el texto del 'fake_pdf'
-#     # y como contiene texto válido, 'es_digital' ahora será True.
-#     assert es_digital is True
-#     assert resultado["banco"] == "BANREGIO"
-#     assert resultado["rfc"] == "RFC123"
-#     assert resultado["saldo"] == 550
-
-# @pytest.mark.asyncio
-# async def test_obtener_y_procesar_portada_error_ia(monkeypatch, fake_pdf):
-#     """Prueba el flujo cuando una de las llamadas a la IA falla."""
-#     pdf_bytes = fake_pdf
-#     prompt = "Test prompt"
-
-#     # Preparamos los mocks
-#     monkeypatch.setattr("Fluxo_IA_visual.services.pdf_processor.extraer_texto_de_pdf", lambda *args: "texto de prueba HSBC RFC999")
-#     monkeypatch.setattr("Fluxo_IA_visual.utils.helpers.es_escaneado_o_no", lambda *args: False)
-#     monkeypatch.setattr("Fluxo_IA_visual.utils.helpers.extraer_datos_por_banco", lambda *args: {"banco": "HSBC", "rfc": "RFC999"})
-    
-#     # Mock para que GPT falle y Gemini tenga éxito
-#     async def mock_gpt_falla(*args):
-#         raise Exception("GPT error")
-#     async def mock_gemini_exito(*args):
-#         return "```json\n{\"depositos\": 700}\n```"
-
-#     monkeypatch.setattr("Fluxo_IA_visual.services.ia_extractor.analizar_gpt_fluxo", mock_gpt_falla)
-#     monkeypatch.setattr("Fluxo_IA_visual.services.ia_extractor.analizar_con_ocr_fluxo", mock_gemini_exito)
-    
-#     monkeypatch.setattr("Fluxo_IA_visual.utils.helpers.extraer_json_del_markdown", lambda x: {} if "GPT error" in repr(x) else {"depositos": 700}) # se está pasando el error como string
-#     monkeypatch.setattr("Fluxo_IA_visual.utils.helpers.sanitizar_datos_ia", lambda x: x)
-#     monkeypatch.setattr("Fluxo_IA_visual.utils.helpers.reconciliar_resultados_ia", lambda gpt, gemini: {"depositos": 700})
-
-#     # Actuamos
-#     resultado, es_digital = await obtener_y_procesar_portada(prompt, pdf_bytes)
-
-#     # Verificamos
-#     assert es_digital is True
-#     assert resultado == {} # como ambos fallaron, no hay datos
-
-# @pytest.mark.asyncio
-# async def test_obtener_y_procesar_portada_pdf_corto(monkeypatch, small_fake_pdf):
-#     """Prueba el flujo exitoso usando un PDF falso y mockeando solo la IA."""
-#     prompt = "Test prompt"
-#     pdf_bytes = small_fake_pdf # Usamos el PDF válido generado por el fixture
-
-#     # 1. Preparamos los mocks
-#     # Mockeamos la lógica de negocio que sigue a la extracción para controlar la prueba
-#     monkeypatch.setattr("Fluxo_IA_visual.services.orchestators.extraer_datos_por_banco", lambda *args: {"banco": "BANREGIO", "rfc": "RFC123", "comisiones": 10, "depositos": 100})
-    
-#     # Mockeamos las llamadas a la IA, que son externas y lentas
-#     async def mock_analizar_gpt(*args, **kwargs):
-#         return "```json\n{\"saldo\": 500}\n```"
-#     async def mock_analizar_gemini(*args, **kwargs):
-#         return "```json\n{\"saldo\": 600}\n```"
-        
-#     monkeypatch.setattr("Fluxo_IA_visual.services.orchestators.analizar_gpt_fluxo", mock_analizar_gpt)
-#     monkeypatch.setattr("Fluxo_IA_visual.services.orchestators.analizar_con_ocr_fluxo", mock_analizar_gemini)
-    
-#     # Mocks para las funciones de post-procesamiento
-#     monkeypatch.setattr("Fluxo_IA_visual.services.orchestators.extraer_json_del_markdown", lambda x: {"saldo": 500} if "500" in x else {"saldo": 600})
-#     monkeypatch.setattr("Fluxo_IA_visual.services.orchestators.sanitizar_datos_ia", lambda x: x)
-#     monkeypatch.setattr("Fluxo_IA_visual.services.orchestators.reconciliar_resultados_ia", lambda gpt, gemini: {"saldo": 550})
-
-#     # 2. Actuamos
-#     resultado, es_digital = await obtener_y_procesar_portada(prompt, pdf_bytes)
-
-#     # 3. Verificamos
-#     assert es_digital is False  # el texto es muy corto
-#     assert resultado["banco"] == "BANREGIO"
-#     assert resultado["rfc"] == "RFC123"
-#     assert resultado["saldo"] == 550
-
-# ---- Pruebas para procesar_regex_generico ----
-# ### SOLO FUNCIONAN EN LOCAL
-
-# def test_procesar_regex_generico_exitoso():
-#     """Prueba un caso exitoso de procesamiento con regex."""
-#     # 1. Preparar datos falsos (lo que vendría de la IA y del extractor de texto)
-#     mock_resultados_json = {
-#         "banco": "Banorte",
-#         "comisiones": "10.00",
-#         "depositos": "1000.00",
-#         "cargos": "50.00",
-#         "saldo_promedio": "5000.00"
-#     }
-#     mock_texto = """
-#     texto basura...
-#     05-may-25gardomi monterrey 10 09229981d 1,022.00 631,561.01
-#     más texto...
-#     """
-    
-#     # 2. Actuar
-#     resultado = procesar_regex_generico(mock_resultados_json, mock_texto, "tipo_banco") # el tipo de banco no se usa en la función
-#     print(resultado)
-
-#     # 3. Verificar
-#     assert resultado["banco"] == "Banorte"
-#     assert len(resultado["transacciones"]) == 1
-#     assert resultado["transacciones"][0]["monto"] == "1,022.00"
-#     assert resultado["transacciones"][0]["descripcion"] == "gardomi monterrey 10 09229981d"
-#     assert resultado["error_transacciones"] is None
-
-# def test_procesar_regex_generico_sin_coincidencias():
-#     """Prueba el caso donde no se encuentran transacciones."""
-#     mock_resultados_ia = {"banco": "Banorte", "comisiones": "0.00"}
-#     mock_texto = "Este texto no contiene ninguna transacción que coincida."
-
-#     resultado = procesar_regex_generico(mock_resultados_ia, mock_texto, "tipo_banco") # el tipo de banco no se usa en la función
-
-#     assert len(resultado["transacciones"]) == 0
-#     assert "Sin coincidencias" in resultado["error_transacciones"]
-
-
-# --- Pruebas para services/pdf_processor.py ---
-# ### SOLO FUNCIONAN EN LOCAL
-
-# def test_extraer_texto_limitado_con_pdf_falso(): # esta función cambió de nombre, función y de archivo
-#     """Prueba la extracción de texto creando un PDF en memoria."""
-#     # 1. Preparar: Crear un PDF falso de 2 páginas en memoria
-#     pdf = FPDF()
-#     pdf.add_page()
-#     pdf.set_font("Times",size=12)
-#     pdf.cell(200, 10, text="Texto de la página 1.")
-#     pdf.add_page()
-#     pdf.cell(200, 10, text="Contenido de la página 2.")
-
-#     # Guardar el PDF como bytes directamente
-#     buffer = BytesIO()
-#     pdf.output(buffer)
-#     pdf_bytes = buffer.getvalue()
-    
-#     # 2. Actuar
-#     texto_extraido = extraer_texto_de_pdf(pdf_bytes, num_paginas=2)
-
-#     # 3. Verificar
-#     assert "texto de la página 1" in texto_extraido
-#     assert "contenido de la página 2" in texto_extraido

@@ -18,7 +18,7 @@ from .pdf_processor import (
     extraer_texto_de_pdf
 )
 
-from ..core.spatial_bank import BankStatementEngineV2
+from ..core.spatial_bank import MotorExtraccionEspacial
 from ..models.responses_motor_estados import RespuestasMotorEstados
 
 from ..models.responses_analisisTPV import AnalisisTPV
@@ -330,7 +330,7 @@ def procesar_digital_worker_sync(
         # 1. INSTANCIAR MOTOR V2 (PRODUCCIÓN)
         # CORRECCIÓN IMPORTANTE: En el nuevo motor no existe 'debug_mode'.
         # Pasamos debug_flags=[] para que corra en silencio y rápido (solo logs INFO).
-        engine = BankStatementEngineV2(debug_flags=[]) 
+        engine = MotorExtraccionEspacial(debug_flags=[]) 
 
         # 2. EJECUCIÓN DEL PIPELINE (3 PASADAS)
         # Usamos un bloque try/finally para asegurar que el PDF se cierra en memoria

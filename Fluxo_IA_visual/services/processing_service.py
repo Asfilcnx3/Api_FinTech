@@ -7,6 +7,7 @@ from concurrent.futures import ProcessPoolExecutor
 from ..models.responses_analisisTPV import AnalisisTPV
 from ..services.ia_extractor import clasificar_lote_con_ia
 from ..core.exceptions import PDFCifradoError
+from ..core.motor_clasificador import MotorClasificador
 from ..services.storage_service import guardar_excel_local, guardar_json_local
 from ..utils.xlsx_converter import generar_excel_reporte
 
@@ -55,6 +56,20 @@ class ProcessingService:
             banco_detection_regex=BANCO_DETECTION_REGEX,
             patrones_compilados=PATRONES_COMPILADOS,
             debug_flags=None
+        )
+
+        # --- INSTANCIA DEL MOTOR CLASIFICADOR (NUEVO) ---
+        diccionarios_clasificacion = {
+            'excluidas': PALABRAS_EXCLUIDAS,
+            'efectivo': PALABRAS_EFECTIVO,
+            'traspaso': PALABRAS_TRASPASO_ENTRE_CUENTAS,
+            'financiamiento': PALABRAS_TRASPASO_FINANCIAMIENTO,
+            'bmrcash': PALABRAS_BMRCASH,
+            'moratorio': PALABRAS_TRASPASO_MORATORIO
+        }
+        self.motor_clasificador = MotorClasificador(
+            diccionarios_palabras=diccionarios_clasificacion,
+            debug_flags=None  # Silencioso para producción
         )
 
     async def ejecutar_pipeline_background(self, job_id: str, lista_archivos: list):
@@ -492,127 +507,14 @@ class ProcessingService:
 
         guardar_json_local(datos_dict, job_id)
     
-    def _aplicar_reglas_negocio_y_calcular_totales(self, analisis_ia, transacciones):
-        """
-        ÚNICA fuente de verdad para los totales.
-        Ahora con matching flexible para TPV y logs de depuración.
-        """
-        if not analisis_ia: return
-
-        # Inicializar en 0
-        totales = {
-            "EFECTIVO": 0.0, "TRASPASO": 0.0, "FINANCIAMIENTO": 0.0,
-            "BMRCASH": 0.0, "MORATORIOS": 0.0, "TPV": 0.0, "DEPOSITOS": 0.0
-        }
-        
-        # DEBUG: Contador para saber qué está pasando
-        conteo_categorias = {"TPV": 0, "GENERAL": 0, "OTROS": 0}
-
-        for tx in transacciones:
-            try:
-                # Limpieza robusta del monto
-                monto_str = str(tx.monto).replace("$", "").replace(",", "").strip()
-                monto = float(monto_str)
-            except: 
-                monto = 0.0
-            
-            # Solo nos importan los abonos para las sumas de ingresos
-            # Aseguramos que el tipo se compare en minúsculas
-            tipo_lower = str(tx.tipo).lower().strip()
-            
-            # Si NO es abono/deposito/credito, lo saltamos (es cargo)
-            if tipo_lower not in ["abono", "deposito", "depósito", "credito", "crédito"]:
-                continue
-
-            # Suma al total general de depósitos
-            totales["DEPOSITOS"] += monto
-
-            desc = str(tx.descripcion).lower()
-            
-            # Normalizamos la categoría que viene de la IA
-            cat_ia = str(tx.categoria).upper().strip()
-
-            # --- JERARQUÍA DE REGLAS (Python manda sobre IA) ---
-            
-            if any(p in desc for p in PALABRAS_EXCLUIDAS):
-                continue 
-
-            if any(p in desc for p in PALABRAS_EFECTIVO):
-                totales["EFECTIVO"] += monto
-                tx.categoria = "EFECTIVO" # Sobrescribimos para el reporte individual
-                conteo_categorias["OTROS"] += 1
-                
-            elif any(p in desc for p in PALABRAS_TRASPASO_ENTRE_CUENTAS):
-                totales["TRASPASO"] += monto
-                tx.categoria = "TRASPASO"
-                conteo_categorias["OTROS"] += 1
-                
-            elif any(p in desc for p in PALABRAS_TRASPASO_FINANCIAMIENTO):
-                totales["FINANCIAMIENTO"] += monto
-                tx.categoria = "FINANCIAMIENTO"
-                conteo_categorias["OTROS"] += 1
-                
-            elif any(p in desc for p in PALABRAS_BMRCASH):
-                totales["BMRCASH"] += monto
-                tx.categoria = "BMRCASH"
-                conteo_categorias["OTROS"] += 1
-                
-            elif any(p in desc for p in PALABRAS_TRASPASO_MORATORIO):
-                totales["MORATORIOS"] += monto
-                tx.categoria = "MORATORIOS"
-                conteo_categorias["OTROS"] += 1
-                
-            else:
-                # --- AQUÍ ESTABA EL ERROR ---
-                # Antes: if tx.categoria == "TPV":
-                # Ahora: Flexible (contiene TPV o es TERMINAL)
-                
-                es_tpv = "TPV" in cat_ia or "TERMINAL" in cat_ia or "PUNTO DE VENTA" in cat_ia
-                
-                if es_tpv:
-                    totales["TPV"] += monto
-                    # Forzamos la etiqueta limpia para el Excel
-                    tx.categoria = "TPV" 
-                    conteo_categorias["TPV"] += 1
-                else:
-                    # Es GENERAL
-                    conteo_categorias["GENERAL"] += 1
-                    pass
-
-        # LOG DE DIAGNÓSTICO (Importante para ver si está funcionando)
-        # logger.info(f"📊 Resumen de Clasificación para Sumas:")
-        # logger.info(f"   TPV Detectados: {conteo_categorias['TPV']} | Monto: ${totales['TPV']:,.2f}")
-        # logger.info(f"   General/Otros : {conteo_categorias['GENERAL']}")
-        # logger.info(f"   Reglas Python : {conteo_categorias['OTROS']}")
-
-        # Inyectamos los totales calculados al objeto padre (AnalisisIA)
-        
-        analisis_ia.depositos_en_efectivo = totales["EFECTIVO"]
-        analisis_ia.traspaso_entre_cuentas = totales["TRASPASO"]
-        analisis_ia.total_entradas_financiamiento = totales["FINANCIAMIENTO"]
-        analisis_ia.entradas_bmrcash = totales["BMRCASH"]
-        analisis_ia.total_moratorios = totales["MORATORIOS"]
-        analisis_ia.entradas_TPV_bruto = totales["TPV"]
-        
-        # Calculamos Neto
-        try:
-            com_str = str(analisis_ia.comisiones).replace("$", "").replace(",", "")
-            comisiones = float(com_str) if analisis_ia.comisiones else 0.0
-        except:
-            comisiones = 0.0
-            
-        analisis_ia.entradas_TPV_neto = totales["TPV"] - comisiones
-    
     async def _clasificar_documento_async(self, job_id, resultado_doc, BATCH_SIZE=100):
         """
-        Procesa UN documento completo de forma asíncrona.
-        Hidratación de objetos + Lógica de Mapeo Robusta (Listas y Dicts).
+        Procesa UN documento completo de forma asíncrona delegando todo al Motor Clasificador.
         """
-        # 0. VALIDACIÓN E HIDRATACIÓN
-        if not resultado_doc: return
-        if isinstance(resultado_doc.DetalleTransacciones, AnalisisTPV.ErrorRespuesta): return
+        # 0. VALIDACIÓN E HIDRATACIÓN (Se mantiene para compatibilidad Pydantic)
+        if not resultado_doc or isinstance(resultado_doc.DetalleTransacciones, AnalisisTPV.ErrorRespuesta): 
+            return
 
-        # --- HIDRATACIÓN ---
         if isinstance(resultado_doc.DetalleTransacciones, dict):
             raw_dict = resultado_doc.DetalleTransacciones
             lista_cruda = raw_dict.get("transacciones", [])
@@ -627,7 +529,6 @@ class ProcessingService:
                         tipo=tx.get("tipo", "DESCONOCIDO"),
                         categoria="GENERAL"
                     ))
-                    logger.info(f"tipo de tx: {type(tx)} | contenido: {str(tx)[:50]}")
                 else:
                     tx_objs.append(tx)
             
@@ -643,57 +544,28 @@ class ProcessingService:
         
         self.passport.actualizar(job_id, sumar_transacciones=len(transacciones), descripcion=f"Clasificando {len(transacciones)} movs...")
 
-        # --- PREPARAR LOTES ---
-        # Actualizamos el helper para aceptar el offset
-        async def _clasificar_lote_seguro(banco, lote, offset):
-            async with self.sem_ia: 
-                return await clasificar_lote_con_ia(banco, lote, start_offset=offset)
+        # --- MAGIA DEL MOTOR CLASIFICADOR ---
+        totales = await self.motor_clasificador.clasificar_y_sumar_transacciones(
+            transacciones=transacciones,
+            banco=banco_actual,
+            funcion_ia_clasificadora=clasificar_lote_con_ia,
+            batch_size=BATCH_SIZE
+        )
 
-        tareas_lotes = []
-        for k in range(0, len(transacciones), BATCH_SIZE):
-            lote = transacciones[k : k + BATCH_SIZE]
-            # Pasamos 'k' que es nuestro offset real
-            tareas_lotes.append(_clasificar_lote_seguro(banco_actual, lote, k))
-
-        resultados_lotes = await asyncio.gather(*tareas_lotes)
-
-        # --- MAPEO TODOTERRENO (SIMPLIFICADO) ---
-        mapa_clasificacion_total = {}
+        # --- INYECCIÓN DE RESULTADOS AL OBJETO PADRE ---
+        analisis_ia = resultado_doc.AnalisisIA
+        analisis_ia.depositos_en_efectivo = totales.get("EFECTIVO", 0.0)
+        analisis_ia.traspaso_entre_cuentas = totales.get("TRASPASO", 0.0)
+        analisis_ia.total_entradas_financiamiento = totales.get("FINANCIAMIENTO", 0.0)
+        analisis_ia.entradas_bmrcash = totales.get("BMRCASH", 0.0)
+        analisis_ia.total_moratorios = totales.get("MORATORIOS", 0.0)
+        analisis_ia.entradas_TPV_bruto = totales.get("TPV", 0.0)
         
-        for i_lote, resultado_ia in enumerate(resultados_lotes):
+        # Cálculo de Neto
+        try:
+            com_str = str(analisis_ia.comisiones).replace("$", "").replace(",", "")
+            comisiones = float(com_str) if analisis_ia.comisiones else 0.0
+        except:
+            comisiones = 0.0
             
-            # CASO A: Si la IA es terca y devuelve una lista (GPT a veces lo hace)
-            if isinstance(resultado_ia, list):
-                offset_lista = i_lote * BATCH_SIZE
-                for idx_rel, etiqueta in enumerate(resultado_ia):
-                    abs_idx = str(offset_lista + idx_rel)
-                    mapa_clasificacion_total[abs_idx] = etiqueta
-            
-            # CASO B: La IA devolvió un Diccionario (Lo esperado)
-            elif isinstance(resultado_ia, dict):
-                for key, etiqueta in resultado_ia.items():
-                    clean_key = ''.join(filter(str.isdigit, str(key)))
-                    if clean_key:
-                        # El key es el absoluto.
-                        mapa_clasificacion_total[str(clean_key)] = etiqueta
-
-        logger.info(f"Mapa de clasificación construido: {len(mapa_clasificacion_total)} etiquetas para {len(transacciones)} transacciones.")
-
-        # --- APLICACIÓN DE ETIQUETAS Y NORMALIZACIÓN ---
-        for idx, tx in enumerate(transacciones):
-            str_idx = str(idx)
-            
-            # Buscamos la etiqueta que la IA le dio a esta transacción
-            nueva_cat = mapa_clasificacion_total.get(str_idx)
-            
-            if nueva_cat:
-                # La IA decidió la categoría, se la asignamos SIEMPRE
-                # logger.info(f"Tx {idx} clasificada como {nueva_cat} por IA. Desc: {tx.descripcion[:30]}")
-                tx.categoria = nueva_cat
-            else:
-                # Solo si la IA falló o se comió este índice, va a GENERAL
-                # logger.warning(f"⚠️ Tx {idx} sin etiqueta IA -> GENERAL. Desc: {tx.descripcion[:30]}")
-                tx.categoria = "GENERAL"
-
-        # 5. REGLAS DE NEGOCIO
-        self._aplicar_reglas_negocio_y_calcular_totales(resultado_doc.AnalisisIA, transacciones)
+        analisis_ia.entradas_TPV_neto = totales.get("TPV", 0.0) - comisiones
