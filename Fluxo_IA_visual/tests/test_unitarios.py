@@ -711,7 +711,7 @@ def small_fake_pdf():
 #         return "```json\n{\"saldo\": 600}\n```"
         
 #     monkeypatch.setattr("Fluxo_IA_visual.services.orchestators.analizar_gpt_fluxo", mock_analizar_gpt)
-#     monkeypatch.setattr("Fluxo_IA_visual.services.orchestators.analizar_gemini_fluxo", mock_analizar_gemini)
+#     monkeypatch.setattr("Fluxo_IA_visual.services.orchestators.analizar_con_ocr_fluxo", mock_analizar_gemini)
     
 #     # Mocks para las funciones de post-procesamiento
 #     monkeypatch.setattr("Fluxo_IA_visual.services.orchestators.extraer_json_del_markdown", lambda x: {"saldo": 500} if "500" in x else {"saldo": 600})
@@ -747,7 +747,7 @@ def small_fake_pdf():
 #         return "```json\n{\"depositos\": 700}\n```"
 
 #     monkeypatch.setattr("Fluxo_IA_visual.services.ia_extractor.analizar_gpt_fluxo", mock_gpt_falla)
-#     monkeypatch.setattr("Fluxo_IA_visual.services.ia_extractor.analizar_gemini_fluxo", mock_gemini_exito)
+#     monkeypatch.setattr("Fluxo_IA_visual.services.ia_extractor.analizar_con_ocr_fluxo", mock_gemini_exito)
     
 #     monkeypatch.setattr("Fluxo_IA_visual.utils.helpers.extraer_json_del_markdown", lambda x: {} if "GPT error" in repr(x) else {"depositos": 700}) # se está pasando el error como string
 #     monkeypatch.setattr("Fluxo_IA_visual.utils.helpers.sanitizar_datos_ia", lambda x: x)
@@ -777,7 +777,7 @@ def small_fake_pdf():
 #         return "```json\n{\"saldo\": 600}\n```"
         
 #     monkeypatch.setattr("Fluxo_IA_visual.services.orchestators.analizar_gpt_fluxo", mock_analizar_gpt)
-#     monkeypatch.setattr("Fluxo_IA_visual.services.orchestators.analizar_gemini_fluxo", mock_analizar_gemini)
+#     monkeypatch.setattr("Fluxo_IA_visual.services.orchestators.analizar_con_ocr_fluxo", mock_analizar_gemini)
     
 #     # Mocks para las funciones de post-procesamiento
 #     monkeypatch.setattr("Fluxo_IA_visual.services.orchestators.extraer_json_del_markdown", lambda x: {"saldo": 500} if "500" in x else {"saldo": 600})

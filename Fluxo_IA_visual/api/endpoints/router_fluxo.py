@@ -63,15 +63,15 @@ async def procesar_pdf_api(
         estatus="procesando"
     )
 
-@router.get("/fluxo/status/{job_id}")
-async def consultar_estatus(job_id: str):
-    """
-    Endpoint dedicado para polling. Retorna el Pasaporte completo.
-    """
-    datos = passport_service.leer_pasaporte(job_id)
-    if not datos:
-        raise HTTPException(status_code=404, detail="Job no encontrado")
-    return datos
+# @router.get("/fluxo/status/{job_id}")
+# async def consultar_estatus(job_id: str):
+#     """
+#     Endpoint dedicado para polling. Retorna el Pasaporte completo.
+#     """
+#     datos = passport_service.leer_pasaporte(job_id)
+#     if not datos:
+#         raise HTTPException(status_code=404, detail="Job no encontrado")
+#     return datos
 
 @router.get("/fluxo/descargar-resultado/{job_id}")
 async def descargar_resultado(job_id: str, formato: str = Query("excel", enum=["excel", "json"])):
