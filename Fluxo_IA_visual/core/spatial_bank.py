@@ -28,7 +28,7 @@ class PageGeometry:
         # +2px de margen para no comerse pixels superiores de los números
         self.content_rect = fitz.Rect(0, self.header_y + 2, self.width, self.footer_y)
 
-class BankStatementEngineV2:
+class MotorExtraccionEspacial:
     # --- CONSTANTES DE LOGGING (FLAGS) ---
     LOG_GEOMETRY = 1    # Detalles de Pasada 1 (Detección de Header/Footer)
     LOG_COLUMNS = 2     # Detalles de Pasada 2 (Búsqueda de columnas)

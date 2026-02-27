@@ -61,27 +61,33 @@ def get_nomi_client():
 
 async def clasificar_lote_con_ia(
     banco: str, 
-    transacciones: List[Any], 
-    start_offset: int = 0, # <--- NUEVO PARÁMETRO
+    lote_empaquetado: List[dict],
     client = None
 ) -> Dict[str, str]:
-    if not transacciones:
+    if not lote_empaquetado:
         return {}
 
     payload_input = []
-    # MAGIA: Usamos el parámetro 'start' de enumerate
-    for idx, tx in enumerate(transacciones, start=start_offset):
+    # Desempaquetamos lo que mandó el Motor
+    for item in lote_empaquetado:
+        idx_absoluto = item["id"]
+        tx = item["tx_data"]
+        
         if isinstance(tx, dict):
             desc = tx.get("descripcion", "")
             monto = tx.get("monto", "0")
+            tipo = tx.get("tipo", "abono") # <--- AHORA SÍ LEEMOS EL TIPO
         else: 
             desc = getattr(tx, "descripcion", "")
             monto = getattr(tx, "monto", "0")
+            tipo = getattr(tx, "tipo", "abono")
 
+        # Inyectamos el 'tipo' para que GPT deje de estar ciego
         payload_input.append({
-            "id": idx, # ¡Ahora este es el ID absoluto de todo el documento!
+            "id": idx_absoluto, 
             "d": desc,
-            "m": monto
+            "m": monto,
+            "t": tipo  # <--- MAGIA: La IA ya sabe si es abono o cargo
         })
     
     # 2. Seleccionar Prompt
@@ -116,8 +122,8 @@ async def clasificar_lote_con_ia(
 
     except Exception as e:
         logger.error(f"Error IA ({banco}): {e}")
-        # Fallback silencioso: todo es GENERAL si falla
-        return {str(i): "GENERAL" for i in range(start_offset, start_offset + len(transacciones))}
+        # Fallback silencioso: extraemos el ID absoluto directamente del lote empaquetado
+        return {str(item["id"]): "GENERAL" for item in lote_empaquetado}
 
 async def llamar_agente_ocr_vision(banco: str, pdf_bytes: bytes, paginas: List[int]) -> List[Dict[str, Any]]:
     """Agente Multimodal OCR (Qwen-VL)."""

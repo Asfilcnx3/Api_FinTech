@@ -365,3 +365,115 @@ async def analizar_metadatos_rango(
     datos_reconciliados = reconciliar_resultados_ia(datos_gpt_sanitizados, datos_gemini_sanitizados)
     
     return datos_reconciliados
+
+
+def _aplicar_reglas_negocio_y_calcular_totales(self, analisis_ia, transacciones):
+        """
+        ÚNICA fuente de verdad para los totales.
+        Ahora con matching flexible para TPV y logs de depuración.
+        """
+        if not analisis_ia: return
+
+        # Inicializar en 0
+        totales = {
+            "EFECTIVO": 0.0, "TRASPASO": 0.0, "FINANCIAMIENTO": 0.0,
+            "BMRCASH": 0.0, "MORATORIOS": 0.0, "TPV": 0.0, "DEPOSITOS": 0.0
+        }
+        
+        # DEBUG: Contador para saber qué está pasando
+        conteo_categorias = {"TPV": 0, "GENERAL": 0, "OTROS": 0}
+
+        for tx in transacciones:
+            try:
+                # Limpieza robusta del monto
+                monto_str = str(tx.monto).replace("$", "").replace(",", "").strip()
+                monto = float(monto_str)
+            except: 
+                monto = 0.0
+            
+            # Solo nos importan los abonos para las sumas de ingresos
+            # Aseguramos que el tipo se compare en minúsculas
+            tipo_lower = str(tx.tipo).lower().strip()
+            
+            # Si NO es abono/deposito/credito, lo saltamos (es cargo)
+            if tipo_lower not in ["abono", "deposito", "depósito", "credito", "crédito"]:
+                continue
+
+            # Suma al total general de depósitos
+            totales["DEPOSITOS"] += monto
+
+            desc = str(tx.descripcion).lower()
+            
+            # Normalizamos la categoría que viene de la IA
+            cat_ia = str(tx.categoria).upper().strip()
+
+            # --- JERARQUÍA DE REGLAS (Python manda sobre IA) ---
+            
+            if any(p in desc for p in PALABRAS_EXCLUIDAS):
+                continue 
+
+            if any(p in desc for p in PALABRAS_EFECTIVO):
+                totales["EFECTIVO"] += monto
+                tx.categoria = "EFECTIVO" # Sobrescribimos para el reporte individual
+                conteo_categorias["OTROS"] += 1
+                
+            elif any(p in desc for p in PALABRAS_TRASPASO_ENTRE_CUENTAS):
+                totales["TRASPASO"] += monto
+                tx.categoria = "TRASPASO"
+                conteo_categorias["OTROS"] += 1
+                
+            elif any(p in desc for p in PALABRAS_TRASPASO_FINANCIAMIENTO):
+                totales["FINANCIAMIENTO"] += monto
+                tx.categoria = "FINANCIAMIENTO"
+                conteo_categorias["OTROS"] += 1
+                
+            elif any(p in desc for p in PALABRAS_BMRCASH):
+                totales["BMRCASH"] += monto
+                tx.categoria = "BMRCASH"
+                conteo_categorias["OTROS"] += 1
+                
+            elif any(p in desc for p in PALABRAS_TRASPASO_MORATORIO):
+                totales["MORATORIOS"] += monto
+                tx.categoria = "MORATORIOS"
+                conteo_categorias["OTROS"] += 1
+                
+            else:
+                # --- AQUÍ ESTABA EL ERROR ---
+                # Antes: if tx.categoria == "TPV":
+                # Ahora: Flexible (contiene TPV o es TERMINAL)
+                
+                es_tpv = "TPV" in cat_ia or "TERMINAL" in cat_ia or "PUNTO DE VENTA" in cat_ia
+                
+                if es_tpv:
+                    totales["TPV"] += monto
+                    # Forzamos la etiqueta limpia para el Excel
+                    tx.categoria = "TPV" 
+                    conteo_categorias["TPV"] += 1
+                else:
+                    # Es GENERAL
+                    conteo_categorias["GENERAL"] += 1
+                    pass
+
+        # LOG DE DIAGNÓSTICO (Importante para ver si está funcionando)
+        # logger.info(f"📊 Resumen de Clasificación para Sumas:")
+        # logger.info(f"   TPV Detectados: {conteo_categorias['TPV']} | Monto: ${totales['TPV']:,.2f}")
+        # logger.info(f"   General/Otros : {conteo_categorias['GENERAL']}")
+        # logger.info(f"   Reglas Python : {conteo_categorias['OTROS']}")
+
+        # Inyectamos los totales calculados al objeto padre (AnalisisIA)
+        
+        analisis_ia.depositos_en_efectivo = totales["EFECTIVO"]
+        analisis_ia.traspaso_entre_cuentas = totales["TRASPASO"]
+        analisis_ia.total_entradas_financiamiento = totales["FINANCIAMIENTO"]
+        analisis_ia.entradas_bmrcash = totales["BMRCASH"]
+        analisis_ia.total_moratorios = totales["MORATORIOS"]
+        analisis_ia.entradas_TPV_bruto = totales["TPV"]
+        
+        # Calculamos Neto
+        try:
+            com_str = str(analisis_ia.comisiones).replace("$", "").replace(",", "")
+            comisiones = float(com_str) if analisis_ia.comisiones else 0.0
+        except:
+            comisiones = 0.0
+            
+        analisis_ia.entradas_TPV_neto = totales["TPV"] - comisiones
