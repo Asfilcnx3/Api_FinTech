@@ -14,7 +14,14 @@ from .passport_service import PassportService
 
 from ..utils.helpers import total_depositos_verificacion
 
-from ..utils.helpers_texto_fluxo import prompt_base_fluxo
+from ..core.motor_caratulas import MotorCaratulas
+from ..utils.helpers_texto_fluxo import (
+    TRIGGERS_CONFIG, PALABRAS_CLAVE_VERIFICACION, 
+    ALIAS_A_BANCO_MAP, BANCO_DETECTION_REGEX, 
+    PATRONES_COMPILADOS, prompt_base_fluxo
+)
+from ..utils.helpers import extraer_json_del_markdown, sanitizar_datos_ia
+from ..services.ia_extractor import analizar_gpt_fluxo, analizar_con_ocr_fluxo
 
 from ..utils.helpers_texto_fluxo import (
     PALABRAS_EXCLUIDAS,
@@ -25,9 +32,7 @@ from ..utils.helpers_texto_fluxo import (
     PALABRAS_TRASPASO_MORATORIO
 )
 
-# Imports de orquestadores
 from ..services.orchestators import (
-    obtener_y_procesar_portada, 
     procesar_digital_worker_sync, 
     procesar_ocr_worker_sync
 )
@@ -40,8 +45,17 @@ class ProcessingService:
         self.passport = PassportService() # Inyección manual del pasaporte
 
         # --- SEMÁFORO DE CONCURRENCIA ---
-        # Limitamos a 20 peticiones simultáneas a OpenAI globalmente.
         self.sem_ia = asyncio.Semaphore(20)
+
+        # --- INSTANCIA DEL MOTOR DE CARÁTULAS ---
+        self.motor_caratulas = MotorCaratulas(
+            triggers_config=TRIGGERS_CONFIG,
+            palabras_clave_regex=PALABRAS_CLAVE_VERIFICACION,
+            alias_banco_map=ALIAS_A_BANCO_MAP,
+            banco_detection_regex=BANCO_DETECTION_REGEX,
+            patrones_compilados=PATRONES_COMPILADOS,
+            debug_flags=None
+        )
 
     async def ejecutar_pipeline_background(self, job_id: str, lista_archivos: list):
         """
@@ -63,9 +77,18 @@ class ProcessingService:
             try:
                 with open(path, "rb") as f:
                     pdf_bytes = f.read()
-                    # Analisis inicial (Portadas, Rangos, Texto base)
-                    tarea = obtener_y_procesar_portada(prompt_base_fluxo, pdf_bytes) 
+                    
+                    # --- LLAMADA AL MOTOR CENTRALIZADO ---
+                    tarea = self.motor_caratulas.procesar_caratula_completa(
+                        pdf_bytes=pdf_bytes,
+                        prompt_base=prompt_base_fluxo,
+                        analizar_gpt_fn=analizar_gpt_fluxo,
+                        analizar_qwen_fn=analizar_con_ocr_fluxo,
+                        extraer_json_fn=extraer_json_del_markdown,
+                        sanitizar_fn=sanitizar_datos_ia
+                    ) 
                     tareas_analisis.append(tarea)
+                    
             except Exception as e:
                 logger.error(f"Error lectura {path}: {e}")
                 # Agregamos una excepción a la lista para manejarla después
@@ -74,6 +97,7 @@ class ProcessingService:
         # Ejecutamos análisis de portadas en paralelo (I/O bound + API Calls)
         try:
             resultados_portada = await asyncio.gather(*tareas_analisis, return_exceptions=True)
+
         except Exception as e:
             logger.critical(f"Error crítico en Etapa 1: {e}")
             self.passport.actualizar(job_id, error=f"Fallo crítico inicial: {e}")
@@ -556,13 +580,13 @@ class ProcessingService:
                     pass
 
         # LOG DE DIAGNÓSTICO (Importante para ver si está funcionando)
-        logger.info(f"📊 Resumen de Clasificación para Sumas:")
-        logger.info(f"   TPV Detectados: {conteo_categorias['TPV']} | Monto: ${totales['TPV']:,.2f}")
-        logger.info(f"   General/Otros : {conteo_categorias['GENERAL']}")
-        logger.info(f"   Reglas Python : {conteo_categorias['OTROS']}")
+        # logger.info(f"📊 Resumen de Clasificación para Sumas:")
+        # logger.info(f"   TPV Detectados: {conteo_categorias['TPV']} | Monto: ${totales['TPV']:,.2f}")
+        # logger.info(f"   General/Otros : {conteo_categorias['GENERAL']}")
+        # logger.info(f"   Reglas Python : {conteo_categorias['OTROS']}")
 
         # Inyectamos los totales calculados al objeto padre (AnalisisIA)
-        # IMPORTANTE: Asegúrate de que analisis_ia sea el objeto que se usa en el reporte final
+        
         analisis_ia.depositos_en_efectivo = totales["EFECTIVO"]
         analisis_ia.traspaso_entre_cuentas = totales["TRASPASO"]
         analisis_ia.total_entradas_financiamiento = totales["FINANCIAMIENTO"]
@@ -582,7 +606,7 @@ class ProcessingService:
     async def _clasificar_documento_async(self, job_id, resultado_doc, BATCH_SIZE=100):
         """
         Procesa UN documento completo de forma asíncrona.
-        FIX: Hidratación de objetos + Lógica de Mapeo Robusta (Listas y Dicts).
+        Hidratación de objetos + Lógica de Mapeo Robusta (Listas y Dicts).
         """
         # 0. VALIDACIÓN E HIDRATACIÓN
         if not resultado_doc: return
@@ -650,12 +674,12 @@ class ProcessingService:
                 for key, etiqueta in resultado_ia.items():
                     clean_key = ''.join(filter(str.isdigit, str(key)))
                     if clean_key:
-                        # ¡YA NO SUMAMOS NADA! El key ya es el absoluto.
+                        # El key es el absoluto.
                         mapa_clasificacion_total[str(clean_key)] = etiqueta
 
         logger.info(f"Mapa de clasificación construido: {len(mapa_clasificacion_total)} etiquetas para {len(transacciones)} transacciones.")
 
-        # --- [FIX 2] APLICACIÓN DE ETIQUETAS Y NORMALIZACIÓN ---
+        # --- APLICACIÓN DE ETIQUETAS Y NORMALIZACIÓN ---
         for idx, tx in enumerate(transacciones):
             str_idx = str(idx)
             
@@ -664,11 +688,11 @@ class ProcessingService:
             
             if nueva_cat:
                 # La IA decidió la categoría, se la asignamos SIEMPRE
-                logger.info(f"Tx {idx} clasificada como {nueva_cat} por IA. Desc: {tx.descripcion[:30]}")
+                # logger.info(f"Tx {idx} clasificada como {nueva_cat} por IA. Desc: {tx.descripcion[:30]}")
                 tx.categoria = nueva_cat
             else:
                 # Solo si la IA falló o se comió este índice, va a GENERAL
-                logger.warning(f"⚠️ Tx {idx} sin etiqueta IA -> GENERAL. Desc: {tx.descripcion[:30]}")
+                # logger.warning(f"⚠️ Tx {idx} sin etiqueta IA -> GENERAL. Desc: {tx.descripcion[:30]}")
                 tx.categoria = "GENERAL"
 
         # 5. REGLAS DE NEGOCIO

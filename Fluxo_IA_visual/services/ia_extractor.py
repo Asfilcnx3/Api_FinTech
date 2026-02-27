@@ -163,7 +163,7 @@ async def analizar_gpt_fluxo(prompt: str, pdf_bytes: bytes, paginas_a_procesar: 
     )
     return res.choices[0].message.content
 
-async def analizar_gemini_fluxo(prompt: str, pdf_bytes: bytes, paginas_a_procesar: List[int]) -> str:
+async def analizar_con_ocr_fluxo(prompt: str, pdf_bytes: bytes, paginas_a_procesar: List[int]) -> str:
     """Envía PDF a OpenRouter (Gemini/Qwen)."""
     imagen_buffers = convertir_pdf_a_imagenes(pdf_bytes, paginas=paginas_a_procesar)
     if not imagen_buffers: return ""

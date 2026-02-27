@@ -1,11 +1,10 @@
 from ..utils.helpers import (
-    es_escaneado_o_no, extraer_datos_por_banco, extraer_json_del_markdown, limpiar_monto, sanitizar_datos_ia, 
-    reconciliar_resultados_ia, detectar_tipo_contribuyente, crear_objeto_resultado,
+    limpiar_monto, detectar_tipo_contribuyente, crear_objeto_resultado,
     construir_fecha_completa, separar_fecha_y_ruido
     
 )
 from .ia_extractor import (
-    analizar_gpt_fluxo, analizar_gemini_fluxo, _extraer_datos_con_ia, llamar_agente_ocr_vision
+    _extraer_datos_con_ia, llamar_agente_ocr_vision
 )
 from ..utils.helpers_texto_fluxo import (
     PALABRAS_BMRCASH, PALABRAS_EXCLUIDAS, PALABRAS_EFECTIVO, PALABRAS_TRASPASO_ENTRE_CUENTAS, PALABRAS_TRASPASO_FINANCIAMIENTO, PALABRAS_TRASPASO_MORATORIO
@@ -16,10 +15,9 @@ from ..utils.helpers_texto_csf import (
 )
 
 from .pdf_processor import (
-    detectar_rangos_y_texto, extraer_texto_de_pdf
+    extraer_texto_de_pdf
 )
 
-from ..core.extraction_motor import BankStatementEngine
 from ..core.spatial_bank import BankStatementEngineV2
 from ..models.responses_motor_estados import RespuestasMotorEstados
 
@@ -52,137 +50,6 @@ async def procesar_estado_cuenta(archivo: UploadFile) -> NomiFlash.RespuestaEsta
 
 async def procesar_comprobante(archivo: UploadFile) -> NomiFlash.RespuestaComprobante:
     return await _engine.procesar_comprobante(archivo)
-
-
-# ----- FUNCIONES ORQUESTADORAS DE FLUXO -----
-async def analizar_metadatos_rango(
-    pdf_bytes: bytes, 
-    paginas_a_analizar: List[int],
-    prompt: str
-) -> Dict[str, Any]:
-    """
-    Ejecuta el análisis de IA (Visión) para un conjunto específico de páginas 
-    (usualmente la primera de una cuenta nueva) para obtener metadatos.
-    """
-    # 1. Llamadas en paralelo a las IAs
-    tarea_gpt = analizar_gpt_fluxo(prompt, pdf_bytes, paginas_a_procesar=paginas_a_analizar)
-    tarea_gemini = analizar_gemini_fluxo(prompt, pdf_bytes, paginas_a_procesar=paginas_a_analizar)
-    
-    resultados_ia_brutos = await asyncio.gather(tarea_gpt, tarea_gemini, return_exceptions=True)
-    res_gpt_str, res_gemini_str = resultados_ia_brutos
-
-    # 2. Extracción de JSON
-    datos_gpt = extraer_json_del_markdown(res_gpt_str) if not isinstance(res_gpt_str, Exception) else {}
-    datos_gemini = extraer_json_del_markdown(res_gemini_str) if not isinstance(res_gemini_str, Exception) else {}
-
-    # 3. Sanitización
-    datos_gpt_sanitizados = sanitizar_datos_ia(datos_gpt)
-    datos_gemini_sanitizados = sanitizar_datos_ia(datos_gemini)
-
-    # 4. Reconciliación
-    datos_reconciliados = reconciliar_resultados_ia(datos_gpt_sanitizados, datos_gemini_sanitizados)
-    
-    return datos_reconciliados
-
-# ESTA FUNCIÓN ES PARA OBTENER Y PROCESAR LAS PORTADAS DE LOS PDF
-async def obtener_y_procesar_portada(prompt:str, pdf_bytes: bytes) -> Tuple[Dict[str, Any], bool, str, Dict[int, Any]]:
-    """
-    Orquesta el proceso detectando múltiples cuentas dentro del mismo PDF.
-    Devuelve una lista de resultados (uno por cada cuenta detectada).
-    """
-    loop = asyncio.get_running_loop()
-
-    # --- 1. PRIMERO: Extraer Texto Y Movimientos (Detectar cortes) ---
-    # Esta función ya nos devuelve los puntos donde cambia de cuenta
-    texto_por_pagina, rangos_cuentas = await loop.run_in_executor(
-        None,
-        detectar_rangos_y_texto,
-        pdf_bytes
-    )
-
-    # Construimos el texto completo
-    texto_verificacion_global = "\n".join(texto_por_pagina.values())
-    es_documento_digital = es_escaneado_o_no(texto_verificacion_global)
-
-    logger.info(f"Se detectaron {len(rangos_cuentas)} cuentas en los rangos: {rangos_cuentas}")
-
-    resultados_acumulados = []
-
-    # --- BUCLE PRINCIPAL: PROCESAR CADA CUENTA (RANGO) ---
-    for inicio_rango, fin_rango in rangos_cuentas:
-        logger.info(f"Procesando cuenta en rango: {inicio_rango} a {fin_rango}")
-
-        # A. Construir texto específico de este rango para regex
-        # (Esto aísla el contexto: el regex solo verá texto de ESTA cuenta)
-        texto_rango = []
-        for p in range(inicio_rango, fin_rango + 1):
-            texto_rango.append(texto_por_pagina.get(p, ""))
-        texto_verificacion_rango = "\n".join(texto_rango)
-
-        # B. Reconocer banco y datos por Regex para ESTE rango
-        datos_regex = extraer_datos_por_banco(texto_verificacion_rango.lower())
-        banco_estandarizado = datos_regex.get("banco")
-        rfc_estandarizado = datos_regex.get("rfc")
-        comisiones_est = datos_regex.get("comisiones")
-        depositos_est = datos_regex.get("depositos")
-
-        # C. Decidir qué páginas enviar a la IA (Relativo al rango actual)
-        # Lógica: Mandamos la primera del rango y la segunda (si existe)
-        paginas_para_ia = [inicio_rango]
-        if (inicio_rango + 1) <= fin_rango:
-            paginas_para_ia.append(inicio_rango + 1)
-
-        # Lógica especial para BANREGIO (u otros que requieran final del documento)
-        if banco_estandarizado == "BANREGIO":
-            longitud_rango = (fin_rango - inicio_rango) + 1
-            if longitud_rango > 5:
-                # Primeras del rango + Últimas 5 DEL RANGO
-                paginas_finales = list(range(fin_rango - 4, fin_rango + 1))
-                paginas_para_ia = sorted(list(set(paginas_para_ia + paginas_finales)))
-            else:
-                # Todas las páginas del rango si es corto
-                paginas_para_ia = list(range(inicio_rango, fin_rango + 1))
-
-        # D. Llamar a las IA (Enviando las páginas calculadas)
-        tarea_gpt = analizar_gpt_fluxo(prompt, pdf_bytes, paginas_a_procesar=paginas_para_ia)
-        tarea_gemini = analizar_gemini_fluxo(prompt, pdf_bytes, paginas_a_procesar=paginas_para_ia)
-
-        resultados_ia_brutos = await asyncio.gather(tarea_gpt, tarea_gemini, return_exceptions=True)
-        res_gpt_str, res_gemini_str = resultados_ia_brutos
-
-        # Extracción segura de JSON (Validamos que no sea Exception Y que tenga contenido)
-        datos_gpt = {}
-        if res_gpt_str and not isinstance(res_gpt_str, Exception):
-            datos_gpt = extraer_json_del_markdown(res_gpt_str)
-        
-        datos_gemini = {}
-        if res_gemini_str and not isinstance(res_gemini_str, Exception):
-            datos_gemini = extraer_json_del_markdown(res_gemini_str)
-
-        # E. Sanitización y Reconciliación
-        datos_gpt_sanitizados = sanitizar_datos_ia(datos_gpt)
-        datos_gemini_sanitizados = sanitizar_datos_ia(datos_gemini)
-        
-        datos_ia_reconciliados = reconciliar_resultados_ia(datos_gpt_sanitizados, datos_gemini_sanitizados)
-
-        # F. Merge con datos Regex (Prioridad al texto detectado)
-        if banco_estandarizado: datos_ia_reconciliados["banco"] = banco_estandarizado
-        if rfc_estandarizado: datos_ia_reconciliados["rfc"] = rfc_estandarizado
-        if comisiones_est: datos_ia_reconciliados["comisiones"] = comisiones_est
-        if depositos_est: datos_ia_reconciliados["depositos"] = depositos_est
-
-        # Agregamos metadatos útiles para saber de qué páginas vino en el frontend/DB
-        datos_ia_reconciliados["_metadatos_paginas"] = {
-            "inicio": inicio_rango,
-            "fin": fin_rango,
-            "paginas_analizadas_ia": paginas_para_ia
-        }
-        
-        resultados_acumulados.append(datos_ia_reconciliados)
-
-    # Retornamos la lista de resultados y los datos globales
-    # OJO: Ahora el primer elemento es una LISTA, no un Dict único.
-    return resultados_acumulados, es_documento_digital, texto_verificacion_global, None, texto_por_pagina, rangos_cuentas
     
 def clasificar_transacciones_extraidas(
     ia_data_cuenta: dict,
