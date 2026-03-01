@@ -31,18 +31,15 @@ class MotorClasificador:
             prefijo = etiquetas.get(flag, "[DEBUG]  ")
             logger.info(f"  {prefijo} {mensaje}")
 
-    def _pre_clasificar_transacciones(self, transacciones: List[Any]) -> tuple:
+    def _pre_clasificar_transacciones(self, transacciones: List[Any], nombre_cliente: str = "") -> tuple:
         """
         Actúa como la Capa 1 del embudo. 
-        Separa las transacciones en dos cubetas: las que Python puede resolver gratis
-        y las que obligatoriamente necesitan análisis semántico de la IA.
+        Separa las transacciones en dos cubetas...
         """
         resueltas_por_python = []
         pendientes_para_ia = []
 
-        # Para mantener el orden original, guardamos el índice real de la transacción
         for idx_real, tx in enumerate(transacciones):
-            
             # --- NORMALIZACIÓN BÁSICA ---
             tipo_lower = str(getattr(tx, "tipo", "")).lower().strip()
             desc_lower = str(getattr(tx, "descripcion", "")).lower()
@@ -52,6 +49,13 @@ class MotorClasificador:
                 tx.categoria = "GENERAL"
                 resueltas_por_python.append((idx_real, tx))
                 self._log_debug(1, f"Tx {idx_real} descartada (Es cargo) -> {desc_lower[:40]}...")
+                continue
+
+            # --- NUEVO: REGLA 1.5: TRANSACCIONES SOSPECHOSAS (CUENTAS PROPIAS) ---
+            if self._es_transaccion_propia(desc_lower, nombre_cliente):
+                tx.categoria = "SOSPECHOSA_PROPIA"
+                resueltas_por_python.append((idx_real, tx))
+                self._log_debug(2, f"Tx {idx_real} clasificada como SOSPECHOSA (Propia) -> {desc_lower[:40]}...")
                 continue
 
             # --- REGLA 2: PALABRAS CLAVE EXACTAS (Solo para Abonos) ---
@@ -92,7 +96,8 @@ class MotorClasificador:
         transacciones: List[Any], 
         banco: str, 
         funcion_ia_clasificadora, 
-        batch_size: int = 100
+        batch_size: int = 100,
+        nombre_cliente: str = ""
     ) -> dict:
         """
         El orquestador maestro del clasificador.
@@ -106,7 +111,7 @@ class MotorClasificador:
         self._log_debug(4, f"Iniciando clasificación de {len(transacciones)} transacciones para banco: {banco}")
 
         # --- CAPA 1: FILTRO DETERMINISTA (Python) ---
-        resueltas, pendientes_ia = self._pre_clasificar_transacciones(transacciones)
+        resueltas, pendientes_ia = self._pre_clasificar_transacciones(transacciones, nombre_cliente)
 
         # --- CAPA 2: ANÁLISIS SEMÁNTICO (IA) ---
         mapa_ia = await self._procesar_lotes_ia(
@@ -189,12 +194,13 @@ class MotorClasificador:
     def _calcular_totales(self, transacciones: List[Any]) -> dict:
         """
         ÚNICA fuente de verdad para los totales. 
-        Reemplaza tu antiguo `_aplicar_reglas_negocio_y_calcular_totales`
+        Reemplaza el antiguo `_aplicar_reglas_negocio_y_calcular_totales`
         pero sin sobrescribir las etiquetas (porque ya se hizo en el filtro).
         """
         totales = {
             "EFECTIVO": 0.0, "TRASPASO": 0.0, "FINANCIAMIENTO": 0.0,
-            "BMRCASH": 0.0, "MORATORIOS": 0.0, "TPV": 0.0, "DEPOSITOS": 0.0
+            "BMRCASH": 0.0, "MORATORIOS": 0.0, "TPV": 0.0, "DEPOSITOS": 0.0,
+            "SOSPECHOSA_PROPIA": 0.0
         }
         
         conteo_categorias = {"TPV": 0, "GENERAL": 0, "OTROS": 0}
@@ -233,3 +239,45 @@ class MotorClasificador:
         self._log_debug(4, f"Monto TPV Neto Calculado: ${totales['TPV']:,.2f}")
         
         return totales
+    
+    # ==========================================
+    # MÉTODOS AUXILIARES: TRANSACCIONES PROPIAS
+    # ==========================================
+    def _limpiar_nombre_empresa(self, nombre: str) -> str:
+        """Elimina sufijos legales y caracteres especiales para hacer cruces limpios."""
+        import re
+        if not nombre or nombre.lower() in ["n/a", "desc.", "desconocido", ""]:
+            return ""
+            
+        nombre_limpio = nombre.lower()
+        
+        # Lista de sufijos legales a eliminar
+        sufijos = [
+            r"\bs\.a\. de c\.v\.\b", r"\bsa de cv\b", r"\bs\.a\.\b", r"\bs a\b",
+            r"\bs\.a\.p\.i\. de c\.v\.\b", r"\bsapi de cv\b", r"\bsapi\b",
+            r"\bs\. de r\.l\. de c\.v\.\b", r"\bs de rl de cv\b", r"\bs de rl\b", r"\bs\. de r\.l\.\b",
+            r"\bc\.v\.\b", r"\bcv\b", r"\bde c\.v\.\b", r"\bde cv\b"
+        ]
+        
+        for sufijo in sufijos:
+            nombre_limpio = re.sub(sufijo, "", nombre_limpio)
+            
+        # Quitar puntuación extra y dejar solo un espacio entre palabras
+        nombre_limpio = re.sub(r"[^\w\s]", "", nombre_limpio)
+        nombre_limpio = re.sub(r"\s+", " ", nombre_limpio).strip()
+        
+        return nombre_limpio
+
+    def _es_transaccion_propia(self, descripcion: str, nombre_cliente_caratula: str) -> bool:
+        """Valida si el nombre del cliente aparece en la descripción de la transacción."""
+        import re
+        nombre_limpio = self._limpiar_nombre_empresa(nombre_cliente_caratula)
+        
+        # Regla de seguridad: Si el nombre limpio es muy corto (ej. quedó solo "el" o "la"), 
+        # ignoramos para evitar miles de falsos positivos en descripciones comunes.
+        if len(nombre_limpio) < 4:
+            return False
+            
+        desc_limpia = re.sub(r"[^\w\s]", "", descripcion.lower())
+        
+        return nombre_limpio in desc_limpia

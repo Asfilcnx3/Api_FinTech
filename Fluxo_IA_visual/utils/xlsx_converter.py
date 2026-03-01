@@ -16,6 +16,7 @@ def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
     header_font = Font(bold=True, color="FFFFFF")
     header_fill = PatternFill(start_color="4F81BD", end_color="4F81BD", fill_type="solid")
     currency_style = NamedStyle(name='currency_style', number_format='$#,##0.00')
+    fill_error_doc = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid") # Rojo claro
 
     def aplicar_estilo_header(ws):
         for cell in ws[1]:
@@ -55,15 +56,28 @@ def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
     ws1.title = "Resumen por Cuenta"
     ws1.append([
         "Mes", "Cuenta", "Moneda", "Depósitos", "Cargos", "TPV Bruto", 
-        "Financiamientos", "Efectivo", "Traspaso entre cuentas", "BMR CASH", "Moratorios"
+        "Financiamientos", "Efectivo", "Traspaso entre cuentas", "BMR CASH", "Moratorios", "Sospechosas (Propias)"
     ])
     
     for res in resultados:
         ia = res.get("AnalisisIA") or {}
         if not ia: continue
         
-        periodo = ia.get("periodo_fin") or ia.get("periodo_inicio") or "Desc."
         banco = ia.get("banco", "BANCO")
+        es_error = banco in ["ERROR_CIFRADO", "ERROR_LECTURA", "ERROR_PROCESAMIENTO"]
+        
+        if es_error:
+            mensaje_error = "CON CONTRASEÑA" if banco == "ERROR_CIFRADO" else "ERROR DE PROCESAMIENTO"
+            ws1.append([
+                "N/A", ia.get("nombre_archivo_virtual", "Archivo Desconocido"),
+                "N/A", mensaje_error, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+            ])
+            # Pintar toda la fila de rojo
+            for cell in ws1[ws1.max_row]:
+                cell.fill = fill_error_doc
+            continue
+
+        periodo = ia.get("periodo_fin") or ia.get("periodo_inicio") or "Desc."
         clabe = str(ia.get("clabe_interbancaria") or "")
         cuenta_str = f"{banco}-{clabe[-4:]}" if len(clabe) >= 4 else banco
         
@@ -77,12 +91,15 @@ def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
             ia.get("depositos_en_efectivo", 0.0),
             ia.get("traspaso_entre_cuentas", 0.0),
             ia.get("entradas_bmrcash", 0.0),
-            ia.get("total_moratorios", 0.0)
+            ia.get("total_moratorios", 0.0),
+            ia.get("total_sospechosas", 0.0)
         ])
 
     aplicar_estilo_header(ws1)
     ws1.column_dimensions['B'].width = 25
-    for row in ws1.iter_rows(min_row=2, min_col=4, max_col=11):
+    ws1.column_dimensions['L'].width = 20 # Ajuste visual
+    # Cambiamos max_col de 11 a 12 para que aplique formato de moneda a la nueva columna
+    for row in ws1.iter_rows(min_row=2, min_col=4, max_col=12): 
         for cell in row: cell.style = currency_style
 
     # ==========================================
@@ -97,9 +114,24 @@ def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
     
     for res in resultados:
         ia = res.get("AnalisisIA") or {}
+        if not ia: continue
+
+        banco = ia.get("banco", "BANCO")
+        es_error = banco in ["ERROR_CIFRADO", "ERROR_LECTURA", "ERROR_PROCESAMIENTO"]
+
+        if es_error:
+            mensaje_error = "CON CONTRASEÑA" if banco == "ERROR_CIFRADO" else "ERROR DE PROCESAMIENTO"
+            ws2.append([
+                banco, "N/A", "N/A", ia.get("nombre_archivo_virtual", "N/A"), 
+                "N/A", "N/A", mensaje_error, 0.0, 0.0, 0.0
+            ])
+            for cell in ws2[ws2.max_row]:
+                cell.fill = fill_error_doc
+            continue
+
         clabe_segura = str(ia.get("clabe_interbancaria") or "")
         ws2.append([
-            ia.get("banco", "Desconocido"), ia.get("rfc", ""), ia.get("nombre_cliente", ""),
+            banco, ia.get("rfc", ""), ia.get("nombre_cliente", ""),
             clabe_segura, ia.get("periodo_inicio", ""), ia.get("periodo_fin", ""),
             ia.get("depositos", 0.0), ia.get("cargos", 0.0),
             ia.get("saldo_promedio", 0.0), ia.get("comisiones", 0.0)
@@ -194,6 +226,9 @@ def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
 
     # 9. MORATORIOS
     crear_hoja_detalle("Moratorios", "MORATORIOS")
+
+    # 10. TRANSACCIONES SOSPECHOSAS (PROPIAS)
+    crear_hoja_detalle("Transacciones Sospechosas", "SOSPECHOSA_PROPIA")
 
     # ==========================================
     # 10. RESUMEN GENERAL
