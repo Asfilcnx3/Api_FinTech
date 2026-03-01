@@ -2,6 +2,7 @@ import fitz  # PyMuPDF
 import logging
 import re
 from typing import Dict, List, Tuple, Any
+from ..core.exceptions import PDFCifradoError
 
 logger = logging.getLogger(__name__)
 
@@ -139,7 +140,6 @@ class MotorCaratulas:
         """
         Escanea el PDF para extraer el texto crudo por página y detectar 
         dónde empiezan y terminan las cuentas (Rangos).
-        Migrado desde: pdf_processor.py -> detectar_rangos_y_texto
         """
         texto_por_pagina = {}
         rangos_detectados = []
@@ -147,6 +147,12 @@ class MotorCaratulas:
         
         try:
             with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+                # 1. VERIFICACIÓN DE CIFRADO INMEDIATA ANTES DE LEER
+                if doc.needs_pass or doc.is_encrypted:
+                    # Intenta con contraseña vacía, a veces los PDFs vienen protegidos contra edición pero no lectura
+                    if not doc.authenticate(""): 
+                        raise PDFCifradoError("El documento está protegido con contraseña.")
+
                 total_paginas = len(doc)
                 
                 for page_index, page in enumerate(doc):
@@ -178,8 +184,16 @@ class MotorCaratulas:
                             rangos_detectados.append((inicio_actual, total_paginas))
                             inicio_actual = None
 
+        except PDFCifradoError as e:
+            logger.warning(f"[MotorCaratulas] Abortando análisis: {e}")
+            raise e  # Lanzar el error hacia el processing_service
+
         except Exception as e:
             logger.error(f"[MotorCaratulas] Error detectando rangos: {e}")
+            # Si el error genérico es de cifrado de PyMuPDF, lo transformamos y lo lanzamos
+            if "encrypted" in str(e).lower() or "password" in str(e).lower():
+                raise PDFCifradoError("El documento está protegido con contraseña.")
+            raise e #  No tragar otras excepciones críticas
 
         # Fallback si no hay rangos
         if not rangos_detectados:

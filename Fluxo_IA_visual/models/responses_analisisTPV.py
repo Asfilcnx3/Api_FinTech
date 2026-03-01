@@ -44,6 +44,7 @@ class AnalisisTPV:
         total_moratorios: Optional[float] = None
         entradas_TPV_bruto: Optional[float] = None
         entradas_TPV_neto: Optional[float] = None
+        total_sospechosas: Optional[float] = None
 
     class ResultadoExtraccion(BaseModel):
         """Representa la respuesta para los documentos individuales -> Caratula + Resultados TPV."""

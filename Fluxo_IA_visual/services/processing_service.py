@@ -136,11 +136,20 @@ class ProcessingService:
             # Manejo de Errores de Etapa 1
             if isinstance(resultado_bruto, Exception):
                 error_msg = str(resultado_bruto)
+                banco_error = "ERROR_LECTURA"
+                
                 if isinstance(resultado_bruto, PDFCifradoError):
                     error_msg = "Documento protegido con contraseña."
+                    banco_error = "ERROR_CIFRADO"
+                
+                # Inyectamos el AnalisisIA dummy para que no se pierda en el reporte
+                ia_dummy = AnalisisTPV.ResultadoAnalisisIA(
+                    banco=banco_error,
+                    nombre_archivo_virtual=filename
+                )
                 
                 resultados_finales[i] = AnalisisTPV.ResultadoExtraccion(
-                    AnalisisIA=None, 
+                    AnalisisIA=ia_dummy, 
                     DetalleTransacciones=AnalisisTPV.ErrorRespuesta(error=error_msg)
                 )
                 continue
@@ -381,9 +390,12 @@ class ProcessingService:
                 
                 # --- CASO 1: EXCEPCIÓN ---
                 if isinstance(res, Exception):
-                    # CORRECCIÓN AQUÍ: Usar ResultadoAnalisisIA
+                    nombre_arch = contexto.get("filename", str(contexto.get("file_path", "Desconocido")))
                     res_model = AnalisisTPV.ResultadoExtraccion(
-                        AnalisisIA=AnalisisTPV.ResultadoAnalisisIA(banco="ERROR_PROCESAMIENTO"),
+                        AnalisisIA=AnalisisTPV.ResultadoAnalisisIA(
+                            banco="ERROR_PROCESAMIENTO",
+                            nombre_archivo_virtual=nombre_arch
+                        ),
                         DetalleTransacciones=AnalisisTPV.ErrorRespuesta(error=str(res))
                     )
                     # Inyectar contexto
@@ -549,7 +561,8 @@ class ProcessingService:
             transacciones=transacciones,
             banco=banco_actual,
             funcion_ia_clasificadora=clasificar_lote_con_ia,
-            batch_size=BATCH_SIZE
+            batch_size=BATCH_SIZE,
+            nombre_cliente=resultado_doc.AnalisisIA.nombre_cliente or ""
         )
 
         # --- INYECCIÓN DE RESULTADOS AL OBJETO PADRE ---
@@ -569,3 +582,4 @@ class ProcessingService:
             comisiones = 0.0
             
         analisis_ia.entradas_TPV_neto = totales.get("TPV", 0.0) - comisiones
+        analisis_ia.total_sospechosas = totales.get("SOSPECHOSA_PROPIA", 0.0)
