@@ -153,7 +153,8 @@ class PrequalificationService:
 
             ciec_info=PrequalificationResponse.CredentialInfo(
                 status=ciec_data["status"],
-                last_check_date=ciec_data["date"]
+                last_check_date=ciec_data["date"],
+                last_extraction_date=ciec_data.get("last_extraction_date")
             ),
             buro_info=PrequalificationResponse.BuroInfo(
                 has_report=buro_data["has_report"],
@@ -162,6 +163,8 @@ class PrequalificationService:
                 last_check_date=buro_data["date"],
                 credit_lines=buro_data["credit_lines"], 
                 inquiries=buro_data["inquiries"],
+                inquiries_summary=buro_data.get("inquiries_summary", []),
+                summary_metrics=buro_data.get("summary_metrics"),
                 raw_buro_data=buro_data.get("raw_buro_data", {})    
             ),  
             compliance_opinion=PrequalificationResponse.CredentialInfo(

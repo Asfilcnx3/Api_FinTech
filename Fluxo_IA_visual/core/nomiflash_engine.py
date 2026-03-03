@@ -96,7 +96,9 @@ class NomiFlashEngine:
             # ====================================================
             # Extracción de texto crudo para regex (Rápido y barato)
             texto_inicial = extraer_texto_de_pdf(pdf_bytes, num_paginas=2)
+            logger.info(f"Debug para el texto inicial: {texto_inicial[:500]}")
             tipo_regex = "nomina" if "nomina" in tipo_doc else tipo_doc
+            logger.info(f"Debug para el tipo regex: {tipo_regex}")
             rfc_regex, curp_regex = extraer_rfc_curp_por_texto(texto_inicial, tipo_regex)
             
             # Preparación de imágenes para IA

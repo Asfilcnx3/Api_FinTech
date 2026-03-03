@@ -296,6 +296,8 @@ class SyntageClient:
                     raw_status = item.get("status")
                     result["status"] = "active" if raw_status == "valid" else "inactive"
                     result["date"] = item.get("createdAt")
+                    # Sacamos la fecha de la última extracción real sincronizada
+                    result["last_extraction_date"] = item.get("updatedAt") 
                 else:
                     result["status"] = "not_found"
         except Exception as e:
@@ -314,7 +316,8 @@ class SyntageClient:
             "score": None, 
             "date": None,
             "credit_lines": [],
-            "inquiries": []
+            "inquiries": [],
+            "inquiries_summary": []
         }
         
         if not entity_id:
@@ -393,50 +396,236 @@ class SyntageClient:
                         # --- PROCESAMIENTO UNIFICADO ---
                         
                         # A. LÍNEAS DE CRÉDITO
+                        temp_lines = []
+                        total_vigente = 0.0
+
+                        # Contadores de cubetas de morosidad
+                        sum_1_29 = sum_30_59 = sum_60_89 = sum_90_119 = sum_120_179 = sum_180_plus = 0.0
+                        
+                        # PASADA 1: Extraer datos crudos
+                        from datetime import datetime, timedelta
+                        
                         for c in raw_cuentas:
-                            # Mapeo de campos (Prioridad Persona -> Prioridad Empresa)
-                            
-                            # Institución
                             inst = c.get("nombreOtorgante") or c.get("tipoUsuario") or "N/A"
-                            
-                            # Tipo Contrato
-                            # Obtenemos el código numérico en string
                             tipo_codigo = str(c.get("tipoContrato") or c.get("tipoCredito") or "N/A")
-                            # Buscamos en el catálogo, si no está dejamos el código original
                             tipo_desc = CATALOGO_TIPOS_CREDITO.get(tipo_codigo, tipo_codigo)
                             
-                            # Límite (Puede ser limiteCredito, creditoMaximo, o creditoMaximoUtilizado)
-                            limite = (c.get("limiteCredito") or 
-                                    c.get("creditoMaximo") or 
-                                    c.get("creditoMaximoUtilizado"))
+                            limite = c.get("limiteCredito") or c.get("creditoMaximo") or c.get("creditoMaximoUtilizado")
+                            saldo_vigente = self._parse_buro_amount(c.get("saldoActual") or c.get("saldoVigente"))
+                            total_vigente += saldo_vigente
                             
-                            # Fechas
                             apertura = c.get("fechaAperturaCuenta") or c.get("apertura")
-                            ultimo_pago = c.get("fechaUltimoPago") # Suele llamarse igual
+                            ultimo_pago = c.get("fechaUltimoPago")
+                            cierre = c.get("fechaCierre")
                             
-                            # Saldo Vencido (Empresas lo tienen desglosado, calculamos suma si no existe total)
+                            actualizacion_raw = c.get("ultimoPeriodoActualizado") or c.get("fechaReporte") or c.get("fechaActualizacion") or c.get("actualizacion")
+                            actualizacion_parsed = "N/A"
+                            if actualizacion_raw:
+                                s_act = str(actualizacion_raw).strip()
+                                if len(s_act) == 6 and s_act.isdigit():
+                                    actualizacion_parsed = f"{s_act[:4]}-{s_act[4:6]}-01"
+                                else:
+                                    actualizacion_parsed = self._parse_buro_date(s_act)
+
+                            # --- MODIFICACIÓN AQUÍ ---
+                            v_1_29 = self._parse_buro_amount(c.get("saldoVencidoDe1a29Dias"))
+                            v_30_59 = self._parse_buro_amount(c.get("saldoVencidoDe30a59Dias"))
+                            v_60_89 = self._parse_buro_amount(c.get("saldoVencidoDe60a89Dias"))
+                            v_90_119 = self._parse_buro_amount(c.get("saldoVencidoDe90a119Dias"))
+                            v_120_179 = self._parse_buro_amount(c.get("saldoVencidoDe120a179Dias"))
+                            v_180_plus = self._parse_buro_amount(c.get("saldoVencidoDe180DiasOMas"))
+                            
+                            # Sumamos a los totales globales
+                            sum_1_29 += v_1_29
+                            sum_30_59 += v_30_59
+                            sum_60_89 += v_60_89
+                            sum_90_119 += v_90_119
+                            sum_120_179 += v_120_179
+                            sum_180_plus += v_180_plus
+                            
                             saldo_vencido = c.get("saldoVencido")
                             if saldo_vencido is None:
-                                # Sumar buckets de empresa (1-29, 30-59, etc.)
-                                s1 = self._parse_buro_amount(c.get("saldoVencidoDe1a29Dias"))
-                                s2 = self._parse_buro_amount(c.get("saldoVencidoDe30a59Dias"))
-                                s3 = self._parse_buro_amount(c.get("saldoVencidoDe60a89Dias"))
-                                s4 = self._parse_buro_amount(c.get("saldoVencidoDe90a119Dias"))
-                                s5 = self._parse_buro_amount(c.get("saldoVencidoDe120a179Dias"))
-                                s6 = self._parse_buro_amount(c.get("saldoVencidoDe180DiasOMas"))
-                                saldo_vencido = s1 + s2 + s3 + s4 + s5 + s6
+                                saldo_vencido = sum([
+                                    self._parse_buro_amount(c.get(f)) for f in [
+                                        "saldoVencidoDe1a29Dias", "saldoVencidoDe30a59Dias", "saldoVencidoDe60a89Dias",
+                                        "saldoVencidoDe90a119Dias", "saldoVencidoDe120a179Dias", "saldoVencidoDe180DiasOMas"
+                                    ]
+                                ])
 
-                            result["credit_lines"].append({
+                            hist_pagos = str(c.get("historicoPagos") or "")
+                            mop_lc = hist_pagos.count("LC")
+                            temp_hist = hist_pagos.replace("LC", "")
+                            
+                            breakdown = {f"mop_{k}": temp_hist.count(k) for k in "123456790U-"}
+                            breakdown["mop_nd"] = breakdown.pop("mop_-")
+                            breakdown["mop_lc"] = mop_lc
+
+                            # Nuevos campos crudos
+                            moneda_raw = c.get("moneda", "")
+                            moneda_str = "MXN" if moneda_raw == "001" else moneda_raw
+                            plazo_dias = int(c.get("plazo") or 0)
+                            
+                            apertura_parsed = self._parse_buro_date(apertura)
+                            
+                            # Cálculo de Fecha Final
+                            fecha_final = None
+                            if apertura_parsed and plazo_dias > 0:
+                                try:
+                                    dt_apertura = datetime.strptime(apertura_parsed, "%Y-%m-%d")
+                                    dt_final = dt_apertura + timedelta(days=plazo_dias)
+                                    fecha_final = dt_final.strftime("%Y-%m-%d")
+                                except:
+                                    pass
+
+                            temp_lines.append({
                                 "institution": inst,
                                 "account_type": tipo_desc,
                                 "credit_limit": self._parse_buro_amount(limite),
-                                "current_balance": self._parse_buro_amount(c.get("saldoActual") or c.get("saldoVigente")),
+                                "current_balance": saldo_vigente,
                                 "past_due_balance": self._parse_buro_amount(saldo_vencido),
                                 "payment_frequency": c.get("frecuenciaPagos", "N/A"),
-                                "opening_date": self._parse_buro_date(apertura),
+                                "opening_date": apertura_parsed,
                                 "last_payment_date": self._parse_buro_date(ultimo_pago),
-                                "payment_history": c.get("historicoPagos", "")
+                                "payment_history": hist_pagos,
+                                "update_date": actualizacion_parsed,
+                                "mop_breakdown": breakdown,
+                                "account_number": c.get("numeroCuenta") or "",
+                                "user_type": c.get("tipoUsuario") or inst,
+                                "closing_date": self._parse_buro_date(cierre),
+                                "term_days": plazo_dias,
+                                "currency": moneda_str,
+                                "exchange_rate": float(c.get("tipoCambio") or 1.0),
+                                "max_delay": int(c.get("atrasoMayor") or 0),
+                                "initial_balance": self._parse_buro_amount(c.get("saldoInicial")),
+                                "final_date": fecha_final
                             })
+
+                        # PASADA 2: Calcular Ponderaciones y Pagos Mensuales
+                        # Obtenemos FechaConsulta (C1 en Excel) en lugar de datetime.now()
+                        report_date = datetime.now() 
+                        if "encabezado" in data_node and "fechaConsulta" in data_node["encabezado"]:
+                            fc_raw = str(data_node["encabezado"]["fechaConsulta"]).strip()
+                            try:
+                                if "-" in fc_raw:
+                                    report_date = datetime.strptime(fc_raw[:10], "%Y-%m-%d")
+                                elif len(fc_raw) == 8 and fc_raw.isdigit():
+                                    report_date = datetime.strptime(fc_raw, "%d%m%Y")
+                            except: pass
+
+                        datos_generales = data_node.get("datosGenerales", {})
+                        logger.info(f"Debug de datos generales: {datos_generales}")
+                        if datos_generales:
+                            def calculate_inquiry_block(keys_list):
+                                v_mas24 = int(datos_generales.get(keys_list[0]) or 0)
+                                v_24m = int(datos_generales.get(keys_list[1]) or 0)
+                                v_12m = int(datos_generales.get(keys_list[2]) or 0)
+                                v_3m = int(datos_generales.get(keys_list[3]) or 0)
+
+                                avg_24m = v_24m / 24.0
+                                avg_12m = v_12m / 12.0
+                                avg_3m = v_3m / 3.0
+
+                                growth_12_vs_24 = (avg_12m / avg_24m - 1) if avg_24m > 0 else 0.0
+                                growth_3_vs_12 = (avg_3m / avg_12m - 1) if avg_12m > 0 else 0.0
+
+                                return [
+                                    {"concept": keys_list[0], "quantity": v_mas24, "equivalent_months": None, "monthly_average": None, "growth_vs_previous": None},
+                                    {"concept": keys_list[1], "quantity": v_24m, "equivalent_months": 24, "monthly_average": round(avg_24m, 2), "growth_vs_previous": None},
+                                    {"concept": keys_list[2], "quantity": v_12m, "equivalent_months": 12, "monthly_average": round(avg_12m, 2), "growth_vs_previous": round(growth_12_vs_24, 4)},
+                                    {"concept": keys_list[3], "quantity": v_3m, "equivalent_months": 3, "monthly_average": round(avg_3m, 2), "growth_vs_previous": round(growth_3_vs_12, 4)}
+                                ]
+
+                            comercial_keys = [
+                                "consultaEmpresaComercialMas24Meses", "consultaEmpresaComercialUltimos24Meses",
+                                "consultaEmpresaComercialUltimos12Meses", "consultaEmpresaComercialUltimos3Meses"
+                            ]
+                            financiera_keys = [
+                                "consultaEntidadFinancieraMas24Meses", "consultaEntidadFinancieraUltimos24Meses",
+                                "consultaEntidadFinancieraUltimos12Meses", "consultaEntidadFinancieraUltimos3Meses"
+                            ]
+
+                            result["inquiries_summary"].extend(calculate_inquiry_block(comercial_keys))
+                            result["inquiries_summary"].extend(calculate_inquiry_block(financiera_keys))
+                            logger.info(f"Debug_Resultados: {result["inquiries_summary"]}")
+
+                        for line in temp_lines:
+                            vigente = line["current_balance"]
+                            
+                            # Ponderación 1 (%) -> =+T3/$T$1
+                            weight_1 = (vigente / total_vigente) if total_vigente > 0 else 0.0
+                            line["weighting_pct"] = weight_1
+                            
+                            # Plazo Restante -> =IF(H3+N3<$C$1,0,N3-($C$1-H3))
+                            restante_dias = 0
+                            if line["final_date"]:
+                                try:
+                                    dt_final = datetime.strptime(line["final_date"], "%Y-%m-%d")
+                                    if dt_final >= report_date:
+                                        restante_dias = (dt_final - report_date).days
+                                except: pass
+                            line["remaining_term_days"] = restante_dias
+                            
+                            # Ponderación 2 -> =MROUND(U3*V3, 1)
+                            # Equivalente matemático: redondear a 0 decimales
+                            line["weighting_days"] = float(round(weight_1 * restante_dias, 0))
+                            
+                            # Pago Mensual -> =IF(T3>0,IF(AND(V3=0,T3>0),T3,IF(V3<30.4,T3,T3/(V3/30.4))),0)
+                            if vigente > 0:
+                                if restante_dias == 0 or restante_dias < 30.4:
+                                    line["monthly_payment"] = vigente
+                                else:
+                                    line["monthly_payment"] = vigente / (restante_dias / 30.4)
+                            else:
+                                line["monthly_payment"] = 0.0
+                                
+                            result["credit_lines"].append(line)
+                        
+                        # --- CONSTRUCCIÓN DEL SUMMARY METRICS ---
+                        # Evaluamos "None", "N/A" o vacío en lugar de un booleano simple
+                        sum_saldo_inicial_activo = sum(
+                            l["initial_balance"] for l in temp_lines 
+                            if str(l.get("closing_date")).strip() in ["None", "N/A", ""]
+                        )
+                        sum_saldo_vencido = sum(l["past_due_balance"] for l in temp_lines)
+                        sum_pond_2 = sum(l["weighting_days"] for l in temp_lines)
+                        pond_2_years = round(sum_pond_2 / 360, 2) if sum_pond_2 > 0 else 0.0
+                        sum_pago_mensual = sum(l["monthly_payment"] for l in temp_lines)
+                        pago_anual = (total_vigente / pond_2_years) if pond_2_years > 0 else 0.0
+                        pago_mensual_2 = pago_anual / 12
+                        
+                        # Encontrar la tendencia del 71% de la lista que ya calculamos
+                        trend_pct = 0.0
+                        for r in result["inquiries_summary"]:
+                            if r["concept"] == "consultaEntidadFinancieraUltimos3Meses":
+                                trend_pct = r["growth_vs_previous"] or 0.0
+                                break
+                                
+                        if trend_pct > 0: trend_text = "Han ido aumentando sus consultas"
+                        elif trend_pct < 0: trend_text = "Han ido disminuyendo sus consultas"
+                        else: trend_text = "Estables"
+
+                        def make_bucket(amt):
+                            return {
+                                "amount": amt,
+                                "percentage": round(amt / total_vigente, 4) if total_vigente > 0 else 0.0
+                            }
+
+                        result["summary_metrics"] = {
+                            "inquiries_trend_text": trend_text,
+                            "inquiries_trend_pct": trend_pct,
+                            "total_open_max_amount": sum_saldo_inicial_activo,
+                            "total_current_balance": total_vigente,
+                            "total_past_due": sum_saldo_vencido,
+                            "monthly_payment_1": sum_pago_mensual,
+                            "monthly_payment_2": pago_mensual_2,
+                            "weighted_term_years": pond_2_years,
+                            "bucket_1_29": make_bucket(sum_1_29),
+                            "bucket_30_59": make_bucket(sum_30_59),
+                            "bucket_60_89": make_bucket(sum_60_89),
+                            "bucket_90_119": make_bucket(sum_90_119),
+                            "bucket_120_179": make_bucket(sum_120_179),
+                            "bucket_180_plus": make_bucket(sum_180_plus)
+                        }
 
                         # B. CONSULTAS
                         for cons in raw_consultas:
