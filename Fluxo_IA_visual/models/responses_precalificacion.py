@@ -8,6 +8,21 @@ class PrequalificationResponse(BaseModel):
     class CredentialInfo(BaseModel):
         status: str # "active", "inactive", "not_found", "positive", "negative"
         last_check_date: Optional[str] = None # "YYYY-MM-DD" o ISO format
+        last_extraction_date: Optional[str] = None
+    
+    class MopBreakdown(BaseModel):
+        mop_1: int = 0
+        mop_2: int = 0
+        mop_3: int = 0
+        mop_4: int = 0
+        mop_5: int = 0
+        mop_6: int = 0
+        mop_7: int = 0
+        mop_9: int = 0
+        mop_0: int = 0
+        mop_u: int = 0
+        mop_nd: int = 0  # Para el guión "-"
+        mop_lc: int = 0
     
     class BuroCreditLine(BaseModel):
         """
@@ -25,6 +40,25 @@ class PrequalificationResponse(BaseModel):
         opening_date: Optional[str] # fechaAperturaCuenta
         last_payment_date: Optional[str] # fechaUltimoPago
         payment_history: str   # historicoPagos (ej. "111000")
+        update_date: Optional[str] = None # Para el Último Periodo Actualizado
+        mop_breakdown: Optional["PrequalificationResponse.MopBreakdown"] = None
+        
+        # --- CAMPOS CRUDOS ---
+        account_number: str = ""
+        user_type: str = ""
+        closing_date: Optional[str] = None
+        term_days: int = 0
+        currency: str = "MXN"
+        exchange_rate: float = 1.0
+        max_delay: int = 0
+        initial_balance: float = 0.0
+        
+        # --- CAMPOS CALCULADOS ---
+        weighting_pct: float = 0.0          # Ponderación 1 (%)
+        remaining_term_days: int = 0        # Plazo Restante
+        weighting_days: float = 0.0         # Ponderación 2 (Plazo Restante * Ponderacion 1)
+        final_date: Optional[str] = None    # Fecha Final
+        monthly_payment: float = 0.0        # Pago Mensual
 
     class BuroInquiry(BaseModel):
         """
@@ -37,6 +71,35 @@ class PrequalificationResponse(BaseModel):
         inquiry_date: str      # fechaConsulta
         contract_type: str     # tipoContrato (ej. CC, CL)
         amount: float          # importeContrato
+    
+    class InquirySummaryRow(BaseModel):
+        concept: str
+        quantity: int
+        equivalent_months: Optional[int] = None
+        monthly_average: Optional[float] = None
+        growth_vs_previous: Optional[float] = None
+    
+    class BuroBucket(BaseModel):
+        amount: float
+        percentage: float
+
+    class BuroSummaryMetrics(BaseModel):
+        inquiries_trend_text: str
+        inquiries_trend_pct: float
+        
+        total_open_max_amount: float
+        total_current_balance: float
+        total_past_due: float
+        monthly_payment_1: float
+        monthly_payment_2: float
+        weighted_term_years: float
+        
+        bucket_1_29: "PrequalificationResponse.BuroBucket"
+        bucket_30_59: "PrequalificationResponse.BuroBucket"
+        bucket_60_89: "PrequalificationResponse.BuroBucket"
+        bucket_90_119: "PrequalificationResponse.BuroBucket"
+        bucket_120_179: "PrequalificationResponse.BuroBucket"
+        bucket_180_plus: "PrequalificationResponse.BuroBucket"
 
     class BuroInfo(BaseModel):
         has_report: bool
@@ -47,6 +110,10 @@ class PrequalificationResponse(BaseModel):
         # Detalles del reporte
         credit_lines: List["PrequalificationResponse.BuroCreditLine"] = []
         inquiries: List["PrequalificationResponse.BuroInquiry"] = []
+
+        # --- RESUMEN MATEMÁTICO ---
+        inquiries_summary: List["PrequalificationResponse.InquirySummaryRow"] = []
+        summary_metrics: Optional["PrequalificationResponse.BuroSummaryMetrics"] = None
         
         # --- CONTENEDOR PARA VOLCADO TOTAL ---
         raw_buro_data: Dict[str, Any] = {}

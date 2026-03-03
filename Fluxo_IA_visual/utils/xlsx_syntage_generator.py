@@ -47,7 +47,7 @@ def generar_excel_syntage(data: dict) -> bytes:
     ws1.append(["Razón Social", data.get("business_name", "N/A"), "Antigüedad SAT", antiguedad_str])
     ws1.append(["RFC", data.get("rfc", "N/A"), "", ""]) # Merge visual opcional
 
-    # 2. Credenciales (CELDA PARTIDA SOLICITADA)
+    # 2. Credenciales
     ws1.append([])
     ws1.append(["ESTATUS DE CREDENCIALES"])
     ws1.merge_cells('A5:D5')
@@ -60,9 +60,19 @@ def generar_excel_syntage(data: dict) -> bytes:
     # Formato solicitado: Col A: Nombre, Col B: Estatus, Col C: Label Extra, Col D: Valor Extra
     ws1.append(["Credencial", "Estatus", "Detalle / Fecha", "Valor / Score"])
     estilo_header(ws1, 6, 1, 4)
+
+    def format_ciec_date(date_str):
+        if not date_str: return ""
+        try:
+            d = datetime.fromisoformat(str(date_str).replace("Z", "").split(".")[0])
+            return f"{d.month}/{d.day}/{d.year}"
+        except:
+            return date_str
     
     # Fila CIEC
     ws1.append(["CIEC", ciec.get("status"), "Última Rev:", ciec.get("last_check_date")])
+    # Fila Ultima extracción
+    ws1.append(["CIEC última extracción", ciec.get("status"), "última extracción", format_ciec_date(ciec.get("last_extraction_date"))])
     # Fila Opinión
     ws1.append(["Opinión Cumpl.", opinion.get("status"), "Última Rev:", opinion.get("last_check_date")])
     # Fila Buró (Split Solicitado)
@@ -71,8 +81,12 @@ def generar_excel_syntage(data: dict) -> bytes:
     # 3. Riesgos
     ws1.append([])
     ws1.append(["INDICADORES DE RIESGO"])
-    ws1.merge_cells('A11:D11')
-    estilo_header(ws1, 11, 1, 4)
+    
+    # Hacemos que la mezcla de celdas y el estilo sean 100% dinámicos
+    fila_actual = ws1.max_row
+    ws1.merge_cells(f'A{fila_actual}:D{fila_actual}')
+    estilo_header(ws1, fila_actual, 1, 4)
+    
     ws1.append(["Indicador", "Valor", "Riesgoso", ""])
     
     risks = data.get("risk_indicators", [])
@@ -85,7 +99,7 @@ def generar_excel_syntage(data: dict) -> bytes:
                 if v.get("risky"):
                     ws1.cell(row=ws1.max_row, column=3).fill = alert_fill
 
-    # 4. Actividades Económicas (NUEVO)
+    # 4. Actividades Económicas
     ws1.append([])
     ws1.append(["ACTIVIDADES ECONÓMICAS"])
     ws1.merge_cells(f'A{ws1.max_row}:D{ws1.max_row}')
@@ -103,6 +117,71 @@ def generar_excel_syntage(data: dict) -> bytes:
     ws1.column_dimensions['B'].width = 20
     ws1.column_dimensions['C'].width = 20
     ws1.column_dimensions['D'].width = 20
+
+    # 5. Resumen Financiero de Buró 
+    summary = buro.get("summary_metrics")
+    if summary:
+        ws1.append([])
+        ws1.append(["RESUMEN DE BURÓ"])
+        ws1.merge_cells(f'A{ws1.max_row}:D{ws1.max_row}')
+        estilo_header(ws1, ws1.max_row, 1, 4)
+
+        # A. Tendencia de Consultas (Imprime solo el escenario real)
+        trend_pct = summary.get("inquiries_trend_pct", 0.0)
+        
+        if trend_pct > 0:
+            ws1.append(["", "Han ido aumentando sus consultas", trend_pct, ""])
+            ws1.cell(row=ws1.max_row, column=3).style = percent_style
+        elif trend_pct < 0:
+            ws1.append(["", "Han ido disminuyendo sus consultas", trend_pct, ""])
+            ws1.cell(row=ws1.max_row, column=3).style = percent_style
+        else:
+            ws1.append(["", "Estables", "0%", ""])
+            
+        ws1.append([])
+        
+        # B. Métricas Globales
+        metricas_globales = [
+            ("Monto Máximo Abierto", summary.get("total_open_max_amount", 0.0), currency_style),
+            ("Saldo Vigente", summary.get("total_current_balance", 0.0), currency_style),
+            ("Saldo Vencido Total", summary.get("total_past_due", 0.0), currency_style),
+            ("Pago Mensual 1", summary.get("monthly_payment_1", 0.0), currency_style),
+            ("Pago Mensual 2", summary.get("monthly_payment_2", 0.0), currency_style),
+            ("Plazo Ponderado (años)", summary.get("weighted_term_years", 0.0), '0.00')
+        ]
+        
+        for titulo, valor, estilo in metricas_globales:
+            ws1.append([titulo, valor, "", ""])
+            celda_valor = ws1.cell(row=ws1.max_row, column=2)
+            if isinstance(estilo, str): 
+                celda_valor.number_format = estilo
+            else:
+                celda_valor.style = estilo
+
+        ws1.append([])
+        
+        # C. Cubetas de Morosidad (Buckets)
+        def print_bucket(label, key):
+            b_data = summary.get(key, {})
+            amt = b_data.get("amount", 0.0)
+            pct = b_data.get("percentage", 0.0)
+            
+            # Si es cero, ponemos un guión para que se vea limpio
+            val_str = amt if amt > 0 else "-"
+            ws1.append([label, val_str, pct if amt > 0 else "", ""])
+            
+            if amt > 0:
+                ws1.cell(row=ws1.max_row, column=2).style = currency_style
+                ws1.cell(row=ws1.max_row, column=3).style = percent_style
+            else:
+                ws1.cell(row=ws1.max_row, column=2).alignment = Alignment(horizontal='right')
+
+        print_bucket("saldoVencidoDe1a29Dias", "bucket_1_29")
+        print_bucket("saldoVencidoDe30a59Dias", "bucket_30_59")
+        print_bucket("saldoVencidoDe60a89Dias", "bucket_60_89")
+        print_bucket("saldoVencidoDe90a119Dias", "bucket_90_119")
+        print_bucket("saldoVencidoDe120a179Dias", "bucket_120_179")
+        print_bucket("saldoVencidoDe180DiasOMas", "bucket_180_plus")
 
     # ==========================================
     # HOJA 2: FACTURACIÓN EN EL TIEMPO (RENOVADA)
@@ -502,7 +581,7 @@ def generar_excel_syntage(data: dict) -> bytes:
     buro_info = data.get("buro_info", {})
     
     # ---------------------------------------------------------
-    # FIX: Extraemos la data correcta sin importar qué nivel de anidación tenga
+    # Extraemos la data correcta sin importar qué nivel de anidación tenga
     # ---------------------------------------------------------
     raw_buro_container = buro_info.get("raw_buro_data", {})
     
@@ -558,11 +637,83 @@ def generar_excel_syntage(data: dict) -> bytes:
         ws.append([""]) # Separador
 
     # ---------------------------------------------------------
-    # 1. DATOS GENERALES Y ENCABEZADO
+    # 1. DATOS GENERALES, CONSULTAS Y ENCABEZADO
     # ---------------------------------------------------------
-    build_kv_table(ws4, "ENCABEZADO / METADATOS", raw_buro.get("encabezado", {}))
-    build_kv_table(ws4, "DATOS GENERALES (EMPRESA)", raw_buro.get("datosGenerales", {}))
+    encabezado = raw_buro.get("encabezado", {})
     
+    def format_buro_header_date(date_str):
+        if not date_str: return ""
+        d_str = str(date_str).strip()
+        try:
+            if "-" in d_str:
+                d = datetime.strptime(d_str[:10], "%Y-%m-%d")
+            elif len(d_str) == 8 and d_str.isdigit():
+                d = datetime.strptime(d_str, "%d%m%Y")
+            else:
+                return d_str
+            return f"{d.month}/{d.day}/{d.year}"
+        except Exception:
+            return d_str
+
+    if "fechaConsulta" in encabezado:
+        encabezado["fechaConsulta"] = format_buro_header_date(encabezado["fechaConsulta"])
+
+    # 1. PINTAR ENCABEZADO
+    build_kv_table(ws4, "ENCABEZADO / METADATOS", encabezado)
+    
+    # 2. PINTAR TABLA DE RESUMEN DE CONSULTAS (JUSTO EN MEDIO)
+    inquiries_summary = buro_info.get("inquiries_summary", [])
+    if inquiries_summary:
+        ws4.append(["RESUMEN DE CONSULTAS (BÚSQUEDA DE CRÉDITO)"])
+        ws4.merge_cells(start_row=ws4.max_row, start_column=1, end_row=ws4.max_row, end_column=5)
+        estilo_header(ws4, ws4.max_row, 1, 5)
+        
+        headers_consultas = ["Concepto", "Cantidad", "Equivalente Meses", "Promedio Mensual", "Aumento vs Periodo Anterior"]
+        ws4.append(headers_consultas)
+        sub_head_row = ws4.max_row
+        for col in range(1, 6):
+            cell = ws4.cell(row=sub_head_row, column=col)
+            cell.font = header_font
+            cell.fill = sub_header_fill
+            cell.alignment = Alignment(horizontal='center')
+            
+        for row in inquiries_summary:
+            eq_months = row.get("equivalent_months")
+            avg_month = row.get("monthly_average")
+            growth = row.get("growth_vs_previous")
+            
+            ws4.append([
+                row.get("concept"),
+                row.get("quantity"),
+                eq_months if eq_months is not None else "",
+                avg_month if avg_month is not None else "",
+                growth if growth is not None else ""
+            ])
+            
+            curr_row = ws4.max_row
+            if avg_month is not None:
+                ws4.cell(row=curr_row, column=4).number_format = '0.0'
+            if growth is not None:
+                ws4.cell(row=curr_row, column=5).style = percent_style
+                
+        ws4.append([""]) # Fila separadora visual
+        
+    # 3. PINTAR DATOS GENERALES (EMPRESA) LIMPIOS (SIN DUPLICAR CONSULTAS)
+    consultas_keys = [
+        "consultaEmpresaComercialMas24Meses", "consultaEmpresaComercialUltimos24Meses",
+        "consultaEmpresaComercialUltimos12Meses", "consultaEmpresaComercialUltimos3Meses",
+        "consultaEntidadFinancieraMas24Meses", "consultaEntidadFinancieraUltimos24Meses",
+        "consultaEntidadFinancieraUltimos12Meses", "consultaEntidadFinancieraUltimos3Meses"
+    ]
+    datos_generales_raw = raw_buro.get("datosGenerales", {})
+    datos_generales_limpios = {k: v for k, v in datos_generales_raw.items() if k not in consultas_keys}
+    build_kv_table(ws4, "DATOS GENERALES (EMPRESA)", datos_generales_limpios)
+
+
+    # ---------------------------------------------------------
+    # 2. SCORES DETALLADOS
+    # ---------------------------------------------------------
+
     # Manejo si es Persona Física (PF)
     persona_node = raw_buro.get("persona", {})
     if not persona_node and "respuesta" in raw_buro:
@@ -583,10 +734,7 @@ def generar_excel_syntage(data: dict) -> bytes:
             ("Empresa", "nombreEmpresa"), ("Puesto", "puesto"), ("Salario", "salario"),
             ("Calle", "direccion1"), ("Colonia", "coloniaPoblacion"), ("Estado", "estado")
         ])
-
-    # ---------------------------------------------------------
-    # 2. SCORES DETALLADOS
-    # ---------------------------------------------------------
+    
     score_list = raw_buro.get("score", [])
     if not score_list and "scoreBuroCredito" in persona_node:
         score_list = persona_node["scoreBuroCredito"]
@@ -622,23 +770,102 @@ def generar_excel_syntage(data: dict) -> bytes:
     ])
 
     # ---------------------------------------------------------
-    # 6. LÍNEAS DE CRÉDITO PROCESADAS
+    # 6. DESGLOSE COMPLETO DE CRÉDITO Y MOP
     # ---------------------------------------------------------
-    ws4.append(["LÍNEAS DE CRÉDITO ACTIVAS E HISTÓRICAS"])
-    ws4.merge_cells(start_row=ws4.max_row, start_column=1, end_row=ws4.max_row, end_column=9)
-    estilo_header(ws4, ws4.max_row, 1, 9)
+    ws4.append(["DESGLOSE DETALLADO DE CRÉDITOS"])
+    ws4.merge_cells(start_row=ws4.max_row, start_column=1, end_row=ws4.max_row, end_column=32)
+    estilo_header(ws4, ws4.max_row, 1, 32)
     
-    headers_lines = [
-        "Institución", "Tipo Cuenta", "Límite Crédito", "Saldo Actual", 
-        "Saldo Vencido", "Frecuencia Pago", "Fecha Apertura", "Último Pago", "Histórico Pagos"
+    lines = buro_info.get("credit_lines", [])
+    
+    # --- LÓGICA DE AGREGACIÓN PARA EL ENCABEZADO SUPERIOR ---
+    # SUMIFS(S3:S25,M3:M25,"") -> Sumar saldo inicial si no hay fecha de cierre (evitando el string "None")
+    sum_saldo_inicial_activo = sum(
+        l.get("initial_balance", 0) for l in lines 
+        if str(l.get("closing_date")).strip() in ["None", "N/A", ""]
+    )
+    # SUM(T)
+    sum_saldo_vigente = sum(l.get("current_balance", 0) for l in lines)
+    # SUM(V)
+    sum_plazo_restante = sum(l.get("remaining_term_days", 0) for l in lines)
+    # SUM(W)/360
+    sum_pond_2 = sum(l.get("weighting_days", 0) for l in lines)
+    pond_2_years = round(sum_pond_2 / 360, 2) if sum_pond_2 > 0 else 0.0
+    # SUM(Y)
+    sum_pago_mensual = sum(l.get("monthly_payment", 0) for l in lines)
+    # =+T1/W1 (Pago anual)
+    pago_anual = (sum_saldo_vigente / pond_2_years) if pond_2_years > 0 else 0.0
+    # =+AA1/12 (Pago Mensual_2)
+    pago_mensual_2 = pago_anual / 12
+
+    # Construcción visual de la fila de agregados
+    summary_1 = [""] * 31
+    summary_1[9] = sum_saldo_inicial_activo
+    summary_1[10] = sum_saldo_vigente
+    summary_1[11] = 1.0 # 100% Ponderación
+    summary_1[12] = sum_plazo_restante
+    summary_1[13] = pond_2_years
+    summary_1[14] = "años"
+    summary_1[15] = sum_pago_mensual
+    summary_1[16] = "Pago anual"
+    summary_1[17] = pago_anual
+
+    summary_2 = [""] * 31
+    summary_2[16] = "Pago Mensual_2"
+    summary_2[17] = pago_mensual_2
+
+    ws4.append(summary_1)
+    row_s1 = ws4.max_row
+    ws4.append(summary_2)
+    row_s2 = ws4.max_row
+
+    # Estilos del bloque superior
+    for col_idx in [10, 11, 16, 18]:
+        ws4.cell(row=row_s1, column=col_idx).style = currency_style
+    ws4.cell(row=row_s1, column=12).style = percent_style
+    ws4.cell(row=row_s2, column=18).style = currency_style
+    
+    # Pintar celdas de título de Pago
+    for r_idx in [row_s1, row_s2]:
+        cell = ws4.cell(row=r_idx, column=17)
+        cell.font = header_font
+        cell.fill = header_fill
+
+    # --- ENCABEZADOS DE LA TABLA PRINCIPAL ---
+    headers_full = [
+        "Número Cuenta", "Tipo Usuario", "Apertura", "Fecha Cierre", "Plazo", "Moneda", "Tipo Cambio", 
+        "Atraso Mayor", "Tipo Crédito", "Saldo Inicial", "Saldo Vigente", "Ponderación", "Plazo Restante", 
+        "Ponderación 2", "Fecha Final", "Pago Mensual", "Histórico Pagos", 
+        "1", "2", "3", "4", "5", "6", "7", "9", "0", "U", "-", "LC", 
+        "Último Actualizado", "Saldo Vencido"
     ]
-    ws4.append(headers_lines)
+    ws4.append(headers_full)
     sub_head_row = ws4.max_row
-    for col in range(1, 10):
+    for col in range(1, len(headers_full) + 1):
         cell = ws4.cell(row=sub_head_row, column=col)
         cell.font = header_font
         cell.fill = sub_header_fill
         cell.alignment = Alignment(horizontal='center')
+
+    # Helper para fechas (convierte de YYYY-MM-DD a M/D/YYYY)
+    def format_date_mdy(date_str):
+        if not date_str or str(date_str).strip() in ["None", "N/A", ""]: return ""
+        try:
+            d = datetime.strptime(str(date_str)[:10], "%Y-%m-%d")
+            return f"{d.month}/{d.day}/{d.year}"
+        except:
+            return str(date_str)
+    
+    # Helper rápido para convertir la fecha a formato "Jan-26"
+    def format_period_mop(date_str):
+        # Protegemos contra vacíos y el string literal "None"
+        if not date_str or str(date_str).strip() == "None" or date_str == "N/A": 
+            return "N/A"
+        try:
+            d = datetime.strptime(str(date_str)[:10], "%Y-%m-%d")
+            return d.strftime("%b-%y").capitalize() # ej: Jan-26
+        except Exception:
+            return str(date_str)
 
     lines = buro_info.get("credit_lines", [])
     if not lines:
@@ -646,24 +873,42 @@ def generar_excel_syntage(data: dict) -> bytes:
     else:
         start_data_row = ws4.max_row + 1
         for line in lines:
+            mop = line.get("mop_breakdown", {})
+            hist = line.get("payment_history", "")
+            
             ws4.append([
-                line.get("institution"),
+                line.get("account_number"),
+                line.get("user_type"),
+                format_date_mdy(line.get("opening_date")),
+                format_date_mdy(line.get("closing_date")),
+                line.get("term_days", 0),
+                line.get("currency"),
+                line.get("exchange_rate"),
+                line.get("max_delay", 0),
                 line.get("account_type"),
-                line.get("credit_limit"),
-                line.get("current_balance"),
-                line.get("past_due_balance"),
-                line.get("payment_frequency"),
-                line.get("opening_date"),
-                line.get("last_payment_date"),
-                line.get("payment_history")
+                line.get("initial_balance", 0.0),
+                line.get("current_balance", 0.0),
+                line.get("weighting_pct", 0.0),
+                line.get("remaining_term_days", 0),
+                line.get("weighting_days", 0.0),
+                format_date_mdy(line.get("final_date")),
+                line.get("monthly_payment", 0.0),
+                hist,
+                mop.get("mop_1", 0), mop.get("mop_2", 0), mop.get("mop_3", 0), mop.get("mop_4", 0),
+                mop.get("mop_5", 0), mop.get("mop_6", 0), mop.get("mop_7", 0), mop.get("mop_9", 0),
+                mop.get("mop_0", 0), mop.get("mop_u", 0), mop.get("mop_nd", 0), mop.get("mop_lc", 0),
+                format_period_mop(line.get("update_date")),
+                line.get("past_due_balance", 0.0)
             ])
-            # Alerta visual si hay saldo vencido > 0
-            if line.get("past_due_balance", 0) > 0:
-                ws4.cell(row=ws4.max_row, column=5).font = Font(color="FF0000", bold=True)
-                
-        # Formato moneda
-        for row in ws4.iter_rows(min_row=start_data_row, min_col=3, max_col=5):
-            for cell in row: cell.style = currency_style
+            
+            curr_row = ws4.max_row
+            ws4.cell(row=curr_row, column=17).number_format = '@' # Histórico como texto
+            
+            # Estilos de celdas
+            ws4.cell(row=curr_row, column=12).style = percent_style # Ponderación 1
+            
+            for col_idx in [10, 11, 16, 31]: # Saldos y Pagos a Moneda
+                ws4.cell(row=curr_row, column=col_idx).style = currency_style 
 
     ws4.append([""])
 
@@ -708,7 +953,7 @@ def generar_excel_syntage(data: dict) -> bytes:
     ws4.column_dimensions['F'].width = 15
     ws4.column_dimensions['G'].width = 15
     ws4.column_dimensions['H'].width = 15
-    ws4.column_dimensions['I'].width = 20
+    ws4.column_dimensions['I'].width = 28
 
     # ==========================================
     # GUARDAR
