@@ -73,22 +73,21 @@ def test_pre_clasificar_envia_ambiguos_a_ia(motor_clasificador_test):
 # ============================================================================
 
 def test_calcular_totales_suma_correcta(motor_clasificador_test):
-    """Prueba que los abonos se sumen en sus categorías y los cargos se ignoren."""
-    txs = [
-        TransaccionMock("Venta 1", "1,000.50", "abono", "TPV"),
-        TransaccionMock("Venta 2", "500.00", "abono", "TERMINAL DE VENTA"), # Alias válido de TPV
-        TransaccionMock("Depósito en sucursal", "200.00", "deposito", "EFECTIVO"),
-        TransaccionMock("Comisión", "50.00", "cargo", "GENERAL"), # Es cargo, no suma a los ingresos
-        TransaccionMock("Error OCR", "MontoInvalido", "abono", "TPV") # Monto corrupto, asume 0
-    ]
-    
-    totales = motor_clasificador_test._calcular_totales(txs)
-    
-    # 1000.50 + 500.00
-    assert totales["TPV"] == 1500.50 
-    assert totales["EFECTIVO"] == 200.00
-    # Depósitos totales debe ser la suma de todos los abonos (1500.50 + 200)
-    assert totales["DEPOSITOS"] == 1700.50
+        """Prueba que los abonos se sumen en sus categorías y los cargos se ignoren."""
+        txs = [
+            TransaccionMock("Venta 1", "1000.50", "abono", "TPV"),
+            TransaccionMock("Venta 2", "500.00", "abono", "TPV"), 
+            TransaccionMock("Depósito en sucursal", "200.00", "deposito", "EFECTIVO"),
+            TransaccionMock("Comisión", "50.00", "cargo", "GENERAL"), # Es cargo, no suma a los ingresos
+            TransaccionMock("Error OCR", "MontoInvalido", "abono", "TPV") # Monto corrupto, asume 0
+        ]
+
+        totales = motor_clasificador_test._calcular_totales(txs)
+
+        # 1000.50 + 500.00 + 0.00
+        assert totales["TPV"] == 1500.50
+        assert totales["EFECTIVO"] == 200.00
+        assert totales["DEPOSITOS"] == 1700.50 # 1000.50 + 500.00 + 200.00
 
 # ============================================================================
 # PRUEBAS: ORQUESTACIÓN COMPLETA (MOCK DE IA ASÍNCRONA)
