@@ -140,25 +140,44 @@ class MotorCaratulas:
         """
         Escanea el PDF para extraer el texto crudo por página y detectar 
         dónde empiezan y terminan las cuentas (Rangos).
+        Incluye un pre-escaneo de blacklist para bancos que fragmentan mal.
         """
         texto_por_pagina = {}
         rangos_detectados = []
         inicio_actual = None
+        es_banco_excepcion = False
         
         try:
             with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
-                # 1. VERIFICACIÓN DE CIFRADO INMEDIATA ANTES DE LEER
+                # 1. VERIFICACIÓN DE CIFRADO INMEDIATA
                 if doc.needs_pass or doc.is_encrypted:
-                    # Intenta con contraseña vacía, a veces los PDFs vienen protegidos contra edición pero no lectura
                     if not doc.authenticate(""): 
                         raise PDFCifradoError("El documento está protegido con contraseña.")
 
                 total_paginas = len(doc)
-                
+
+                # --- 2. PRE-ESCANEO PARA BLACKLIST (Ej. Banco Azteca) ---
+                # Leemos rápido la primera página para saber si aplicamos la lógica de triggers
+                if total_paginas > 0:
+                    texto_pag_1 = doc[0].get_text("text").lower()
+                    match_banco = self.banco_detection_regex.search(texto_pag_1)
+                    if match_banco:
+                        banco_detectado = self.alias_banco_map.get(match_banco.group(0))
+                        
+                        # LISTA NEGRA: Bancos que ignorarán los triggers globales
+                        if banco_detectado and str(banco_detectado).upper() in ["AZTECA"]:
+                            es_banco_excepcion = True
+                            logger.info(f"[MotorCaratulas] Banco {str(banco_detectado).upper()} detectado en pre-escaneo. Omitiendo triggers para evitar fragmentación.")
+
+                # 3. EXTRACCIÓN Y EVALUACIÓN DE RANGOS
                 for page_index, page in enumerate(doc):
                     page_num = page_index + 1
                     page_text = page.get_text("text").lower()
                     texto_por_pagina[page_num] = page_text
+                    
+                    # Si el banco está en la lista negra, saltamos la evaluación de triggers
+                    if es_banco_excepcion:
+                        continue
                     
                     # A. Inicio de rango
                     if inicio_actual is None:
@@ -186,18 +205,19 @@ class MotorCaratulas:
 
         except PDFCifradoError as e:
             logger.warning(f"[MotorCaratulas] Abortando análisis: {e}")
-            raise e  # Lanzar el error hacia el processing_service
+            raise e 
 
         except Exception as e:
             logger.error(f"[MotorCaratulas] Error detectando rangos: {e}")
-            # Si el error genérico es de cifrado de PyMuPDF, lo transformamos y lo lanzamos
             if "encrypted" in str(e).lower() or "password" in str(e).lower():
                 raise PDFCifradoError("El documento está protegido con contraseña.")
-            raise e #  No tragar otras excepciones críticas
+            raise e
 
-        # Fallback si no hay rangos
+        # 4. FALLBACK: Si no hubo rangos (o si se saltaron por la blacklist)
         if not rangos_detectados:
+            # Crea un solo bloque desde la página 1 hasta el final
             rangos_detectados = [(1, len(texto_por_pagina) if texto_por_pagina else 1)]
+            self._log_debug(1, f"Usando fallback de rango completo: {rangos_detectados}")
 
         return texto_por_pagina, rangos_detectados
 
@@ -401,28 +421,28 @@ class MotorCaratulas:
         clabe = str(datos_reconciliados.get("clabe_interbancaria", "")).strip()
         
         # 1. Lista negra estricta de RFCs de Bancos
-        rfcs_bancos = ["BBA830831LJ2", "BNM840515VB1", "BBA940707IE1", "BMB930211WA9"]
+        rfcs_bancos = ["BBA830831LJ2", "BNM840515VB1", "BBA940707IE1", "BMB930211WA9", "BAI0205236Y8"]
         if rfc in rfcs_bancos:
             self._log_debug(5, f"Descartada: RFC {rfc} pertenece al Banco.")
             return False
 
         # 2. El "Pase VIP": Si tiene una CLABE de 18 dígitos y superó la lista negra, es válida.
-        # Quitamos espacios por si Qwen/GPT los separó
         clabe_limpia = ''.join(filter(str.isdigit, clabe))
         if len(clabe_limpia) >= 18:
             return True
 
-        # 3. Reglas estrictas de texto (Solo aplican si NO tiene CLABE, ej. una hoja suelta)
-        # Solo buscamos en los primeros 2000 caracteres (las primeras páginas del rango), 
-        # no en todo el documento para no penalizar publicidad o anexos.
+        # 3. Reglas estrictas de texto
         texto_inicio = texto_rango[:2000].lower()
         if "estado de cuenta de inversiones" in texto_inicio:
             self._log_debug(5, f"[Filtro] Cuenta descartada: Sub-sección de Inversiones sin CLABE.")
             return False
 
-        # 4. Verificación final de RFC para cuentas sin CLABE
-        if not rfc or len(rfc) < 12:
-            self._log_debug(5, f"[Filtro] Cuenta descartada: Carece de CLABE y RFC válido.")
+        # 4. Verificación final de RFC ESTRICTA (Solución al falso positivo)
+        # Un RFC válido tiene 3 o 4 letras, 6 números, y 3 caracteres alfanuméricos.
+        patron_rfc_valido = re.compile(r"^[A-ZÑ&]{3,4}\d{6}[A-Z0-9]{3}$")
+        
+        if not rfc or not patron_rfc_valido.match(rfc):
+            self._log_debug(5, f"[Filtro] Cuenta descartada: Carece de CLABE (18) y RFC con formato inválido ({rfc}).")
             return False
 
         return True
