@@ -30,7 +30,8 @@ from ..utils.helpers_texto_fluxo import (
     PALABRAS_TRASPASO_ENTRE_CUENTAS,
     PALABRAS_TRASPASO_FINANCIAMIENTO,
     PALABRAS_BMRCASH,
-    PALABRAS_TRASPASO_MORATORIO
+    PALABRAS_TRASPASO_MORATORIO,
+    PALABRAS_TPV
 )
 
 from ..services.orchestators import (
@@ -65,7 +66,8 @@ class ProcessingService:
             'traspaso': PALABRAS_TRASPASO_ENTRE_CUENTAS,
             'financiamiento': PALABRAS_TRASPASO_FINANCIAMIENTO,
             'bmrcash': PALABRAS_BMRCASH,
-            'moratorio': PALABRAS_TRASPASO_MORATORIO
+            'moratorio': PALABRAS_TRASPASO_MORATORIO,
+            'tpv': PALABRAS_TPV
         }
         self.motor_clasificador = MotorClasificador(
             diccionarios_palabras=diccionarios_clasificacion,

@@ -1,5 +1,5 @@
 import logging
-import json
+import math
 import asyncio
 from typing import List, Dict, Any
 
@@ -64,6 +64,9 @@ class MotorClasificador:
             if any(p in desc_lower for p in self.diccionarios.get('excluidas', [])):
                 tx.categoria = "GENERAL"
                 clasificado_estatico = True
+            elif any(p in desc_lower for p in self.diccionarios.get('tpv', [])):
+                tx.categoria = "TPV"
+                clasificado_estatico = True
             elif any(p in desc_lower for p in self.diccionarios.get('efectivo', [])):
                 tx.categoria = "EFECTIVO"
                 clasificado_estatico = True
@@ -118,7 +121,7 @@ class MotorClasificador:
             pendientes=pendientes_ia, 
             banco=banco, 
             funcion_ia_clasificadora=funcion_ia_clasificadora, 
-            batch_size=batch_size
+            batch_size_max=batch_size
         )
 
         # --- CAPA 3: ENSAMBLAJE ---
@@ -146,37 +149,43 @@ class MotorClasificador:
         pendientes: List[tuple], 
         banco: str, 
         funcion_ia_clasificadora, 
-        batch_size: int
+        batch_size_max: int = 100 # Lo renombramos semánticamente a "max"
     ) -> dict:
         """
-        Divide las transacciones ambiguas en lotes, llama a la IA concurrentemente
-        y ensambla un diccionario absoluto de { "id_real": "CATEGORIA" }.
+        Divide las transacciones ambiguas en lotes dinámicos equilibrados, 
+        llama a la IA concurrentemente y ensambla un diccionario absoluto.
         """
         if not pendientes:
             return {}
 
+        total_pendientes = len(pendientes)
+        
+        # --- LÓGICA DE BALANCEO DINÁMICO ---
+        # 1. Calculamos cuántos lotes necesitamos en total para no superar el máximo
+        num_lotes = math.ceil(total_pendientes / batch_size_max)
+        
+        # 2. Dividimos el total entre el número de lotes para que queden parejos
+        tamano_lote_dinamico = math.ceil(total_pendientes / num_lotes)
+
+        self._log_debug(3, f"Balanceo Dinámico: {total_pendientes} txs a IA -> Dividido en {num_lotes} lotes de aprox {tamano_lote_dinamico} txs c/u.")
+
         tareas_lotes = []
         
-        # Iteramos sobre la lista de pendientes saltando de 'batch_size' en 'batch_size'
-        for i in range(0, len(pendientes), batch_size):
-            lote_tuplas = pendientes[i : i + batch_size]
+        for i in range(0, total_pendientes, tamano_lote_dinamico):
+            lote_tuplas = pendientes[i : i + tamano_lote_dinamico]
             
-            # Reconstruimos una lista plana de objetos/dicts solo para enviarla a la función IA,
-            # pero AHORA la función IA respetará el 'id' real porque se lo pasaremos pre-formateado.
             lote_para_enviar = []
             for idx_real, tx in lote_tuplas:
                 lote_para_enviar.append({
-                    "id": idx_real, # Forzamos el ID absoluto
-                    "tx_data": tx   # Pasamos el objeto original
+                    "id": idx_real, 
+                    "tx_data": tx  
                 })
             
-            # Ejecutamos la promesa (asumiendo que funcion_ia_clasificadora usa semáforos por dentro)
             tareas_lotes.append(funcion_ia_clasificadora(banco, lote_para_enviar))
 
-        self._log_debug(3, f"Enviando {len(tareas_lotes)} lotes a la IA...")
         resultados_lotes = await asyncio.gather(*tareas_lotes, return_exceptions=True)
 
-        # Mapeo universal (Soporta si la IA devuelve listas o diccionarios)
+        # Mapeo universal
         mapa_clasificacion_total = {}
         for resultado_ia in resultados_lotes:
             if isinstance(resultado_ia, Exception):
@@ -220,14 +229,12 @@ class MotorClasificador:
 
             totales["DEPOSITOS"] += monto
             
-            # Extraemos la categoría (que ya fue puesta por Python o por la IA)
+            # Extraemos la categoría
             cat_actual = str(getattr(tx, "categoria", "GENERAL")).upper().strip()
 
-            es_tpv = "TPV" in cat_actual or "TERMINAL" in cat_actual or "PUNTO DE VENTA" in cat_actual
-            
-            if es_tpv:
+            # Si es TPV, la Capa 1 ya le puso "TPV".
+            if cat_actual == "TPV":
                 totales["TPV"] += monto
-                tx.categoria = "TPV" # Normalización estética para el Excel
                 conteo_categorias["TPV"] += 1
             elif cat_actual in totales:
                 totales[cat_actual] += monto

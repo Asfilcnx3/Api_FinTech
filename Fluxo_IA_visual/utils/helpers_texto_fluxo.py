@@ -6,11 +6,18 @@ PALABRAS_CLAVE_VERIFICACION = re.compile(
 )
 
 # Creamos la lista e palabras excluidas
-PALABRAS_EXCLUIDAS = ["comision", "iva", "com.", "-com x", "cliente stripe", "imss", "spei recibidove por mas", "spei recibidomifel"]
+PALABRAS_EXCLUIDAS = [
+    "comision", "iva", "com.", "-com x", "cliente stripe", "imss", "spei recibidove por mas", "spei recibidomifel", "kpay", "apiapic", "cf tech"
+]
 
 # Creamos la lista de palabras clave generales (quitamos mit y american express)
 palabras_clave_generales = [
     "evopay", "evopayments", "psm payment services mexico sa de cv", "deposito bpu3057970600", "cobra online s.a.p.i. de c.v.", "sr. pago", "por favor paguen a tiempo, s.a. de c.v.", "por favor paguen a tiempo", "pagofácil", "netpay s.a.p.i. de c.v.", "netpay", "deremate.com de méxico, s. de r.l. de  c.v.", "mercadolibre s de rl de cv", "mercado lending, s.a de c.v", "deremate.com de méxico, s. de r.l de c.v", "first data merchant services méxico s. de r.l. de c.v", "adquira méxico, s.a. de c.v", "flap", "mercadotecnia ideas y tecnología, sociedad anónima de capital variable", "mit s.a. de c.v.", "payclip, s. de r.l. de c.v", "grupo conektame s.a de c.v.", "conekta", "conektame", "pocket de latinoamérica, s.a.p.i de c.v.", "billpocket", "pocketgroup", "banxol de méxico, s.a. de c.v.", "banwire", "promoción y operación, s.a. de c.v.", "evo payments", "prosa", "net pay sa de cv", "net pay sapi de cv", "izettle méxico, s. de r.l. de c.v.", "izettle mexico s de rl de cv", "pocket de latinoamerica sapi de cv", "bn-nts", "izettle mexico s de rl", "first data merc", "cobra online sapi de cv", "payclip s de rl de cv", "evopaymx", "izettle", "refbntc00017051", "pocket de", "sofimex", "actnet", "exce cca", "venta nal. amex", "pocketgroup", "deposito efectivo", "deposito en efectivo", "dep.efectivo", "deposito efectivo corresponsal", "traspaso entre cuentas", "anticipo de ventas", "anticipo de venta", "financiamiento", "credito"
+]
+
+PALABRAS_TPV = [
+    "terminales punto de venta", "punto de venta", "tpv", "terminal", "evopay",
+    "clip", "izettle", "mercado pago", "netpay"
 ]
 
 PALABRAS_EFECTIVO = [
@@ -22,7 +29,7 @@ PALABRAS_TRASPASO_ENTRE_CUENTAS = [
 ]   
 
 PALABRAS_TRASPASO_FINANCIAMIENTO = [
-    "prestamo", "anticipo de ventas", "anticipo de venta", "financiamiento", "anticipo", "adelanto", "adelanto de ventas", "préstamo", "crédito", "otorgamiento de crédito", "comision por apertura"
+    "prestamo", "anticipo de ventas", "anticipo de venta", "financiamiento", "anticipo", "adelanto", "adelanto de ventas", "préstamo", "crédito", "otorgamiento de crédito", "comision por apertura", "credito"
 ]
 
 PALABRAS_BMRCASH = [
@@ -267,8 +274,9 @@ TRIGGERS_CONFIG = {
 # Creamos el prompt del modelo a utilizar
 prompt_base_fluxo = """
 Eres un experto extractor de datos de estados de cuenta bancarios. 
-- Estas imágenes son de las primeras páginas de un estado de cuenta bancario, pueden venir gráficos o tablas.
+- Estas imágenes (o texto) son de las primeras páginas de un estado de cuenta bancario, pueden venir gráficos o tablas.
 - En caso de que reconozcas gráficos, extrae únicamente los valores que aparecen en la leyenda numerada.
+- Si no estás seguro que existen los campos críticos (RFC, CLABE) dentro del rango que te mandamos, devuelve null, pero EVITA A TODA COSTA INVENTAR INFORMACIÓN.
 
 Analizarás las imágenes en líneas horizontales y extraerás EXACTAMENTE los siguientes datos con las instrucciones siguientes.
 INSTRUCCIONES CRÍTICAS (CAMPOS A EXTRAER):
