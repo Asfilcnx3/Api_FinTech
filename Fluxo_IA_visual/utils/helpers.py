@@ -1,7 +1,7 @@
 from ..models.responses_analisisTPV import AnalisisTPV
 from ..models.responses_nomiflash import NomiFlash
 from .helpers_texto_fluxo import (
-    BANCO_DETECTION_REGEX, ALIAS_A_BANCO_MAP, PATRONES_COMPILADOS, PALABRAS_CLAVE_VERIFICACION, PROMPT_FASE_2_ESCRIBA_VISION, PROMPT_FASE_2_ESCRIBA_TEXTO, PROMPTS_POR_BANCO
+    PROMPT_FASE_2_ESCRIBA_VISION, PROMPT_FASE_2_ESCRIBA_TEXTO
 )
 from .helpers_texto_nomi import CAMPOS_FLOAT, CAMPOS_STR, PATTERNS_COMPILADOS_RFC_CURP, RFCS_INSTITUCIONES_IGNORAR
 
@@ -103,61 +103,94 @@ def extraer_rfc_curp_por_texto(texto: str, tipo_doc: str) -> Tuple[List[str], Li
 
     return rfcs, curps
 
-def parsear_respuesta_toon(texto_toon: str) -> List[Dict[str, Any]]:
-    """
-    Convierte el formato TOON (texto delimitado por pipes) a una lista de diccionarios.
-    Formato esperado por línea: FECHA | DESCRIPCION | MONTO | TIPO
-    """
-    transacciones = []
-    texto_limpio = texto_toon.replace("```json", "").replace("```text", "").replace("```", "").strip()
-    lineas = texto_limpio.split('\n')
+# def parsear_respuesta_toon(texto_toon: str) -> List[Dict[str, Any]]:
+#     """
+#     Convierte el formato TOON (texto delimitado por pipes) a una lista de diccionarios.
+#     Formato esperado por línea: FECHA | DESCRIPCION | MONTO | TIPO
+#     """
+#     transacciones = []
+#     texto_limpio = texto_toon.replace("```json", "").replace("```text", "").replace("```", "").strip()
+#     lineas = texto_limpio.split('\n')
 
-    for linea in lineas:
-        linea = linea.strip()
-        if not linea: continue
+#     for linea in lineas:
+#         linea = linea.strip()
+#         if not linea: continue
 
-        partes = linea.split('|')
+#         partes = linea.split('|')
         
-        # Aceptamos 3 (Digital) o 4 (OCR) columnas
-        if len(partes) < 3: 
-            continue
+#         # Aceptamos 3 (Digital) o 4 (OCR) columnas
+#         if len(partes) < 3: 
+#             continue
         
-        try:
-            fecha = partes[0].strip()
+#         try:
+#             fecha = partes[0].strip()
             
-            # Lógica dinámica según cantidad de columnas
-            if len(partes) == 3:
-                # CASO DIGITAL (Esperando Geometría)
-                # Fecha | Desc | Monto
-                descripcion = partes[1].strip()
-                monto_str = partes[2].strip()
-                tipo = "indefinido"
+#             # Lógica dinámica según cantidad de columnas
+#             if len(partes) == 3:
+#                 # CASO DIGITAL (Esperando Geometría)
+#                 # Fecha | Desc | Monto
+#                 descripcion = partes[1].strip()
+#                 monto_str = partes[2].strip()
+#                 tipo = "indefinido"
             
-            else:
-                # CASO OCR / VISIÓN (4 columnas o más)
-                # Fecha | Desc | Monto | Tipo
-                # Unimos descripción por si hay pipes extra en el medio
-                descripcion = " ".join(p.strip() for p in partes[1:-2]) 
-                if not descripcion: descripcion = partes[1].strip()
+#             else:
+#                 # CASO OCR / VISIÓN (4 columnas o más)
+#                 # Fecha | Desc | Monto | Tipo
+#                 # Unimos descripción por si hay pipes extra en el medio
+#                 descripcion = " ".join(p.strip() for p in partes[1:-2]) 
+#                 if not descripcion: descripcion = partes[1].strip()
                 
-                monto_str = partes[-2].strip() # Penúltimo
-                tipo_raw = partes[-1].strip().lower() # Último
+#                 monto_str = partes[-2].strip() # Penúltimo
+#                 tipo_raw = partes[-1].strip().lower() # Último
                 
-                # Normalización del tipo que vió el OCR
-                tipo = "abono" if "abono" in tipo_raw else "cargo" if "cargo" in tipo_raw else "indefinido"
+#                 # Normalización del tipo que vió el OCR
+#                 tipo = "abono" if "abono" in tipo_raw else "cargo" if "cargo" in tipo_raw else "indefinido"
 
-            transacciones.append({
-                "fecha": fecha,
-                "descripcion": descripcion,
-                "monto": monto_str,
-                "tipo": tipo, 
-                "categoria": "GENERAL" 
-            })
+#             transacciones.append({
+#                 "fecha": fecha,
+#                 "descripcion": descripcion,
+#                 "monto": monto_str,
+#                 "tipo": tipo, 
+#                 "categoria": "GENERAL" 
+#             })
             
-        except Exception:
-            continue
+#         except Exception:
+#             continue
 
-    return transacciones
+#     return transacciones
+
+def parsear_respuesta_json_ocr(texto_llm: str) -> List[Dict[str, Any]]:
+    """
+    Extrae y parsea el arreglo JSON devuelto por el agente OCR de Visión.
+    """
+    texto_limpio = texto_llm.strip()
+    
+    # 1. Buscar bloque JSON si el modelo añade texto/markdown alrededor
+    match = re.search(r'```(?:json)?\s*(\[.*?\])\s*```', texto_limpio, re.DOTALL)
+    if match:
+        texto_limpio = match.group(1)
+    else:
+        # Si no hay backticks, intentar encontrar los corchetes del arreglo
+        inicio = texto_limpio.find('[')
+        fin = texto_limpio.rfind(']') + 1
+        if inicio != -1 and fin != 0:
+            texto_limpio = texto_limpio[inicio:fin]
+
+    # 2. Parsear y normalizar
+    try:
+        datos = json.loads(texto_limpio)
+        if isinstance(datos, list):
+            # Normalizamos para que coincida con lo que espera el clasificador
+            for tx in datos:
+                if "categoria" not in tx:
+                    tx["categoria"] = "GENERAL"
+                # Forzamos mayúsculas para CARGO/ABONO
+                tx["tipo"] = tx.get("tipo", "INDEFINIDO").upper()
+            return datos
+        return []
+    except json.JSONDecodeError as e:
+        logger.error(f"Error parseando JSON del OCR: {e} | Contenido crudo: {texto_limpio[:100]}...")
+        return []
 
 # Funciones para procesar las descripciones de los bancos
 # fecha, descripción o parte de esta, monto

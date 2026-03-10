@@ -8,7 +8,7 @@ from ..models.responses_analisisTPV import AnalisisTPV
 from ..services.ia_extractor import clasificar_lote_con_ia
 from ..core.exceptions import PDFCifradoError
 from ..core.motor_clasificador import MotorClasificador
-from ..services.storage_service import guardar_excel_local, guardar_json_local
+from ..services.storage_service import StorageService
 from ..utils.xlsx_converter import generar_excel_reporte
 
 from .passport_service import PassportService
@@ -45,6 +45,7 @@ class ProcessingService:
     def __init__(self, file_manager):
         self.file_manager = file_manager
         self.passport = PassportService() # Inyección manual del pasaporte
+        self.storage = StorageService()
 
         # --- SEMÁFORO DE CONCURRENCIA ---
         self.sem_ia = asyncio.Semaphore(20)
@@ -289,6 +290,11 @@ class ProcessingService:
                         asyncio.gather(*[t[1] for t in tareas_ocr], return_exceptions=True),
                         timeout=13 * 60
                     )
+                    # --- LOGS MOMENTANEOS ---
+                    logger.info(f"[TRACKING OCR - 2] ProcessPool devolvió {len(resultados_brutos_ocr)} resultados OCR. Timed_out: {ocr_timed_out}")
+                    for idx, res_ocr in enumerate(resultados_brutos_ocr):
+                        logger.info(f"   -> OCR Item {idx}: Tipo {type(res_ocr)}")
+                    # ----------------------
                 except asyncio.TimeoutError:
                     ocr_timed_out = True
                     self._manejar_timeout_ocr(tareas_ocr, documentos_escaneados, resultados_finales)
@@ -389,6 +395,11 @@ class ProcessingService:
             for i, (idx_orig, _) in enumerate(tareas):
                 res = resultados_brutos[i]
                 contexto = lista_contexto[i] 
+
+                # --- LOGS MOMENTANEOS ---
+                nombre_arch = contexto.get("filename", "Desconocido")
+                logger.info(f"[TRACKING OCR - 3] Ensamblando: {nombre_arch} | es_digital: {es_digital_flag} | Tipo de res: {type(res)}")
+                # ----------------------
                 
                 # --- CASO 1: EXCEPCIÓN ---
                 if isinstance(res, Exception):
@@ -515,19 +526,29 @@ class ProcessingService:
         # Pasamos el DICCIONARIO YA SERIALIZADO al excel, no el objeto
         try:
             excel_bytes = generar_excel_reporte(datos_dict)
-            guardar_excel_local(excel_bytes, job_id)
+            self.storage.guardar_excel_local(excel_bytes, job_id)
         except Exception as e:
             logger.error(f"Error generando Excel: {e}")
 
-        guardar_json_local(datos_dict, job_id)
+        self.storage.guardar_json_local(datos_dict, job_id)
     
     async def _clasificar_documento_async(self, job_id, resultado_doc, BATCH_SIZE=100):
         """
         Procesa UN documento completo de forma asíncrona delegando todo al Motor Clasificador.
         """
-        # 0. VALIDACIÓN E HIDRATACIÓN (Se mantiene para compatibilidad Pydantic)
-        if not resultado_doc or isinstance(resultado_doc.DetalleTransacciones, AnalisisTPV.ErrorRespuesta): 
+        # --- LOGS MOMENTANEOS ---
+        nombre_doc = "Desconocido"
+        if resultado_doc and hasattr(resultado_doc, 'AnalisisIA') and resultado_doc.AnalisisIA:
+            nombre_doc = resultado_doc.AnalisisIA.nombre_archivo_virtual
+            
+        if not resultado_doc:
+            logger.warning(f"[TRACKING OCR - 4] Se recibió un resultado_doc nulo en clasificación.")
             return
+
+        if isinstance(resultado_doc.DetalleTransacciones, AnalisisTPV.ErrorRespuesta): 
+            logger.warning(f"[TRACKING OCR - 4] {nombre_doc} descartado por ErrorRespuesta: {resultado_doc.DetalleTransacciones.error}")
+            return
+        # ----------------------
 
         if isinstance(resultado_doc.DetalleTransacciones, dict):
             raw_dict = resultado_doc.DetalleTransacciones
@@ -549,7 +570,11 @@ class ProcessingService:
             resultado_doc.DetalleTransacciones = AnalisisTPV.ResultadoTPV(transacciones=tx_objs)
 
         transacciones = resultado_doc.DetalleTransacciones.transacciones
-        if not transacciones: return
+        # --- LOGS MOMENTANEOS ---
+        if not transacciones:
+            logger.warning(f"[TRACKING OCR - 4] {nombre_doc} descartado: 0 transacciones para clasificar.")
+            return
+        # ----------------------
 
         if isinstance(resultado_doc.AnalisisIA, dict):
             resultado_doc.AnalisisIA = AnalisisTPV.ResultadoAnalisisIA(**resultado_doc.AnalisisIA)
@@ -585,3 +610,86 @@ class ProcessingService:
             
         analisis_ia.entradas_TPV_neto = totales.get("TPV", 0.0) - comisiones
         analisis_ia.total_sospechosas = totales.get("SOSPECHOSA_PROPIA", 0.0)
+
+        # =========================================================
+        # NUEVO: CÁLCULO DE CONFIANZA DE EXTRACCIÓN
+        # =========================================================
+        suma_abonos = 0.0
+        suma_cargos = 0.0
+
+        total_txs = len(transacciones)
+        txs_clasificadas = 0
+        
+        # 1. Sumar los movimientos reales y contar categorías
+        for tx in transacciones:
+            # Contar categorización
+            if hasattr(tx, 'categoria') and tx.categoria != "GENERAL":
+                txs_clasificadas += 1
+
+            # Sumar montos
+            try:
+                monto_val = float(str(tx.monto).replace(',', '').replace('$', ''))
+                if tx.tipo == "ABONO":
+                    suma_abonos += monto_val
+                elif tx.tipo == "CARGO":
+                    suma_cargos += monto_val
+            except ValueError:
+                continue
+
+        # 2. Obtener los totales declarados en la carátula
+        depositos_caratula = 0.0
+        cargos_caratula = 0.0
+        try:
+            if analisis_ia.depositos:
+                depositos_caratula = float(str(analisis_ia.depositos).replace(',', '').replace('$', ''))
+            if analisis_ia.cargos:
+                cargos_caratula = float(str(analisis_ia.cargos).replace(',', '').replace('$', ''))
+        except ValueError:
+            pass
+
+        # 3. Función auxiliar para calcular similitud (0 a 100%)
+        def calcular_similitud(extraido: float, caratula: float) -> float:
+            if caratula == 0 and extraido == 0:
+                return 100.0 # Perfecto, no había nada y no extrajimos nada
+            if caratula == 0 or extraido == 0:
+                return 0.0   # Descuadre total (algo vs nada)
+            # El ratio siempre es el menor entre el mayor, para no superar el 100%
+            return (min(extraido, caratula) / max(extraido, caratula)) * 100.0
+
+        # 4. Calcular métricas por columna y promediar
+        confianza_dep = calcular_similitud(suma_abonos, depositos_caratula)
+        confianza_car = calcular_similitud(suma_cargos, cargos_caratula)
+        
+        confianza_global = round((confianza_dep + confianza_car) / 2.0, 2)
+        
+        # 5. Inyectar al objeto
+        analisis_ia.confianza_extraccion = confianza_global
+        
+        # --- MÉTRICA 1: DESCUADRE MONETARIO ---
+        # Usamos abs() para que siempre sea positivo, sin importar si faltó o sobró dinero
+        descuadre_dep = abs(depositos_caratula - suma_abonos)
+        descuadre_car = abs(cargos_caratula - suma_cargos)
+        
+        analisis_ia.descuadre_depositos = descuadre_dep
+        analisis_ia.descuadre_cargos = descuadre_car
+        
+        # --- MÉTRICA 2: CÁLCULO FINAL DE TASA DE CATEGORIZACIÓN ---
+        tasa_cat = (txs_clasificadas / total_txs * 100.0) if total_txs > 0 else 0.0
+        analisis_ia.tasa_categorizacion = round(tasa_cat, 2)
+
+        # --- MÉTRICA 3: CONTEO DE PÁGINAS FALLIDAS ---
+        metadata_tecnica = getattr(resultado_doc, "metadata_tecnica", [])
+        paginas_totales = len(metadata_tecnica)
+        
+        # Contamos como fallidas aquellas con score 0 o que dicen ERROR en sus alertas
+        paginas_fallidas = sum(
+            1 for m in metadata_tecnica 
+            if m.get("calidad_score", 1.0) == 0.0 or "ERROR" in str(m.get("alertas", "")).upper()
+        )
+        
+        analisis_ia.paginas_totales = paginas_totales
+        analisis_ia.paginas_fallidas = paginas_fallidas
+        
+        # Opcional: Actualizar el logger para ver esta info en consola
+        logger.info(f"[{banco_actual}] Confianza: {confianza_global}% | Tasa Cat: {tasa_cat:.2f}% | Descuadres: Dep ${descuadre_dep:,.2f} / Car ${descuadre_car:,.2f}")
+        logger.info(f"Páginas totales: {paginas_totales} || Páginas fallidas: {paginas_fallidas}")

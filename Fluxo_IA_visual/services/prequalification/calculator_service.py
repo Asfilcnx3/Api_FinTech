@@ -1,5 +1,5 @@
 import logging
-from ..models.responses_precalificacion import PrequalificationResponse
+from ...models.responses_precalificacion import PrequalificationResponse
 
 # Configuración de logger propio para cálculos
 logger = logging.getLogger("financial_calculator")
@@ -16,11 +16,10 @@ class FinancialCalculatorService:
         y retorna el objeto final con los ratios calculados.
         """
         year = inputs.year
-        logger.info(f"--- Calculando Ratios para el Año {year} ---")
+        logger.debug(f"--- Calculando Ratios para el Año {year} ---")
 
         # 1. RESOLUCIÓN DE SIGNOS (Profit vs Loss)
-        # Unificamos las cuentas separadas en una sola variable con el signo correcto.
-        
+        gross_income = self._resolve_sign(inputs.gross_profit, inputs.gross_loss, "Gross Profit")
         net_income = self._resolve_sign(inputs.net_profit, inputs.net_loss, "Net Income")
         ebit = self._resolve_sign(inputs.ebit_profit, inputs.ebit_loss, "EBIT")
         ebt = self._resolve_sign(inputs.ebt_profit, inputs.ebt_loss, "EBT")
@@ -42,7 +41,7 @@ class FinancialCalculatorService:
         margin_percent = self._safe_division(net_income, inputs.revenue) * 100
 
         # Logs finales de los valores calculados
-        logger.info(
+        logger.debug(
             f"RESULTADOS {year}: "
             f"NetIncome={net_income:.2f} | EBIT={ebit:.2f} | NOPAT={nopat:.2f} | "
             f"ROA={roa:.4f} | ROE={roe:.4f} | Margin={margin_percent:.2f}%"
@@ -57,12 +56,14 @@ class FinancialCalculatorService:
             ebit=round(ebit, 2),
             ebt=round(ebt, 2),
             nopat=round(nopat, 2),
-            
-            # Datos Crudos (Evidencia)
+
+            # Datos Consolidados (Evidencia)
             input_assets=round(inputs.assets, 2),
+            input_liabilities=round(inputs.liabilities, 2),   
             input_equity=round(inputs.equity, 2),
             input_revenue=round(inputs.revenue, 2),
-            input_net_income=round(net_income, 2), # Retornamos el valor ya con signo resuelto
+            input_gross_profit=round(gross_income, 2),       
+            input_net_income=round(net_income, 2),
             input_taxes=round(inputs.taxes, 2),
 
             # Datos crudos absolutos para auditoría y transparencia (sin procesar, con signo original)

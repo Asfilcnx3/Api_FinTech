@@ -32,6 +32,7 @@ from typing import Dict, Any, Tuple, Optional, Union, List
 from fastapi import UploadFile
 import logging
 import fitz
+import time
 import asyncio
 
 logger = logging.getLogger(__name__)
@@ -169,132 +170,127 @@ def clasificar_transacciones_extraidas(
     }
 
 async def procesar_documento_escaneado_con_agentes_async(
-    ia_data: dict, 
+    ia_data_inicial: dict, 
     pdf_bytes: bytes, 
     filename: str
-) -> List[Dict[str, Any]]: 
+) -> dict:
     
-    logger.info(f"Iniciando procesamiento OCR-Visión para: {filename}")
-    banco = ia_data.get("banco", "generico")
-    
-    # --- METADATA FECHAS ---
-    p_inicio = ia_data.get("periodo_inicio")
-    p_fin = ia_data.get("periodo_fin")
+    logger.info(f"Iniciando Motor OCR-Visión puro para: {filename}")
+    banco = ia_data_inicial.get("banco", "generico")
     
     try:
         with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
             total_paginas = len(doc)
     except Exception:
-        return [{**ia_data, "error_transacciones": "No se pudo leer el PDF (corrupto)."}]
+        return {"error": "No se pudo leer el PDF (corrupto)."}
 
-    # Chunking por páginas
-    TAMANO_CHUNK, SUPERPOSICION = 2, 1
-    chunks_paginas = []
-    i = 0
-    while i < total_paginas:
-        paginas = list(range(i + 1, min(i + TAMANO_CHUNK, total_paginas) + 1))
-        if not paginas: break
-        chunks_paginas.append(paginas)
-        i += (TAMANO_CHUNK - SUPERPOSICION)
+    # --- NUEVO: Wrapper para cronometrar la petición asíncrona ---
+    async def _llamar_agente_con_tiempo(num_pag):
+        inicio = time.time()
+        res_agente = await llamar_agente_ocr_vision(banco, pdf_bytes, [num_pag])
+        tiempo_ms = (time.time() - inicio) * 1000
+        return res_agente, tiempo_ms
+    # -------------------------------------------------------------
 
-    # Llamadas a Agente
-    tareas = [llamar_agente_ocr_vision(banco, pdf_bytes, pags) for pags in chunks_paginas]
-    res_chunks = await asyncio.gather(*tareas, return_exceptions=True)
-
-    # Consolidación
-    transacciones_totales = []
-    ids_unicos = set()
-    for res in res_chunks:
-        if not isinstance(res, Exception):
-            for trx in res:
-                id_trx = f"{trx.get('fecha')}-{trx.get('monto')}-{trx.get('descripcion', '')[:15]}"
-                if id_trx not in ids_unicos:
-                    transacciones_totales.append(trx)
-                    ids_unicos.add(id_trx)
-
-    # --- E. CLASIFICACIÓN DE NEGOCIO Y FECHAS ---
-    total_depositos_efectivo = 0.0
-    total_traspaso_entre_cuentas = 0.0
-    total_entradas_financiamiento = 0.0
-    total_entradas_bmrcash = 0.0
-    total_moratorios = 0.0
-    total_entradas_tpv = 0.0
-    transacciones_clasificadas = []
-
-    for trx in transacciones_totales:
-        monto_float = trx.get("monto", 0.0)
-        if not isinstance(monto_float, (int, float)):
-            monto_float = limpiar_monto(str(monto_float))
-
-        descripcion_limpia = trx.get("descripcion", "").lower()
-        es_tpv_ia = trx.get("categoria", False)
-
-        # --- CONSTRUIR FECHA ---
-        dia_raw = trx.get("fecha")
-        fecha_final = construir_fecha_completa(dia_raw, p_inicio, p_fin)
-
-        trx_procesada = {
-            "fecha": fecha_final, # Fecha formateada
-            "descripcion": trx.get("descripcion"),
-            "monto": f"{monto_float:,.2f}",
-            "tipo": trx.get("tipo", "abono"),
-            "categoria": "GENERAL"
-        }
-
-        tipo_trx = trx.get("tipo", "abono").lower()
-
-        if "abono" in tipo_trx or "depósito" in tipo_trx:
-            if any(p in descripcion_limpia for p in PALABRAS_EXCLUIDAS):
-                pass 
-            else:
-                if any(p in descripcion_limpia for p in PALABRAS_EFECTIVO):
-                    total_depositos_efectivo += monto_float
-                    trx_procesada["categoria"] = "EFECTIVO"
-                elif any(p in descripcion_limpia for p in PALABRAS_TRASPASO_ENTRE_CUENTAS):
-                    total_traspaso_entre_cuentas += monto_float
-                    trx_procesada["categoria"] = "TRASPASO"
-                elif any(p in descripcion_limpia for p in PALABRAS_TRASPASO_FINANCIAMIENTO):
-                    total_entradas_financiamiento += monto_float
-                    trx_procesada["categoria"] = "FINANCIAMIENTO"
-                elif any(p in descripcion_limpia for p in PALABRAS_BMRCASH):
-                    total_entradas_bmrcash += monto_float
-                    trx_procesada["categoria"] = "BMRCASH"
-                elif any(p in descripcion_limpia for p in PALABRAS_TRASPASO_MORATORIO):
-                    total_moratorios += monto_float
-                    trx_procesada["categoria"] = "MORATORIOS"
-                else:
-                    # Lógica Doble Validación
-                    if es_tpv_ia:
-                        total_entradas_tpv += monto_float
-                        trx_procesada["categoria"] = "TPV"
-                    else:
-                        trx_procesada["categoria"] = "GENERAL"
-        
-        elif "cargo" in tipo_trx or "retiro" in tipo_trx:
-            trx_procesada["categoria"] = "CARGO"
-
-        transacciones_clasificadas.append(trx_procesada)
-
-    # --- F. ENSAMBLE FINAL ---
-    comisiones_str = ia_data.get("comisiones", "0.0")
-    if comisiones_str is None: comisiones_str = "0.0"
-    comisiones = limpiar_monto(str(comisiones_str))
+    tareas = []
+    for num_pag in range(1, total_paginas + 1):
+        tareas.append(_llamar_agente_con_tiempo(num_pag)) # Usamos el wrapper
     
-    entradas_TPV_neto = total_entradas_tpv - comisiones
+    res_paginas = await asyncio.gather(*tareas, return_exceptions=True)
 
-    return [{
-        **ia_data, 
-        "nombre_archivo_virtual": filename,
-        "transacciones": transacciones_clasificadas,
-        "depositos_en_efectivo": total_depositos_efectivo,
-        "traspaso_entre_cuentas": total_traspaso_entre_cuentas,
-        "total_entradas_financiamiento": total_entradas_financiamiento,
-        "entradas_bmrcash": total_entradas_bmrcash,
-        "total_moratorios": total_moratorios,
-        "entradas_TPV_bruto": total_entradas_tpv,
-        "entradas_TPV_neto": entradas_TPV_neto,
-        "error_transacciones": None
-    }]
+    todas_las_transacciones = []
+    metricas_ocr = []
+
+    for i, res_tuple in enumerate(res_paginas):
+        pagina_real = i + 1
+        
+        # Extraemos el tiempo si no hubo una excepción catastrófica en el gather
+        if isinstance(res_tuple, Exception):
+            res = res_tuple
+            tiempo_ms = 0
+        else:
+            res, tiempo_ms = res_tuple
+        
+        # --- Lógica de registro de errores ---
+        if isinstance(res, Exception) or not res:
+            logger.warning(f"Fallo OCR en {filename} pág {pagina_real}")
+            # En lugar de hacer 'continue', registramos la falla para el reporte QA
+            
+            # 1. CASO A: Falla catastrófica del Agente o JSON Ilegible
+        if isinstance(res, Exception) or res is None:
+            logger.warning(f"Fallo OCR en {filename} pág {pagina_real}")
+            metricas_ocr.append({
+                "pagina": pagina_real,
+                "metodo_predominante": "QWEN_VISION_OCR",
+                "transacciones": 0,
+                "tiempo_ms": int(tiempo_ms),
+                "calidad_score": 0.0, 
+                "alertas": f"ERROR: {str(res)}" if isinstance(res, Exception) else "Respuesta nula del Agente"
+            })
+            continue 
+            
+        # 2. CASO B: Página procesada pero sin transacciones (Ej. Términos y Condiciones)
+        if len(res) == 0:
+            metricas_ocr.append({
+                "pagina": pagina_real,
+                "metodo_predominante": "QWEN_VISION_OCR",
+                "transacciones": 0,
+                "tiempo_ms": int(tiempo_ms),
+                "calidad_score": 1.0, 
+                "alertas": "Página sin movimientos"
+            })
+            continue
+
+        # 3. CASO C: Extracción Exitosa -> Evaluación de Calidad (MÉTRICA 5)
+        score_pagina = 1.0
+        alertas_pagina = []
+
+        for trx in res:
+            monto_raw = str(trx.get("monto", ""))
+            tipo_raw = str(trx.get("tipo", "INDEFINIDO")).upper()
+            fecha_raw = str(trx.get("fecha", ""))
+            
+            # Castigo por formato de monto sucio (El prompt exige número limpio)
+            if "$" in monto_raw or "," in monto_raw or not monto_raw:
+                score_pagina = min(score_pagina, 0.85) # Bajamos a 85%
+                if "Montos con símbolos/sucios" not in alertas_pagina: alertas_pagina.append("Montos con símbolos/sucios")
+                
+            # Castigo por tipo de transacción alucinada por el LLM
+            if tipo_raw not in ["CARGO", "ABONO"]:
+                score_pagina = min(score_pagina, 0.70) # Bajamos a 70% (Requiere más limpieza)
+                if "Tipos no estándar" not in alertas_pagina: alertas_pagina.append("Tipos no estándar")
+
+            # Limpieza y guardado final
+            monto_clean = limpiar_monto(monto_raw)
+            
+            # Tratamos de rescatar el tipo si se equivocó
+            tipo_final = "ABONO" if "ABONO" in tipo_raw else "CARGO" if "CARGO" in tipo_raw else "INDEFINIDO"
+
+            todas_las_transacciones.append({
+                "fecha": fecha_raw,
+                "descripcion": str(trx.get("descripcion", "")),
+                "monto": str(monto_clean),         
+                "tipo": tipo_final,
+                "categoria": "GENERAL"             
+            })
+            
+        # Unimos las alertas o ponemos OK si todo fue perfecto
+        str_alertas = " | ".join(alertas_pagina) if alertas_pagina else "OK"
+
+        # Registramos las métricas de esta página evaluada
+        metricas_ocr.append({
+            "pagina": pagina_real,
+            "metodo_predominante": "QWEN_VISION_OCR",
+            "transacciones": len(res),
+            "tiempo_ms": int(tiempo_ms),
+            "calidad_score": round(score_pagina, 2), # Aquí inyectamos el score de la métrica 5
+            "alertas": str_alertas
+        })
+
+    return {
+        "transacciones": todas_las_transacciones,
+        "metricas": metricas_ocr
+    }
 
 def procesar_digital_worker_sync(
     ia_data_inicial: dict,
@@ -332,6 +328,9 @@ def procesar_digital_worker_sync(
         # Pasamos debug_flags=[] para que corra en silencio y rápido (solo logs INFO).
         engine = MotorExtraccionEspacial(debug_flags=[]) 
 
+        # --- INICIO DEL CRONÓMETRO ---
+        t_inicio = time.time()
+
         # 2. EJECUCIÓN DEL PIPELINE (3 PASADAS)
         # Usamos un bloque try/finally para asegurar que el PDF se cierra en memoria
         doc = fitz.open(file_path)
@@ -347,11 +346,18 @@ def procesar_digital_worker_sync(
         finally:
             doc.close()
 
+        # --- FIN DEL CRONÓMETRO Y CÁLCULO PROMEDIO ---
+        t_fin = time.time()
+        tiempo_total_ms = (t_fin - t_inicio) * 1000
+        
+        start_pg, end_pg = rango_paginas
+        pags_procesadas = (end_pg - start_pg) + 1
+        tiempo_promedio_pagina_ms = int(tiempo_total_ms / pags_procesadas) if pags_procesadas > 0 else int(tiempo_total_ms)
+
         # 3. APLANAR RESULTADOS Y FILTRAR POR PÁGINA
         todas_las_transacciones_objs = []
         metricas_consolidado = []
         total_tx_count = 0
-        start_pg, end_pg = rango_paginas
 
         for i, res_pag in enumerate(raw_results):
             # El motor devuelve índice 1-based en 'page'
@@ -373,7 +379,7 @@ def procesar_digital_worker_sync(
             # Construir métricas técnicas para el reporte final
             metricas_consolidado.append({
                 "pagina": page_num,
-                "tiempo_ms": 0, # El motor V2 refactorizado no mide tiempo por página individualmente
+                "tiempo_ms": tiempo_promedio_pagina_ms, # <--- Actualizamos con el tiempo real
                 "calidad_score": 1.0 if layouts[i].has_explicit_headers else 0.5,
                 "metodo_predominante": "SPATIAL_V2",
                 "bloques": len(txs_dicts),
@@ -411,20 +417,39 @@ def procesar_digital_worker_sync(
 
 def procesar_ocr_worker_sync(
     ia_data: dict, 
-    file_path: str, #Recibe ruta
+    file_path: str, 
     filename: str
-) -> Union[List[AnalisisTPV.ResultadoExtraccion], Exception]:
+) -> Union[AnalisisTPV.ResultadoExtraccion, Exception]:
     try:
-        # Leemos el archivo DESDE EL DISCO dentro del proceso worker
+        # 1. Leer PDF
         with open(file_path, "rb") as f:
             pdf_bytes = f.read()
 
-        lista_dicts = asyncio.run(
-            procesar_documento_escaneado_con_agentes_async(
-                ia_data, pdf_bytes, filename
-            )
+        # 2. Obtener transacciones crudas del nuevo motor (solo transacciones y métricas)
+        resultado_crudo = asyncio.run(
+            procesar_documento_escaneado_con_agentes_async(ia_data, pdf_bytes, filename)
         )
-        return [crear_objeto_resultado(d) for d in lista_dicts]
+
+        # Fusionamos la metadata original (ia_data) con los resultados del OCR.
+        # Así construimos un diccionario idéntico al que escupe clasificar_transacciones_extraidas
+        datos_dict_unificado = {**ia_data} # Copiamos todos los datos base (banco, rfc, etc.)
+        datos_dict_unificado["nombre_archivo_virtual"] = filename
+        datos_dict_unificado["transacciones"] = resultado_crudo.get("transacciones", [])
+        datos_dict_unificado["metadata_tecnica"] = resultado_crudo.get("metricas", [])
+
+        # LOGS MOMENTANEOS
+        num_txs = len(datos_dict_unificado["transacciones"])
+        logger.info(f"[TRACKING OCR - 1] Worker terminó {filename}. Transacciones extraídas: {num_txs}")
+        
+        # 4. Usamos tu función original INTACTA
+        obj_res = crear_objeto_resultado(datos_dict_unificado) 
+        
+        # 5. Restauramos campos de trazabilidad (Igual que en el DigitalWorker)
+        obj_res.file_path_origen = file_path
+        obj_res.es_digital = False
+        
+        return obj_res
+        
     except Exception as e:
         logger.error(f"Error Worker OCR ({filename}): {e}", exc_info=True)
         return e

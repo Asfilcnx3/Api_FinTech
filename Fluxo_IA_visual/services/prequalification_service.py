@@ -32,7 +32,7 @@ class PrequalificationService:
         async with httpx.AsyncClient(timeout=45.0) as client:
             # --- FASE 1: RECOLECCIÓN DE DATOS (I/O Bound) ---
             
-            # 1. Datos básicos y Entidad (para ID y Fecha Registro)
+            # 1. Datos básicos y Entidad
             entity_details = await self.client_repo.get_entity_detail(client, rfc)
             entity_id = entity_details["id"] 
             reg_date = entity_details["registration_date"]
@@ -59,6 +59,13 @@ class PrequalificationService:
             buro_data = await self.client_repo.get_buro_report_status(client, entity_id, rfc) 
             compliance_data = await self.client_repo.get_compliance_opinion(client, rfc)
 
+            # 8. Redes (Customers & Vendors)
+            raw_customer_net = []
+            raw_vendor_net = []
+            if entity_id:
+                raw_customer_net = await self.client_repo.get_network_data(client, entity_id, "customer-network")
+                raw_vendor_net = await self.client_repo.get_network_data(client, entity_id, "vendor-network")
+
         # --- FASE 2: PROCESAMIENTO DE LÓGICA DE NEGOCIO (CPU Bound) ---
         
         # A. Procesamiento Temporal AVANZADO
@@ -72,6 +79,9 @@ class PrequalificationService:
 
         # C. Procesamiento Financiero
         financial_ratios = self._process_financial_statements(financial_tree)
+
+        # D. Procesamiento de Redes
+        networks_processed = self._process_networks(raw_customer_net, raw_vendor_net)
 
         # --- FASE 3: PRONÓSTICO FINANCIERO INTEGRAL ---
         # --- PREPARACIÓN DE RAW DATA HISTORY ---
@@ -175,6 +185,7 @@ class PrequalificationService:
             stats_last_months=stats_windows,
             
             concentration_last_12m=concentration_metrics,
+            networks_data=networks_processed,
             financial_ratios_history=financial_ratios,
             financial_statements_tree=financial_tree, # Arbol crudo
             raw_data_history=raw_history_list,
@@ -348,19 +359,19 @@ class PrequalificationService:
         bs_tree = tree.get("balance_sheet", {})
         is_tree = tree.get("income_statement", {})
 
-        # 1. Extracción de Datos Crudos (Usando el parser estático del cliente)
-        # Usamos SyntageClient.parse_values_from_tree (método estático público)
+        # 1. Extracción de Datos Crudos
         assets = SyntageClient.parse_values_from_tree(bs_tree, ["Activo", "Total Activo"])
-        equity = SyntageClient.parse_values_from_tree(bs_tree, ["Capital Contable", "Total Capital"])
-        revenue = SyntageClient.parse_values_from_tree(is_tree, ["Ingresos Netos", "Ventas netas", "Ingresos"])
+        liabilities = SyntageClient.parse_values_from_tree(bs_tree, ["Pasivo", "Total Pasivo"]) # NUEVO
+        equity = SyntageClient.parse_values_from_tree(bs_tree, ["Capital Contable", "Total Capital", "Capital"])
         
-        # Dual fields (Profit/Loss)
+        revenue = SyntageClient.parse_values_from_tree(is_tree, ["Ingresos Netos", "Ventas netas", "Ingresos"])
+        gross_profit = SyntageClient.parse_values_from_tree(is_tree, ["Utilidad Bruta"]) # NUEVO
+        gross_loss = SyntageClient.parse_values_from_tree(is_tree, ["Pérdida Bruta"])   # NUEVO
+        
         net_profit = SyntageClient.parse_values_from_tree(is_tree, ["Utilidad neta", "Resultado Neto"])
         net_loss = SyntageClient.parse_values_from_tree(is_tree, ["Pérdida neta", "Pérdida del ejercicio"])
-        
         ebit_profit = SyntageClient.parse_values_from_tree(is_tree, ["Utilidad de operación", "EBIT"])
         ebit_loss = SyntageClient.parse_values_from_tree(is_tree, ["Pérdida de operación"])
-        
         ebt_profit = SyntageClient.parse_values_from_tree(is_tree, ["Utilidad antes de impuestos", "EBT"])
         ebt_loss = SyntageClient.parse_values_from_tree(is_tree, ["Pérdida antes de impuestos"])
 
@@ -393,9 +404,12 @@ class PrequalificationService:
             year_input = PrequalificationResponse.FinancialYearInput(
                 year=year,
                 assets=assets.get(year, 0.0),
+                liabilities=liabilities.get(year, 0.0),
                 equity=equity.get(year, 0.0),
                 revenue=revenue.get(year, 0.0),
                 taxes=calculated_taxes,
+                gross_profit=gross_profit.get(year, 0.0), 
+                gross_loss=gross_loss.get(year, 0.0),     
                 net_profit=raw_net_p,
                 net_loss=raw_net_l,
                 ebit_profit=ebit_profit.get(year, 0.0),
@@ -409,3 +423,56 @@ class PrequalificationService:
             results.append(ratios)
 
         return results
+    
+    # ==========================================
+    # MÉTODOS PRIVADOS (Agrega este nuevo método al final de tu clase PrequalificationService)
+    # ==========================================
+    def _process_networks(self, raw_customers: List[Dict], raw_vendors: List[Dict]) -> PrequalificationResponse.NetworksData:
+        """Convierte los JSON crudos de Syntage a nuestros modelos de Pydantic."""
+        
+        def safe_float(val):
+            try: return float(val)
+            except: return 0.0
+
+        def map_nodes(raw_list, name_key, pending_key, installments_key, days_key):
+            nodes = []
+            # La API a veces devuelve un dict con error o un objeto anidado, nos aseguramos que sea lista
+            if not isinstance(raw_list, list):
+                return nodes
+                
+            for item in raw_list:
+                nodes.append(PrequalificationResponse.NetworkNode(
+                    name=str(item.get(name_key, "N/A")),
+                    total_received=safe_float(item.get("totalReceived")),
+                    total_cancelled_received=safe_float(item.get("totalCancelledReceived")),
+                    percentage_cancelled=safe_float(item.get("percentageCancelled")),
+                    received_discounts=safe_float(item.get("receivedDiscounts")),
+                    received_credit_notes=safe_float(item.get("receivedCreditNotes")),
+                    payment_pending=safe_float(item.get(pending_key)),
+                    net_received=safe_float(item.get("netReceived")),
+                    pue_received=safe_float(item.get("pueReceived")),
+                    ppd_received=safe_float(item.get("ppdReceived")),
+                    ppd_count=int(item.get("ppdCount", 0)),
+                    payment_amount=safe_float(item.get("paymentAmount")),
+                    in_installments=safe_float(item.get(installments_key)),
+                    days_outstanding=safe_float(item.get(days_key))
+                ))
+            return nodes
+
+        # Mapeamos prestando atención a que las llaves cambian ligeramente entre customer y vendor
+        return PrequalificationResponse.NetworksData(
+            customers=map_nodes(
+                raw_customers, 
+                name_key="customer", 
+                pending_key="emittedPaymentPending", 
+                installments_key="collectedInInstallments", 
+                days_key="daysSalesOutstanding"
+            ),
+            vendors=map_nodes(
+                raw_vendors, 
+                name_key="vendor", 
+                pending_key="receivedPaymentPending", 
+                installments_key="paidInInstallments", 
+                days_key="daysPayableOutstanding"
+            )
+        )

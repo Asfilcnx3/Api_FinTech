@@ -91,9 +91,9 @@ class SyntageClient:
                     members = data if isinstance(data, list) else data.get("hydra:member", [])
                     # --- LOG DE DEBUG ---
                     if members:
-                        logger.info(f"DEBUG NAME ({inv_type}): Primer item encontrado: {str(members[0])[:200]}...")
+                        logger.debug(f"DEBUG NAME ({inv_type}): Primer item encontrado: {str(members[0])[:200]}...")
                     else:
-                        logger.info(f"DEBUG NAME ({inv_type}): Lista vacía.")
+                        logger.debug(f"DEBUG NAME ({inv_type}): Lista vacía.")
                     # --------------------
 
                     if members and isinstance(members[0], dict):
@@ -141,7 +141,7 @@ class SyntageClient:
             }
             
             # Log para verificar la nueva ventana ampliada
-            logger.info(f"Consultando Riesgos con ventana (12m + Current): {params['options[from]']} a {params['options[to]']}")
+            logger.debug(f"Consultando Riesgos con ventana (12m + Current): {params['options[from]']} a {params['options[to]']}")
 
             resp_risks = await client.get(f"{self.base_url}/insights/{rfc}/risks", params=params, headers=self.headers)
             
@@ -157,7 +157,7 @@ class SyntageClient:
                     elif isinstance(json_body, list):
                         risks = json_body
                 
-                logger.info(f"Riesgos obtenidos correctamente.")
+                logger.debug(f"Riesgos obtenidos correctamente.")
             else:
                 logger.warning(f"Error HTTP al obtener riesgos: {resp_risks.status_code}")
 
@@ -244,12 +244,12 @@ class SyntageClient:
                     raw_items = data if isinstance(data, list) else data.get("hydra:member", []) or data.get("data", [])
                     
                     for i in raw_items[:5]:
-                        # Devolvemos Dict puro
                         items_out.append({
                             "name": i.get("name", "N/A"),
                             "rfc": i.get("rfc", "N/A"),
                             "total_amount": float(i.get("total", 0)),
-                            "percentage": float(i.get("share", 0))
+                            "percentage": float(i.get("share", 0)),
+                            "transactions": i.get("transactions", [])
                         })
             except Exception as e:
                 logger.error(f"Error concentration {url_suffix}: {e}")
@@ -258,6 +258,30 @@ class SyntageClient:
         clients = await fetch_conc("customer-concentration")
         suppliers = await fetch_conc("supplier-concentration")
         return clients, suppliers
+
+    async def get_network_data(self, client: httpx.AsyncClient, entity_id: str, network_type: str) -> Dict[str, Any]:
+        """
+        Obtiene la red de clientes o proveedores.
+        network_type: 'customer-network' o 'vendor-network'
+        """
+        # Según la documentación: /entities/{entityId}/insights/metrics/{network_type}
+        url = f"{self.base_url}/entities/{entity_id}/insights/metrics/{network_type}"
+        
+        try:
+            # Hacemos la petición básica. Algunos endpoints de metrics requieren el header de formato, 
+            # lo agregamos por si acaso, tal como en los estados financieros.
+            headers = {**self.headers, "X-Insight-Format": "2022"}
+            resp = await client.get(url, headers=headers)
+            
+            if resp.status_code == 200:
+                return resp.json()
+            else:
+                logger.warning(f"Error HTTP {resp.status_code} al obtener {network_type}: {resp.text}")
+                return {"error_status": resp.status_code}
+                
+        except Exception as e:
+            logger.error(f"Error fetching {network_type}: {e}")
+            return {}
 
     # --- 4. FINANCIAL STATEMENTS ---
     async def get_financial_statements_tree(self, client: httpx.AsyncClient, rfc: str) -> Dict[str, Any]:
@@ -513,7 +537,7 @@ class SyntageClient:
                             except: pass
 
                         datos_generales = data_node.get("datosGenerales", {})
-                        logger.info(f"Debug de datos generales: {datos_generales}")
+                        logger.debug(f"Debug de datos generales: {datos_generales}")
                         if datos_generales:
                             def calculate_inquiry_block(keys_list):
                                 v_mas24 = int(datos_generales.get(keys_list[0]) or 0)
@@ -546,7 +570,7 @@ class SyntageClient:
 
                             result["inquiries_summary"].extend(calculate_inquiry_block(comercial_keys))
                             result["inquiries_summary"].extend(calculate_inquiry_block(financiera_keys))
-                            logger.info(f"Debug_Resultados: {result["inquiries_summary"]}")
+                            logger.debug(f"Debug_Resultados: {result["inquiries_summary"]}")
 
                         for line in temp_lines:
                             vigente = line["current_balance"]
@@ -693,10 +717,10 @@ class SyntageClient:
                     # "checkedAt" es la fecha exacta cuando Syntage verificó esto con el SAT.
                     result["date"] = latest_check.get("checkedAt")
                     
-                    logger.info(f"Compliance Opinion actualizada: {result['status']} fecha {result['date']}")
+                    logger.debug(f"Compliance Opinion actualizada: {result['status']} fecha {result['date']}")
                 else:
                     result["status"] = "not_found"
-                    logger.info(f"No se encontraron registros de compliance checks para {rfc}")
+                    logger.debug(f"No se encontraron registros de compliance checks para {rfc}")
 
             elif resp.status_code == 404:
                 result["status"] = "not_found"
@@ -730,7 +754,7 @@ class SyntageClient:
                     entity = items[0]
                     found_id = entity.get("id")
                     
-                    logger.info(f"Entity ID resuelto exitosamente para {rfc}: {found_id}")
+                    logger.debug(f"Entity ID resuelto exitosamente para {rfc}: {found_id}")
                     return found_id
                 else:
                     logger.warning(f"Entity Search: No se encontró entidad para taxpayer.id={rfc}")
@@ -920,11 +944,55 @@ class SyntageClient:
                     taxpayer = entity.get("taxpayer", {})
                     result["registration_date"] = taxpayer.get("registrationDate")
                     
-                    logger.info(f"Entidad encontrada. ID: {result['id']}, RegDate: {result['registration_date']}")
+                    logger.debug(f"Entidad encontrada. ID: {result['id']}, RegDate: {result['registration_date']}")
         except Exception as e:
             logger.error(f"Error getting entity detail: {e}")
         
         return result
+
+    async def get_products_and_services(self, client: httpx.AsyncClient, entity_id: str, type_ps: str) -> List[Dict]:
+        """
+        type_ps: 'sold' o 'bought'
+        """
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=365) # Últimos 12 meses
+        
+        # Quitamos el order[total] temporalmente por si eso estaba rompiendo el endpoint
+        params = {
+            "options[from]": start_date.strftime("%Y-%m-%dT00:00:00.000Z"),
+            "options[to]": end_date.strftime("%Y-%m-%dT00:00:00.000Z"),
+            "itemsPerPage": 50
+        }
+        
+        url = f"{self.base_url}/entities/{entity_id}/insights/products-and-services-{type_ps}"
+        
+        try:
+            resp = await client.get(url, params=params, headers=self.headers)
+            
+            if resp.status_code == 200:
+                data = resp.json()
+                
+                # Extracción robusta multicapa
+                items = []
+                if isinstance(data, list):
+                    items = data
+                elif isinstance(data, dict):
+                    # Intentamos con las 3 formas comunes de Syntage
+                    items = data.get("hydra:member") or data.get("data") or data.get("respuesta") or []
+                
+                # Si sigue vacío pero la respuesta fue 200, imprimimos qué nos mandaron para debuggear
+                if not items:
+                    logger.warning(f"Productos {type_ps} regresó 200 OK pero vacío. RAW: {str(data)[:200]}")
+                    
+                return items
+            else:
+                # Si falló la petición, imprimimos el error exacto de Syntage
+                logger.warning(f"Error HTTP {resp.status_code} en productos {type_ps}: {resp.text}")
+                return []
+                
+        except Exception as e:
+            logger.error(f"Error fetching products {type_ps}: {e}")
+            return []
     
     @staticmethod
     def _parse_buro_amount(val_str: Any) -> float:

@@ -1,8 +1,8 @@
 import pandas as pd
 import numpy as np
 from statsmodels.tsa.holtwinters import ExponentialSmoothing
-from ..models.responses_forecasting import Forecast
-from typing import Dict, List, Tuple, Optional
+from ...models.responses_forecasting import Forecast
+from typing import Dict, Tuple
 import logging
 
 logger = logging.getLogger(__name__)

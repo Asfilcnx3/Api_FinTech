@@ -16,8 +16,8 @@ palabras_clave_generales = [
 ]
 
 PALABRAS_TPV = [
-    "terminales punto de venta", "punto de venta", "tpv", "terminal", "evopay",
-    "clip", "izettle", "mercado pago", "netpay"
+    "terminales punto de venta", "punto de venta", "tpv", "terminal", "evopay", "clip", "izettle", "mercado pago", "netpay",
+    "pocket de latinoameric"
 ]
 
 PALABRAS_EFECTIVO = [
@@ -367,62 +367,97 @@ EJEMPLO DE SALIDA:
 05 | n06 pago cuenta de tercero bnet 1551474581 manuel alanis ref 0031589758 | 2050.00
 """
 
+# PROMPT_FASE_2_ESCRIBA_VISION = """
+# TU OBJETIVO:
+# Eres un sistema OCR financiero experto en leer tablas de estados de cuenta bancarios. Tu ÚNICA tarea será convertir el texto en transacciones estructuradas en formato TOON.
+# No clasifiques, solo transcribe los movimientos que encuentres siguiendo las reglas visuales estrictas a continuación.
+
+# FORMATO DE SALIDA (TOON):
+# 1. Una línea por transacción.
+# 2. Separador obligatorio: `|` (pipe).
+# 3. Estructura EXACTA:
+# FECHA | DESCRIPCION | MONTO | TIPO
+
+# - FECHA: solo el número del día (dos dígitos, ej. 05).
+# - DESCRIPCION: todo el texto del concepto unido en UNA sola línea.
+# - MONTO: número decimal limpio (sin comas, sin símbolo $).
+# - TIPO: "abono" o "cargo" según la columna visual a la que pertenece el movimiento.
+#     Posibles columnas:
+#     Abonos = depósitos / entradas / abonos
+#     Cargos = retiros / salidas / cargos
+
+# REGLAS VISUALES DE TRANSACCIÓN:
+# 1. Cada transacción comienza en una fila donde aparece una o varias fechas.
+# 2. Una sola transaccion puede ocupar VARIAS líneas consecutivas.
+# 3. Las líneas debajo sin fecha pertenecen a la MISMA transacción hasta que aparezca otra fecha.
+# 4. Une todas las líneas hasta encontrar otra linea con fechas.
+# 5. La fecha válida es SIEMPRE la PRIMERA fecha que aparece en la línea, descarta la segunda si existe.
+# 6. Pueden haber varios movimientos similares o iguales en el mismo día, cada uno es una transacción separada, siempre y cuando tenga una fecha.
+
+# REGLAS CRÍTICAS PARA MONTO:
+# 1. Una fila puede mostrar VARIOS montos (operación + saldos).
+# 2. El MONTO REAL es:
+#     - EL PRIMER MONTO NUMÉRICO DE IZQUIERDA A DERECHA EN LA TRANSACCIÓN QUE ESTÉ ALINEADO CON LA COLUMNA DEPÓSITOS O RETIROS.
+# 3. Ignora montos alineados con columnas de SALDO.
+# 4. Si aparecen 2 o 3 montos:
+#     - Usa SOLO que pertenezca a la columna de depósitos o retiros.
+#     - Ignora los demás.
+#     - Si ninguno pertenece a esas columnas, ignora la transacción.
+# 5. SI NO PUEDES IDENTIFICAR CLARAMENTE UN MONTO DE OPERACIÓN, IGNORA LA TRANSACCIÓN.
+
+# REGLAS PARA TIPO:
+# - Si el monto está bajo la columna "depósitos" / "abonos" / "entradas":
+#     → TIPO = "abono"
+# - Si el monto está bajo "retiros" / "cargos" / "salidas":
+#     → TIPO = "cargo"
+
+# REGLAS DE PRECISIÓN:
+# - Sé extremadamente preciso con los números.
+# - Ignora encabezados, pies de página, totales y saldos.
+# - No cambies decimales.
+# - No inventes montos.
+# - Ignora filas sin monto válido.
+# - No dupliques transacciones.
+# - No generes transacciones falsas ni lineas vacías.
+
+# EJEMPLO DE SALIDA:
+# 05 | n06 pago cuenta de tercero bnet 1551474581 manuel alanis ref 0031589758 | 2050.00 | abono
+# 05 | comision manejo cuenta | 50.00 | cargo
+# """
+
 PROMPT_FASE_2_ESCRIBA_VISION = """
 TU OBJETIVO:
-Eres un sistema OCR financiero experto en leer tablas de estados de cuenta bancarios. Tu ÚNICA tarea será convertir el texto en transacciones estructuradas en formato TOON.
-No clasifiques, solo transcribe los movimientos que encuentres siguiendo las reglas visuales estrictas a continuación.
+Eres un sistema OCR financiero experto en leer tablas de estados de cuenta bancarios. Tu ÚNICA tarea es extraer transacciones y devolverlas en un formato JSON estrictamente válido. No clasifiques, solo transcribe.
 
-FORMATO DE SALIDA (TOON):
-1. Una línea por transacción.
-2. Separador obligatorio: `|` (pipe).
-3. Estructura EXACTA:
-FECHA | DESCRIPCION | MONTO | TIPO
+REGLAS DE EXTRACCIÓN:
+1. Extrae solo las filas que contengan operaciones bancarias válidas.
+2. Ignora encabezados, pies de página, saldos totales o líneas de resumen.
 
-- FECHA: solo el número del día (dos dígitos, ej. 05).
-- DESCRIPCION: todo el texto del concepto unido en UNA sola línea.
-- MONTO: número decimal limpio (sin comas, sin símbolo $).
-- TIPO: "abono" o "cargo" según la columna visual a la que pertenece el movimiento.
-    Posibles columnas:
-    Abonos = depósitos / entradas / abonos
-    Cargos = retiros / salidas / cargos
+FORMATO DE EXTRACCIÓN:
+1. FECHA: Solo el número del día o fecha corta (ej. "05" o "05/12").
+2. DESCRIPCION: Todo el concepto en una sola cadena. Si abarca múltiples líneas visuales, únelas.
+3. MONTO: Solo el número (sin símbolo $, sin comas). Ej: 1540.50
+4. TIPO: Estrictamente "CARGO" (retiros/salidas) o "ABONO" (depósitos/entradas) según la columna donde aparezca el monto.
 
-REGLAS VISUALES DE TRANSACCIÓN:
-1. Cada transacción comienza en una fila donde aparece una o varias fechas.
-2. Una sola transaccion puede ocupar VARIAS líneas consecutivas.
-3. Las líneas debajo sin fecha pertenecen a la MISMA transacción hasta que aparezca otra fecha.
-4. Une todas las líneas hasta encontrar otra linea con fechas.
-5. La fecha válida es SIEMPRE la PRIMERA fecha que aparece en la línea, descarta la segunda si existe.
-6. Pueden haber varios movimientos similares o iguales en el mismo día, cada uno es una transacción separada, siempre y cuando tenga una fecha.
+FORMATO DE SALIDA ESPERADO:
+Debes responder ÚNICAMENTE con un arreglo JSON puro, sin texto introductorio ni conclusiones.
 
-REGLAS CRÍTICAS PARA MONTO:
-1. Una fila puede mostrar VARIOS montos (operación + saldos).
-2. El MONTO REAL es:
-    - EL PRIMER MONTO NUMÉRICO DE IZQUIERDA A DERECHA EN LA TRANSACCIÓN QUE ESTÉ ALINEADO CON LA COLUMNA DEPÓSITOS O RETIROS.
-3. Ignora montos alineados con columnas de SALDO.
-4. Si aparecen 2 o 3 montos:
-    - Usa SOLO que pertenezca a la columna de depósitos o retiros.
-    - Ignora los demás.
-    - Si ninguno pertenece a esas columnas, ignora la transacción.
-5. SI NO PUEDES IDENTIFICAR CLARAMENTE UN MONTO DE OPERACIÓN, IGNORA LA TRANSACCIÓN.
-
-REGLAS PARA TIPO:
-- Si el monto está bajo la columna "depósitos" / "abonos" / "entradas":
-    → TIPO = "abono"
-- Si el monto está bajo "retiros" / "cargos" / "salidas":
-    → TIPO = "cargo"
-
-REGLAS DE PRECISIÓN:
-- Sé extremadamente preciso con los números.
-- Ignora encabezados, pies de página, totales y saldos.
-- No cambies decimales.
-- No inventes montos.
-- Ignora filas sin monto válido.
-- No dupliques transacciones.
-- No generes transacciones falsas ni lineas vacías.
-
-EJEMPLO DE SALIDA:
-05 | n06 pago cuenta de tercero bnet 1551474581 manuel alanis ref 0031589758 | 2050.00 | abono
-05 | comision manejo cuenta | 50.00 | cargo
+```json
+[
+  {
+    "fecha": "05",
+    "descripcion": "PAGO CUENTA DE TERCERO BNET MANUEL ALANIS REF 0031",
+    "monto": 2050.00,
+    "tipo": "ABONO"
+  },
+  {
+    "fecha": "06",
+    "descripcion": "COMISION MANEJO DE CUENTA",
+    "monto": 50.00,
+    "tipo": "CARGO"
+  }
+]
+```
 """
 
 PROMPT_FASE_3_AUDITOR_TEMPLATE = """

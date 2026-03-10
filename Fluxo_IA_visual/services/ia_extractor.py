@@ -1,6 +1,6 @@
 from .pdf_processor import convertir_pdf_a_imagenes
 from ..core.config import settings
-from ..utils.helpers import _crear_prompt_agente_unificado, parsear_respuesta_toon
+from ..utils.helpers import _crear_prompt_agente_unificado, parsear_respuesta_json_ocr
 from ..utils.helpers_texto_fluxo import PROMPT_FASE_3_AUDITOR_TEMPLATE, PROMPT_GENERICO, PROMPTS_POR_BANCO
 
 from fastapi import HTTPException
@@ -144,7 +144,7 @@ async def llamar_agente_ocr_vision(banco: str, pdf_bytes: bytes, paginas: List[i
             model="qwen/qwen3-vl-235b-a22b-instruct",
             messages=[{"role": "user", "content": content}]
         )
-        return parsear_respuesta_toon(res.choices[0].message.content)
+        return parsear_respuesta_json_ocr(res.choices[0].message.content)
     except Exception as e:
         logger.error(f"Error Agente OCR {banco}: {e}")
         return []
