@@ -1,62 +1,74 @@
-# api/routers/precalificacion.py (solo llamada a servicios, siendo todo muy limpio)
-from fastapi import APIRouter, Depends, HTTPException, Request
+# Fluxo_IA_visual/routers/precalificacion.py
+from fastapi import APIRouter, Depends, HTTPException, Request, BackgroundTasks
 from fastapi.responses import Response
-from ...services.prequalification_service import PrequalificationService
-from ...models.responses_precalificacion import PrequalificationResponse
-from ...services.syntage_storage_service import StorageService
-from ...utils.xlsx_syntage_generator import generar_excel_syntage
 import logging
 
+from ...services.storage_service import StorageService
+from ...services.prequalification.orchestator_prequalification import PrequalificationOrchestrator
+from ...services.report_generator.excel_orchestator import ExcelReportBuilder
+
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 router = APIRouter()
 storage = StorageService()
 
-@router.get("/precalificacion/{rfc}", response_model=PrequalificationResponse.PrequalificationFinalResponse)
-async def precalificar_cliente(
-    request: Request, # Para construir la URL base
-    rfc: str,
-    service: PrequalificationService = Depends()
-):
-    """
-    El endpoint completo es una fachada. Solo delega al servicio de dominio.
-    """
-    rfc = rfc.strip().upper()
+# --- TAREA EN SEGUNDO PLANO ---
+async def procesar_precalificacion_bg(rfc: str, job_id: str, orchestrator: PrequalificationOrchestrator):
+    """Esta función corre sin bloquear al cliente."""
     try:
-        # 1. Obtener resultado (Tu lógica existente)
-        resultado = await service.analyze_taxpayer(rfc)
-        
-        # 2. Guardar para descarga (NUEVO)
-        storage = StorageService()
-        # Agregamos parámetros para que vuelque absolutamente todo
+        resultado = await orchestrator.analyze_taxpayer(rfc)
+        # Volcar datos a dict
         data_dict = resultado.model_dump(exclude_unset=False, exclude_none=False)
+        # Añadir banderas de éxito
+        data_dict["status"] = "completed"
+        data_dict["job_id"] = job_id
         
-        job_id = storage.save_json_result(data_dict)
-        
-        # 3. Inyectar ID y URL en la respuesta
-        resultado.job_id = job_id
-        # Construye la URL completa: https://api.tu-dominio.com/api/v1/download/report/{uuid}
-        base_url = str(request.base_url).rstrip("/")
-        resultado.download_url = f"{base_url}/api/v1/download/report/{job_id}"
-        
-        return resultado
-    
+        storage.update_job(job_id, data_dict)
+        logger.info(f"[{rfc}] Job {job_id} completado con éxito.")
     except Exception as e:
-        # Aquí solo manejamos errores HTTP
-        logger.error(f"Error procesando RFC {rfc}: {e}")
-        raise HTTPException(status_code=500, detail="Error interno procesando la precalificación.")
+        logger.error(f"[{rfc}] Error en Job {job_id}: {e}", exc_info=True)
+        storage.update_job(job_id, {"status": "error", "detail": str(e), "rfc": rfc})
+
+# --- ENDPOINTS ---
+
+@router.get("/precalificacion/{rfc}")
+async def iniciar_precalificacion(
+    request: Request, 
+    rfc: str,
+    background_tasks: BackgroundTasks, # Inyección de dependencia de FastAPI
+    orchestrator: PrequalificationOrchestrator = Depends()
+):
+    """Retorna un Job ID inmediato e inicia el proceso en el backend."""
+    rfc = rfc.strip().upper()
+    job_id = storage.create_pending_job(rfc)
     
+    # Enviar al background
+    background_tasks.add_task(procesar_precalificacion_bg, rfc, job_id, orchestrator)
+    
+    base_url = str(request.base_url).rstrip("/")
+    return {
+        "message": "Procesamiento iniciado en segundo plano.",
+        "job_id": job_id,
+        "status_url": f"{base_url}/api/v1/precalificacion/status/{job_id}",
+        "download_url": f"{base_url}/api/v1/precalificacion/download/report/{job_id}"
+    }
 
 @router.get("/download/report/{job_id}")
 async def download_syntage_report(job_id: str):
-    # 1. Recuperar datos
     data = storage.get_json_result(job_id)
     if not data:
-        raise HTTPException(status_code=404, detail="El reporte ha expirado o no existe.")
+        raise HTTPException(status_code=404, detail="El reporte no existe o ha expirado.")
     
-    # 2. Generar Excel (Bytes)
-    excel_bytes = generar_excel_syntage(data)
+    # Validaciones de seguridad
+    if data.get("status") == "processing":
+        raise HTTPException(status_code=400, detail="El reporte aún se está procesando. Intente más tarde.")
+    if data.get("status") == "error":
+        raise HTTPException(status_code=500, detail="El procesamiento falló, no se puede generar el Excel.")
+
+    # Generar Excel al vuelo solo cuando está completado
+    builder = ExcelReportBuilder(data)
+    excel_bytes = builder.build()
     
-    # 3. Retornar archivo
     filename = f"Reporte_Financiero_{data.get('rfc', 'Syntage')}.xlsx"
     
     return Response(

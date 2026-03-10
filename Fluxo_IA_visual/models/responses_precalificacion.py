@@ -180,6 +180,8 @@ class PrequalificationResponse(BaseModel):
         rfc: str # Ahora sí obligatorio
         total_amount: float
         percentage: float
+        linear_slope: float = 0.0
+        trend_text: str = "Sin datos"
 
     class ConcentrationMetrics(BaseModel):
         top_5_clients: List["PrequalificationResponse.ConcentrationItem"]
@@ -189,9 +191,13 @@ class PrequalificationResponse(BaseModel):
         """Datos crudos extraídos del árbol para un año específico"""
         year: str
         assets: float = 0.0
+        liabilities: float = 0.0 # Pasivos
         equity: float = 0.0
         revenue: float = 0.0
         taxes: float = 0.0
+
+        gross_profit: float = 0.0 # Utilidad Bruta
+        gross_loss: float = 0.0   # Pérdida Bruta
         
         # Dual fields (Syntage separa Profit de Loss)
         net_profit: float = 0.0
@@ -214,8 +220,10 @@ class PrequalificationResponse(BaseModel):
 
         # -- Datos Consolidados --
         input_assets: float
+        input_liabilities: float     # Pasivo
         input_equity: float
         input_revenue: float
+        input_gross_profit: float    # Bruta consolidada (Profit - Loss)
         input_net_income: float
         input_taxes: float
         
@@ -237,6 +245,41 @@ class PrequalificationResponse(BaseModel):
         nfcf: float = 0.0
         inflows_count: int = 0
         outflows_count: int = 0
+    
+    class NetworkNode(BaseModel):
+        """Modelo para un nodo de red (Cliente o Proveedor)"""
+        name: str # Mapearemos 'customer' o 'vendor' aquí
+        total_received: float
+        total_cancelled_received: float
+        percentage_cancelled: float
+        received_discounts: float
+        received_credit_notes: float
+        payment_pending: float # Mapearemos 'emittedPaymentPending' o 'receivedPaymentPending'
+        net_received: float
+        pue_received: float
+        ppd_received: float
+        ppd_count: int
+        payment_amount: float
+        in_installments: float # Mapearemos 'collectedInInstallments' o 'paidInInstallments'
+        days_outstanding: float # Mapearemos 'daysSalesOutstanding' o 'daysPayableOutstanding'
+
+    class NetworksData(BaseModel):
+        """Contenedor para ambas redes"""
+        customers: List["PrequalificationResponse.NetworkNode"] = []
+        vendors: List["PrequalificationResponse.NetworkNode"] = []
+    
+    class ProductServiceItem(BaseModel):
+        """Modelo para un producto/servicio vendido o comprado"""
+        description: str
+        sat_code: str
+        total_amount: float
+        percentage: float
+        transactions: int
+
+    class ProductsData(BaseModel):
+        """Contenedor para productos vendidos y comprados"""
+        sold: List["PrequalificationResponse.ProductServiceItem"] = []
+        bought: List["PrequalificationResponse.ProductServiceItem"] = []
 
     class PrequalificationFinalResponse(BaseModel):
         rfc: str
@@ -257,6 +300,8 @@ class PrequalificationResponse(BaseModel):
         cashflow_current_month: Optional["PrequalificationResponse.CurrentMonthMetrics"] = None
         
         concentration_last_12m: "PrequalificationResponse.ConcentrationMetrics"
+        networks_data: "PrequalificationResponse.NetworksData"
+        products_data: "PrequalificationResponse.ProductsData"
         financial_ratios_history: List["PrequalificationResponse.FinancialRatioYear"]
         
         # Arbol financiero completo (sin procesar, para auditoría y transparencia)

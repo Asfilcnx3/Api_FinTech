@@ -28,15 +28,18 @@ class AnalisisTPV:
 
         banco: str
         tipo_moneda: Optional[str] = None
+        
         rfc: Optional[str] = None
         nombre_cliente: Optional[str] = None
         clabe_interbancaria: Optional[str] = None
         periodo_inicio: Optional[str] = None
         periodo_fin: Optional[str] = None
+        
         comisiones: Optional[float] = None
         depositos: Optional[float] = None
         cargos: Optional[float] = None
         saldo_promedio: Optional[float] = None
+
         depositos_en_efectivo: Optional[float] = None
         traspaso_entre_cuentas: Optional[float] = None
         total_entradas_financiamiento: Optional[float] = None
@@ -45,6 +48,20 @@ class AnalisisTPV:
         entradas_TPV_bruto: Optional[float] = None
         entradas_TPV_neto: Optional[float] = None
         total_sospechosas: Optional[float] = None
+
+        # Métricas de medición
+        confianza_extraccion: Optional[float] = Field(default=None, description="Porcentaje de cuadre entre la carátula y los movimientos extraídos (0.0 a 100.0)")
+
+        # Métrica de Descuadres
+        descuadre_depositos: Optional[float] = Field(default=0.0, description="Diferencia absoluta en depósitos")
+        descuadre_cargos: Optional[float] = Field(default=0.0, description="Diferencia absoluta en cargos")
+
+        # Métrica de la taza de categorización
+        tasa_categorizacion: Optional[float] = Field(default=0.0, description="Porcentaje de transacciones categorizadas exitosamente (distinto a GENERAL)")
+
+        # Métrica de páginas fallidas
+        paginas_totales: Optional[int] = Field(default=0, description="Total de páginas procesadas")
+        paginas_fallidas: Optional[int] = Field(default=0, description="Páginas que fallaron o no arrojaron transacciones")
 
     class ResultadoExtraccion(BaseModel):
         """Representa la respuesta para los documentos individuales -> Caratula + Resultados TPV."""

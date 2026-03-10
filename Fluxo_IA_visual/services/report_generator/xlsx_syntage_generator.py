@@ -182,6 +182,62 @@ def generar_excel_syntage(data: dict) -> bytes:
         print_bucket("saldoVencidoDe90a119Dias", "bucket_90_119")
         print_bucket("saldoVencidoDe120a179Dias", "bucket_120_179")
         print_bucket("saldoVencidoDe180DiasOMas", "bucket_180_plus")
+    
+    # 6. Resumen Financiero (vista tipo syntage)
+    financials = data.get("financial_ratios_history", [])
+    if financials:
+        # Ordenamos años de menor a mayor (ej. 2023, 2024)
+        financials_sorted = sorted(financials, key=lambda x: str(x.get("year", "")))
+        years = [str(f.get("year", "N/A")) for f in financials_sorted]
+        max_cols = len(years) + 1
+
+        ws1.append([])
+        ws1.append(["RESUMEN FINANCIERO (BALANCE Y RESULTADOS)"] + [""] * (len(years) - 1))
+        ws1.merge_cells(start_row=ws1.max_row, start_column=1, end_row=ws1.max_row, end_column=max_cols)
+        estilo_header(ws1, ws1.max_row, 1, max_cols)
+
+        # Encabezados de tabla (Concepto, 2023, 2024...)
+        ws1.append(["Concepto"] + years)
+        fila_sub = ws1.max_row
+        for col in range(1, max_cols + 1):
+            cell = ws1.cell(row=fila_sub, column=col)
+            cell.font = header_font
+            cell.fill = sub_header_fill
+            if col > 1: cell.alignment = Alignment(horizontal='right')
+
+        def print_fin_row(label, key, is_bold=False):
+            row_data = [label]
+            for f in financials_sorted:
+                row_data.append(f.get(key, 0.0))
+            ws1.append(row_data)
+            
+            curr_row = ws1.max_row
+            if is_bold:
+                ws1.cell(row=curr_row, column=1).font = Font(bold=True)
+                
+            for col_idx in range(2, max_cols + 1):
+                ws1.cell(row=curr_row, column=col_idx).style = currency_style
+
+        # --- SECCIÓN BALANCE GENERAL ---
+        ws1.append(["BALANCE GENERAL"] + [""] * len(years))
+        ws1.cell(row=ws1.max_row, column=1).font = Font(bold=True, italic=True)
+        
+        print_fin_row("Activo", "input_assets")
+        print_fin_row("Pasivo", "input_liabilities")
+        print_fin_row("Capital Contable", "input_equity")
+        
+        ws1.append([]) # Separador
+
+        # --- SECCIÓN ESTADO DE RESULTADOS ---
+        ws1.append(["ESTADO DE RESULTADOS"] + [""] * len(years))
+        ws1.cell(row=ws1.max_row, column=1).font = Font(bold=True, italic=True)
+
+        print_fin_row("Ingresos Netos", "input_revenue")
+        print_fin_row("Utilidad (Pérdida) Bruta", "input_gross_profit")
+        print_fin_row("Utilidad (Pérdida) de Operación", "ebit")
+        print_fin_row("Utilidad (Pérdida) antes de Impuestos", "ebt")
+        print_fin_row("Impuestos a la Utilidad", "input_taxes")
+        print_fin_row("Utilidad (Pérdida) Neta", "input_net_income", is_bold=True)
 
     # ==========================================
     # HOJA 2: FACTURACIÓN EN EL TIEMPO (RENOVADA)
@@ -242,9 +298,171 @@ def generar_excel_syntage(data: dict) -> bytes:
     ws2.column_dimensions['A'].width = 35
     for i in range(2, 7):
         ws2.column_dimensions[chr(64+i)].width = 20
+    
+    # ==========================================
+    # HOJA 6: RED DE NEGOCIOS (CLIENTES Y PROVEEDORES)
+    # ==========================================
+    ws_net = wb.create_sheet("Red de Negocios")
+
+    # --- FUNCIÓN PARA ANTIGÜEDAD DESDE RFC ---
+    def calcular_antiguedad_rfc(rfc_str):
+        if not rfc_str or not isinstance(rfc_str, str):
+            return "N/A"
+        
+        rfc_str = rfc_str.strip().upper()
+        current_year = datetime.now().year
+        current_yy = current_year % 100 # ej. 2026 -> 26
+        
+        try:
+            if len(rfc_str) == 12: # Persona Moral (3 letras + 6 números + 3 alfanuméricos)
+                yy_str = rfc_str[3:5]
+            elif len(rfc_str) == 13: # Persona Física (4 letras + 6 números + 3 alfanuméricos)
+                yy_str = rfc_str[4:6]
+            else:
+                return "N/A"
+                
+            if not yy_str.isdigit():
+                return "N/A"
+                
+            yy_int = int(yy_str)
+            # Si el año del RFC es menor o igual al actual, es del 2000+. Sino, es 1900+
+            year = (2000 + yy_int) if yy_int <= current_yy else (1900 + yy_int)
+            return f"{current_year - year} Años"
+        except:
+            return "N/A"
+
+    # --- FUNCIÓN PARA ARREGLAR PORCENTAJE ---
+    def fix_percentage(val):
+        try:
+            v = float(val)
+            # Si viene como 15.38, lo hacemos 0.1538 para que Excel lo formatee bien
+            return v / 100 if v > 1 else v
+        except:
+            return 0.0
+
+    # --- 1. CONCENTRACIÓN (TOP 5) ---
+    concentration = data.get("concentration_last_12m", {})
+    top_clients = concentration.get("top_5_clients", [])
+    top_suppliers = concentration.get("top_5_suppliers", [])
+
+    # === TOP 5 CLIENTES ===
+    ws_net.append(["CONCENTRACIÓN: TOP 5 CLIENTES (Últimos 12 Meses)"])
+    ws_net.merge_cells(start_row=ws_net.max_row, start_column=1, end_row=ws_net.max_row, end_column=5) # Ahora son 5 columnas
+    estilo_header(ws_net, ws_net.max_row, 1, 5)
+    
+    ws_net.append(["Nombre", "RFC", "Monto Total", "Porcentaje", "Antigüedad / Edad"])
+    sub_row = ws_net.max_row
+    for col in range(1, 6):
+        ws_net.cell(row=sub_row, column=col).font = header_font
+        ws_net.cell(row=sub_row, column=col).fill = sub_header_fill
+        ws_net.cell(row=sub_row, column=col).alignment = Alignment(horizontal='center')
+
+    for c in top_clients:
+        rfc = c.get("rfc", "")
+        pct = fix_percentage(c.get("percentage", 0))
+        antiguedad = calcular_antiguedad_rfc(rfc)
+        
+        ws_net.append([c.get("name"), rfc, c.get("total_amount"), pct, antiguedad])
+        ws_net.cell(row=ws_net.max_row, column=3).style = currency_style
+        ws_net.cell(row=ws_net.max_row, column=4).style = percent_style
+        ws_net.cell(row=ws_net.max_row, column=5).alignment = Alignment(horizontal='center')
+
+    ws_net.append([]) # Separador
+
+    # === TOP 5 PROVEEDORES ===
+    ws_net.append(["CONCENTRACIÓN: TOP 5 PROVEEDORES (Últimos 12 Meses)"])
+    ws_net.merge_cells(start_row=ws_net.max_row, start_column=1, end_row=ws_net.max_row, end_column=5)
+    estilo_header(ws_net, ws_net.max_row, 1, 5)
+    
+    ws_net.append(["Nombre", "RFC", "Monto Total", "Porcentaje", "Antigüedad / Edad"])
+    sub_row = ws_net.max_row
+    for col in range(1, 6):
+        ws_net.cell(row=sub_row, column=col).font = header_font
+        ws_net.cell(row=sub_row, column=col).fill = sub_header_fill
+        ws_net.cell(row=sub_row, column=col).alignment = Alignment(horizontal='center')
+
+    for s in top_suppliers:
+        rfc = s.get("rfc", "")
+        pct = fix_percentage(s.get("percentage", 0))
+        antiguedad = calcular_antiguedad_rfc(rfc)
+        
+        ws_net.append([s.get("name"), rfc, s.get("total_amount"), pct, antiguedad])
+        ws_net.cell(row=ws_net.max_row, column=3).style = currency_style
+        ws_net.cell(row=ws_net.max_row, column=4).style = percent_style
+        ws_net.cell(row=ws_net.max_row, column=5).alignment = Alignment(horizontal='center')
+
+    ws_net.append([])
+    ws_net.append([])
+
+    # --- 2. DETALLE DE REDES (CUSTOMERS & VENDORS) ---
+    networks = data.get("networks_data", {})
+    customers_net = networks.get("customers", [])
+    vendors_net = networks.get("vendors", [])
+
+    # Columnas a imprimir para las redes
+    net_headers = [
+        "Nombre", "Total Recibido", "Total Cancelado", "% Cancelado", 
+        "Descuentos", "Notas de Crédito", "Pago Pendiente", "Neto Recibido", 
+        "Recibido PUE", "Recibido PPD", "Conteo PPD", "Monto Pagado", 
+        "En Parcialidades", "Días Outstanding"
+    ]
+
+    def print_network_table(title, node_list):
+        if not node_list: return
+        
+        ws_net.append([title])
+        ws_net.merge_cells(start_row=ws_net.max_row, start_column=1, end_row=ws_net.max_row, end_column=len(net_headers))
+        estilo_header(ws_net, ws_net.max_row, 1, len(net_headers))
+        
+        ws_net.append(net_headers)
+        sub_row = ws_net.max_row
+        for col in range(1, len(net_headers) + 1):
+            ws_net.cell(row=sub_row, column=col).font = header_font
+            ws_net.cell(row=sub_row, column=col).fill = sub_header_fill
+            
+        for n in node_list:
+            ws_net.append([
+                n.get("name"),
+                n.get("total_received"),
+                n.get("total_cancelled_received"),
+                n.get("percentage_cancelled"),
+                n.get("received_discounts"),
+                n.get("received_credit_notes"),
+                n.get("payment_pending"),
+                n.get("net_received"),
+                n.get("pue_received"),
+                n.get("ppd_received"),
+                n.get("ppd_count"),
+                n.get("payment_amount"),
+                n.get("in_installments"),
+                n.get("days_outstanding")
+            ])
+            
+            curr_row = ws_net.max_row
+            # Aplicar formato Moneda a columnas correspondientes (B, C, E, F, G, H, I, J, L)
+            # Índices en openpyxl: 2, 3, 5, 6, 7, 8, 9, 10, 12
+            for col_idx in [2, 3, 5, 6, 7, 8, 9, 10, 12]:
+                ws_net.cell(row=curr_row, column=col_idx).style = currency_style
+                
+            # Formato Porcentaje para % Cancelado (D -> 4)
+            ws_net.cell(row=curr_row, column=4).style = percent_style
+            
+            # Formato numérico normal para Días y Parcialidades
+            ws_net.cell(row=curr_row, column=13).number_format = '0.00'
+            ws_net.cell(row=curr_row, column=14).number_format = '0.00'
+
+        ws_net.append([])
+
+    print_network_table("RED DETALLADA DE CLIENTES (CUSTOMER NETWORK)", customers_net)
+    print_network_table("RED DETALLADA DE PROVEEDORES (VENDOR NETWORK)", vendors_net)
+
+    # Ajuste de anchos para la Hoja de Redes
+    ws_net.column_dimensions['A'].width = 45 # Nombres suelen ser muy largos
+    for i in range(2, 15):
+        ws_net.column_dimensions[chr(64+i)].width = 18
 
     # ==========================================
-    # HOJA 3: PROYECCIONES (ACTUALIZADA)
+    # HOJA 4: PROYECCIONES (ACTUALIZADA)
     # ==========================================
     ws3 = wb.create_sheet("Proyecciones (Escenarios)")
     
@@ -359,7 +577,7 @@ def generar_excel_syntage(data: dict) -> bytes:
 
 
     # ==========================================
-    # HOJA 4: RAW DATA (NUEVA PAGINA)
+    # HOJA 5: RAW DATA (NUEVA PAGINA)
     # ==========================================
     ws_raw = wb.create_sheet("Raw Data")
     
@@ -394,7 +612,7 @@ def generar_excel_syntage(data: dict) -> bytes:
         for cell in row: cell.style = currency_style
 
     # ==========================================
-    # HOJA 5: ESTADOS FINANCIEROS Y ÁRBOL
+    # HOJA 6: ESTADOS FINANCIEROS Y ÁRBOL
     # ==========================================
     ws_fin = wb.create_sheet("Estados Financieros")
     
@@ -415,12 +633,14 @@ def generar_excel_syntage(data: dict) -> bytes:
         conceptos_financieros = [
             ("--- DATOS CONSOLIDADOS ---", None),
             ("Activos Totales", "input_assets"),
+            ("Pasivo Total", "input_liabilities"),           
             ("Capital Contable (Equity)", "input_equity"),
             ("Ingresos Netos (Revenue)", "input_revenue"),
+            ("Utilidad (Pérdida) Bruta", "input_gross_profit"),
+            ("Utilidad Operativa (EBIT)", "ebit"),
+            ("Utilidad antes de Impuestos (EBT)", "ebt"),
             ("Impuestos Calculados", "input_taxes"),
             ("Utilidad Neta Consolidada", "input_net_income"),
-            ("EBIT Consolidado", "ebit"),
-            ("EBT Consolidado", "ebt"),
             ("NOPAT", "nopat"),
             
             ("", None), # Fila en blanco
@@ -574,7 +794,7 @@ def generar_excel_syntage(data: dict) -> bytes:
         write_tree_node(ws_fin, is_tree, current_row=data_start_row, start_col=col_is)
 
     # ==========================================
-    # HOJA 5: DETALLE DE BURÓ (EXPANDIDO)
+    # HOJA 7: DETALLE DE BURÓ (EXPANDIDO)
     # ==========================================
     ws4 = wb.create_sheet("Detalle de Buró")
     
@@ -913,7 +1133,7 @@ def generar_excel_syntage(data: dict) -> bytes:
     ws4.append([""])
 
     # ---------------------------------------------------------
-    # 7. HISTORIAL DE CONSULTAS PROCESADAS
+    # 8. HISTORIAL DE CONSULTAS PROCESADAS
     # ---------------------------------------------------------
     ws4.append(["HISTORIAL DE CONSULTAS (CREDIT PULLS)"])
     ws4.merge_cells(start_row=ws4.max_row, start_column=1, end_row=ws4.max_row, end_column=4)

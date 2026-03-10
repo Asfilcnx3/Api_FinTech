@@ -9,12 +9,13 @@ import logging
 # Servicios
 from ...services.file_manager import FileManagerService
 from ...services.processing_service import ProcessingService
-from ...services.storage_service import obtener_ruta_archivo, obtener_datos_json
+from ...services.storage_service import StorageService
 from ...models.responses_general import RespuestaProcesamientoIniciado
 from ...services.passport_service import PassportService
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+storage = StorageService()
 passport_service = PassportService()
 
 # Inyección de dependencias (Manual por ahora)
@@ -63,16 +64,6 @@ async def procesar_pdf_api(
         estatus="procesando"
     )
 
-# @router.get("/fluxo/status/{job_id}")
-# async def consultar_estatus(job_id: str):
-#     """
-#     Endpoint dedicado para polling. Retorna el Pasaporte completo.
-#     """
-#     datos = passport_service.leer_pasaporte(job_id)
-#     if not datos:
-#         raise HTTPException(status_code=404, detail="Job no encontrado")
-#     return datos
-
 @router.get("/fluxo/descargar-resultado/{job_id}")
 async def descargar_resultado(job_id: str, formato: str = Query("excel", enum=["excel", "json"])):
     """
@@ -80,7 +71,7 @@ async def descargar_resultado(job_id: str, formato: str = Query("excel", enum=["
     para que el frontend sepa qué mostrar.
     """
     # 1. Intentar buscar el archivo final
-    ruta = obtener_ruta_archivo(job_id) if formato == "excel" else obtener_datos_json(job_id)
+    ruta = storage.obtener_ruta_archivo(job_id) if formato == "excel" else storage.obtener_datos_json(job_id)
     
     if ruta:
         # SI EXISTE, lo entregamos (Código 200 normal)

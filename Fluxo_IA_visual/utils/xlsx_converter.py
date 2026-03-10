@@ -109,11 +109,15 @@ def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
     ws2.append([
         "Banco", "RFC", "Cliente", "CLABE / Cuenta", 
         "Periodo Inicio", "Periodo Fin", 
-        "Depósitos", "Cargos", "Saldo Promedio", "Comisiones"
+        "Depósitos", "Cargos", "Saldo Promedio", "Comisiones",
+        "Confianza de Extracción", "Descuadre Depósitos", "Descuadre Cargos",
+        "Tasa de Categorización",
+        "Total Páginas", "Páginas Fallidas"
     ])
     
-    for res in resultados:
-        ia = res.get("AnalisisIA") or {}
+    res_generales = data_json.get("resultados_generales", [])
+    
+    for ia in res_generales:
         if not ia: continue
 
         banco = ia.get("banco", "BANCO")
@@ -123,23 +127,40 @@ def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
             mensaje_error = "CON CONTRASEÑA" if banco == "ERROR_CIFRADO" else "ERROR DE PROCESAMIENTO"
             ws2.append([
                 banco, "N/A", "N/A", ia.get("nombre_archivo_virtual", "N/A"), 
-                "N/A", "N/A", mensaje_error, 0.0, 0.0, 0.0
+                "N/A", "N/A", mensaje_error, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0
             ])
             for cell in ws2[ws2.max_row]:
                 cell.fill = fill_error_doc
             continue
 
         clabe_segura = str(ia.get("clabe_interbancaria") or "")
+        
         ws2.append([
             banco, ia.get("rfc", ""), ia.get("nombre_cliente", ""),
             clabe_segura, ia.get("periodo_inicio", ""), ia.get("periodo_fin", ""),
             ia.get("depositos", 0.0), ia.get("cargos", 0.0),
-            ia.get("saldo_promedio", 0.0), ia.get("comisiones", 0.0)
+            ia.get("saldo_promedio", 0.0), ia.get("comisiones", 0.0), 
+            ia.get("confianza_extraccion", 0.0),
+            ia.get("descuadre_depositos", 0.0),
+            ia.get("descuadre_cargos", 0.0),
+            ia.get("tasa_categorizacion", 0.0),
+            ia.get("paginas_totales", 0),  
+            ia.get("paginas_fallidas", 0)  
         ])
     
     aplicar_estilo_header(ws2)
-    for row in ws2.iter_rows(min_row=2, min_col=7, max_col=10):
-        for cell in row: cell.style = currency_style
+    
+    # Formato moneda para columnas 7 a 10 (Depósitos a Comisiones) Y 12 a 13 (Descuadres)
+    for row in ws2.iter_rows(min_row=2, min_col=7, max_col=13):
+        for cell in row: 
+            if cell.column not in [11]: # Excluimos la columna 11 de la moneda
+                cell.style = currency_style
+                
+    # Formato porcentaje para Confianza (Col 11) y Tasa de Categorización (Col 14)
+    for row in ws2.iter_rows(min_row=2, min_col=11, max_col=14):
+        for cell in row: 
+            if cell.column in [11, 14] and isinstance(cell.value, (int, float)):
+                cell.number_format = '0.00" %"'
 
     # ==========================================
     # HELPER GENERADOR DE HOJAS SIMPLIFICADO
