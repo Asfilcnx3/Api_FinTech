@@ -1,19 +1,47 @@
 # services/passport_service.py
 import json
 import os
+import logging
+import time
+from pathlib import Path
 from datetime import datetime, timedelta
 from ..models.passport import PassportData, DetalleFase, MetricasTecnicas
 
-PASSPORT_DIR = "downloads/passports"
-os.makedirs(PASSPORT_DIR, exist_ok=True)
+logger = logging.getLogger(__name__)
 
 class PassportService:
+    def __init__(self, passport_dir: str = "downloads/passports"):
+        self.passport_dir = Path(passport_dir)
+        self.passport_dir.mkdir(parents=True, exist_ok=True)
+        self.TTL_SECONDS = 3600 # 1 hora de vida
+    
+    def _limpiar_archivos_antiguos(self):
+        """Limpia pasaportes (JSON) que tengan más de 1 hora de antigüedad."""
+        try:
+            ahora = time.time()
+            contador = 0
+            
+            # iterdir() recorre el contenido usando la elegancia de pathlib
+            for ruta in self.passport_dir.iterdir():
+                if ruta.is_file() and ruta.suffix == ".json":
+                    tiempo_modificacion = ruta.stat().st_mtime
+                    if ahora - tiempo_modificacion > self.TTL_SECONDS:
+                        ruta.unlink() # Equivale a os.remove()
+                        contador += 1
+                        
+            if contador > 0:
+                logger.info(f"Limpieza de Pasaportes: Se eliminaron {contador} archivos antiguos.")
+        except Exception as e:
+            logger.warning(f"Error limpiando pasaportes antiguos: {e}")
     
     def _get_path(self, job_id: str) -> str:
-        return f"{PASSPORT_DIR}/{job_id}.json"
+        # Convertimos a string para asegurar compatibilidad con open()
+        return str(self.passport_dir / f"{job_id}.json")
 
     def crear_pasaporte(self, job_id: str):
         """Inicializa el archivo JSON en disco."""
+        self._limpiar_archivos_antiguos() # Disparamos la limpieza aquí
+        
         now = datetime.now()
         passport = PassportData(
             job_id=job_id,
@@ -24,6 +52,7 @@ class PassportService:
             metricas=MetricasTecnicas()
         )
         self._guardar(passport)
+        logger.info(f"[{job_id}] Pasaporte creado exitosamente.")
 
     def leer_pasaporte(self, job_id: str) -> dict:
         """Lee el JSON del disco. Si no existe, retorna None."""
@@ -33,14 +62,15 @@ class PassportService:
         try:
             with open(path, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except Exception:
+        except Exception as e:
+            logger.error(f"[{job_id}] Error leyendo pasaporte: {e}")
             return None
 
     def actualizar(self, job_id: str, 
                     fase: int = None, 
                     nombre_fase: str = None, 
                     descripcion: str = None,
-                    estado: str = None,  # <--- AGREGADO AQUÍ
+                    estado: str = None,  
                     sumar_paginas_ocr: int = 0,
                     sumar_paginas_digitales: int = 0,
                     sumar_transacciones: int = 0,
@@ -48,7 +78,9 @@ class PassportService:
                     error: str = None):
         
         path = self._get_path(job_id)
-        if not os.path.exists(path): return
+        if not os.path.exists(path):
+            logger.warning(f"[{job_id}] Intento de actualizar un pasaporte que no existe o expiró.")
+            return
 
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -75,6 +107,7 @@ class PassportService:
             passport.estado = "ERROR"
             passport.detalle.descripcion = f"Error: {error}"
             self._guardar(passport)
+            logger.error(f"[{job_id}] Pasaporte marcado con ERROR: {error}")
             return
 
         if terminado:
@@ -83,11 +116,12 @@ class PassportService:
             passport.detalle.descripcion = "Proceso finalizado con éxito."
             passport.eta_estimado = "Completado"
             self._guardar(passport)
+            logger.info(f"[{job_id}] Pasaporte completado al 100%.")
             return
 
         # 4. FÓRMULA MATEMÁTICA DINÁMICA
-        tiempo_ocr = passport.metricas.paginas_ocr * 1.5      # Ajusté a 1.5s por ser más realista
-        tiempo_digital = passport.metricas.paginas_digitales * 0.05 # 0.05s por página
+        tiempo_ocr = passport.metricas.paginas_ocr * 1.5      
+        tiempo_digital = passport.metricas.paginas_digitales * 0.05 
         tiempo_clasif = passport.metricas.transacciones_detectadas * 0.03 
         tiempo_base_sistema = 5.0 
         
@@ -113,6 +147,8 @@ class PassportService:
         if descripcion:
             passport.logs_recientes.insert(0, f"[{now.strftime('%H:%M:%S')}] {descripcion}")
             passport.logs_recientes = passport.logs_recientes[:5]
+            # Imprimimos en terminal un log en nivel DEBUG para no saturar si hay muchas actualizaciones
+            logger.debug(f"[{job_id}] Fase {fase if fase else 'N/A'}: {descripcion}")
 
         self._guardar(passport)
 

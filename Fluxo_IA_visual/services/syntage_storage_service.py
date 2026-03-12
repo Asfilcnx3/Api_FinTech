@@ -25,6 +25,18 @@ class StorageService:
         except Exception as e:
             logger.warning(f"Error limpieza storage: {e}")
 
+    def create_pending_job(self, rfc: str) -> str:
+        """Crea un archivo temporal indicando que el proceso inició."""
+        self._limpiar_archivos_antiguos()
+        job_id = str(uuid.uuid4())
+        filepath = os.path.join(self.DOWNLOADS_DIR, f"syntage_{job_id}.json")
+        
+        initial_data = {"status": "processing", "rfc": rfc}
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(initial_data, f, ensure_ascii=False)
+            
+        return job_id
+
     def save_json_result(self, data: dict) -> str:
         """Guarda el JSON y retorna un JOB ID único."""
         self._limpiar_archivos_antiguos()
@@ -45,3 +57,12 @@ class StorageService:
             with open(filepath, "r", encoding="utf-8") as f:
                 return json.load(f)
         return None
+    
+    def update_job(self, job_id: str, data: dict):
+        """Sobrescribe el archivo temporal con los datos finales (o error)."""
+        filepath = os.path.join(self.DOWNLOADS_DIR, f"syntage_{job_id}.json")
+        try:
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=4)
+        except Exception as e:
+            logger.error(f"Error actualizando Job {job_id}: {e}")

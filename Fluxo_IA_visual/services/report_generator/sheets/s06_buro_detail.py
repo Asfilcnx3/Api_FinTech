@@ -106,12 +106,16 @@ def build(ws, data: dict):
         
     if persona_node:
         build_kv_table("DATOS PERSONA (PF)", persona_node.get("nombre", {}))
-        domicilios = persona_node.get("domicilios", {}).get("domicilio", [])
+        domicilios_raw = persona_node.get("domicilios", [])
+        domicilios = domicilios_raw.get("domicilio", []) if isinstance(domicilios_raw, dict) else domicilios_raw
+        
         build_list_table("DOMICILIOS", domicilios, [
             ("Calle", "direccion1"), ("Colonia", "coloniaPoblacion"), ("Ciudad", "ciudad"), 
             ("Estado", "estado"), ("CP", "cp"), ("Fecha Registro", "fechaRegistroDomicilio")
         ])
-        empleos = persona_node.get("empleos", {}).get("empleo", [])
+        empleos_raw = persona_node.get("empleos", [])
+        empleos = empleos_raw.get("empleo", []) if isinstance(empleos_raw, dict) else empleos_raw
+        
         build_list_table("EMPLEOS", empleos, [
             ("Empresa", "nombreEmpresa"), ("Puesto", "puesto"), ("Salario", "salario"),
             ("Calle", "direccion1"), ("Colonia", "coloniaPoblacion"), ("Estado", "estado")

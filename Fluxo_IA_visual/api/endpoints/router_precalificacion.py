@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, BackgroundTasks
 from fastapi.responses import Response
 import logging
 
-from ...services.storage_service import StorageService
+from ...services.syntage_storage_service import StorageService
 from ...services.prequalification.orchestator_prequalification import PrequalificationOrchestrator
 from ...services.report_generator.excel_orchestator import ExcelReportBuilder
 

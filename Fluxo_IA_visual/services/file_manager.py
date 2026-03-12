@@ -2,6 +2,7 @@ import shutil
 import os
 import uuid
 import zipfile
+import time
 import logging
 from pathlib import Path
 from fastapi import UploadFile, HTTPException
@@ -13,12 +14,42 @@ class FileManagerService:
     def __init__(self, upload_dir: str = "temp_uploads"):
         self.upload_dir = Path(upload_dir)
         self.upload_dir.mkdir(parents=True, exist_ok=True)
+        self.TTL_SECONDS = 3600 # 1 Hora de vida
+
+    def _limpiar_archivos_antiguos(self):
+        """
+        Limpia archivos y carpetas extraídas en temp_uploads que superen la hora de vida.
+        """
+        try:
+            ahora = time.time()
+            contador = 0
+            
+            # iterdir() lee todo lo que hay en la carpeta (archivos y subcarpetas)
+            for ruta in self.upload_dir.iterdir():
+                # Obtenemos la fecha de modificación
+                tiempo_modificacion = ruta.stat().st_mtime
+                
+                if ahora - tiempo_modificacion > self.TTL_SECONDS:
+                    if ruta.is_file():
+                        ruta.unlink() # Borra archivo
+                        contador += 1
+                    elif ruta.is_dir():
+                        shutil.rmtree(ruta) # Borra carpeta entera con su contenido
+                        contador += 1
+                        
+            if contador > 0:
+                logger.info(f"Limpieza FileManager: Se eliminaron {contador} temporales antiguos.")
+        except Exception as e:
+            logger.warning(f"Error limpiando temporales antiguos: {e}")
 
     def guardar_archivo_temporal(self, upload_file: UploadFile) -> Path:
         """
         Guarda el archivo subido en disco usando streaming para no saturar la RAM.
         Retorna la ruta absoluta del archivo guardado.
         """
+        # Ejecutamos la limpieza silenciosa cada que suben un archivo nuevo
+        self._limpiar_archivos_antiguos()
+        
         try:
             # Generamos un nombre único para evitar colisiones
             file_extension = Path(upload_file.filename).suffix
@@ -26,7 +57,6 @@ class FileManagerService:
             file_path = self.upload_dir / unique_filename
 
             # Usamos shutil.copyfileobj para escribir en disco por chunks (buffer)
-            # Esto evita cargar el archivo entero en memoria.
             with file_path.open("wb") as buffer:
                 shutil.copyfileobj(upload_file.file, buffer)
             
@@ -41,7 +71,6 @@ class FileManagerService:
         """
         Maneja la lógica de si es ZIP o PDF y retorna una lista de diccionarios
         con la ruta del archivo y su nombre original.
-        Estructura de retorno: [{'path': Path, 'filename': str, 'original_source': str}]
         """
         temp_path = self.guardar_archivo_temporal(upload_file)
         archivos_listos = []
@@ -61,7 +90,6 @@ class FileManagerService:
                     ]
                     
                     for member in files_to_extract:
-                        # zipfile.extract permite extraer directo a disco
                         zip_ref.extract(member, path=extract_dir)
                         full_path = extract_dir / member
                         
@@ -72,7 +100,7 @@ class FileManagerService:
                             "es_zip_content": True
                         })
                 
-                # Opcional: Borrar el .zip original para ahorrar espacio, ya extrajimos lo útil
+                # Borrar el .zip original para ahorrar espacio
                 os.remove(temp_path)
 
             except zipfile.BadZipFile:
@@ -90,13 +118,12 @@ class FileManagerService:
         else:
             # Limpieza inmediata si no es válido
             os.remove(temp_path)
-            # Podrías lanzar error o simplemente ignorarlo (como hacías antes)
             logger.warning(f"Archivo ignorado: {upload_file.filename}")
 
         return archivos_listos
 
     def limpiar_temporales(self, rutas: List[Path]):
-        """Elimina los archivos temporales después de procesar."""
+        """Elimina los archivos temporales de forma manual después de procesar."""
         for ruta in rutas:
             try:
                 if ruta.exists():
