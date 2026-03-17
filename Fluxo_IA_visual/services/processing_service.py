@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import copy
 from fastapi.encoders import jsonable_encoder
 from concurrent.futures import ProcessPoolExecutor
 
@@ -431,6 +432,7 @@ class ProcessingService:
                             for t in txs_raw:
                                 txs_objs.append(AnalisisTPV.Transaccion(
                                     fecha=t.get("fecha", ""),
+                                    periodo=t.get("periodo", ""),
                                     descripcion=t.get("descripcion", ""),
                                     monto=str(t.get("monto", "0.0")),
                                     tipo=t.get("tipo", "DESCONOCIDO"),
@@ -525,7 +527,7 @@ class ProcessingService:
         # 4. Generar Archivos
         # Pasamos el DICCIONARIO YA SERIALIZADO al excel, no el objeto
         try:
-            excel_bytes = generar_excel_reporte(datos_dict)
+            excel_bytes = generar_excel_reporte(copy.deepcopy(datos_dict)) 
             self.storage.guardar_excel_local(excel_bytes, job_id)
         except Exception as e:
             logger.error(f"Error generando Excel: {e}")
@@ -559,6 +561,7 @@ class ProcessingService:
                 if isinstance(tx, dict):
                     tx_objs.append(AnalisisTPV.Transaccion(
                         fecha=tx.get("fecha", ""),
+                        periodo=tx.get("periodo", ""),
                         descripcion=tx.get("descripcion", ""),
                         monto=str(tx.get("monto", "0.0")),
                         tipo=tx.get("tipo", "DESCONOCIDO"),
@@ -629,9 +632,12 @@ class ProcessingService:
             # Sumar montos
             try:
                 monto_val = float(str(tx.monto).replace(',', '').replace('$', ''))
-                if tx.tipo == "ABONO":
+                # FORZAMOS MAYÚSCULA
+                tipo_limpio = str(tx.tipo).upper().strip() 
+                
+                if tipo_limpio == "ABONO":
                     suma_abonos += monto_val
-                elif tx.tipo == "CARGO":
+                elif tipo_limpio == "CARGO":
                     suma_cargos += monto_val
             except ValueError:
                 continue
@@ -664,6 +670,10 @@ class ProcessingService:
         
         # 5. Inyectar al objeto
         analisis_ia.confianza_extraccion = confianza_global
+
+        # 6. Inyectar las sumas 
+        analisis_ia.total_depositos_extraidos = suma_abonos
+        analisis_ia.total_cargos_extraidos = suma_cargos
         
         # --- MÉTRICA 1: DESCUADRE MONETARIO ---
         # Usamos abs() para que siempre sea positivo, sin importar si faltó o sobró dinero

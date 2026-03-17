@@ -133,7 +133,23 @@ class MotorCaratulas:
                 }
                 resultados_acumulados.append(datos_reconciliados)
 
-        # Mantenemos la misma firma de retorno que esperaba tu orchestator original
+        # --- POST-PROCESAMIENTO: Heredar nombre del cliente si comparten RFC ---
+        rfc_memoria = ""
+        cliente_memoria = ""
+        
+        for res in resultados_acumulados:
+            rfc_actual = res.get("rfc", "")
+            nombre_actual = res.get("nombre_cliente", "")
+            
+            # Si tiene nombre y RFC, actualizamos nuestra memoria
+            if rfc_actual and nombre_actual:
+                rfc_memoria = rfc_actual
+                cliente_memoria = nombre_actual
+            # Si no tiene nombre, pero el RFC coincide con la memoria, heredamos
+            elif not nombre_actual and rfc_actual == rfc_memoria:
+                res["nombre_cliente"] = cliente_memoria
+
+        # Mantenemos la misma firma de retorno que espera el orchestator original
         return resultados_acumulados, es_documento_digital, texto_verificacion_global, None, texto_por_pagina, rangos_cuentas
 
     def extraer_texto_y_rangos(self, pdf_bytes: bytes) -> Tuple[Dict[int, str], List[Tuple[int, int]]]:
@@ -189,18 +205,22 @@ class MotorCaratulas:
                         
                         # B. Fin explícito
                         if any(trig in page_text for trig in self.triggers_config["fin"]):
-                            rangos_detectados.append((inicio_actual, page_num))
+                            # OVERLAP: Estiramos el rango 1 página hacia atrás solo al guardar
+                            rango_inicio_real = max(1, inicio_actual - 1)
+                            rangos_detectados.append((rango_inicio_real, page_num))
                             inicio_actual = None
                             encontrado_fin = True
                         
                         # C. Nuevo inicio (Cascada)
                         elif page_num > inicio_actual and any(trig in page_text for trig in self.triggers_config["inicio"]):
-                            rangos_detectados.append((inicio_actual, page_num - 1))
+                            rango_inicio_real = max(1, inicio_actual - 1)
+                            rangos_detectados.append((rango_inicio_real, page_num - 1))
                             inicio_actual = page_num
                         
                         # D. Fin de documento
                         if not encontrado_fin and inicio_actual is not None and page_num == total_paginas:
-                            rangos_detectados.append((inicio_actual, total_paginas))
+                            rango_inicio_real = max(1, inicio_actual - 1)
+                            rangos_detectados.append((rango_inicio_real, total_paginas))
                             inicio_actual = None
 
         except PDFCifradoError as e:

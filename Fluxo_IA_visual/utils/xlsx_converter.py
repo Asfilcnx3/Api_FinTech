@@ -56,7 +56,7 @@ def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
     ws1.title = "Resumen por Cuenta"
     ws1.append([
         "Mes", "Cuenta", "Moneda", "Depósitos", "Cargos", "TPV Bruto", 
-        "Financiamientos", "Efectivo", "Traspaso entre cuentas", "BMR CASH", "Moratorios", "Sospechosas (Propias)"
+        "Financiamientos", "Efectivo", "Traspaso entre cuentas", "BMR/MP", "Moratorios", "Sospechosas (Propias)"
     ])
     
     for res in resultados:
@@ -109,7 +109,9 @@ def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
     ws2.append([
         "Banco", "RFC", "Cliente", "CLABE / Cuenta", 
         "Periodo Inicio", "Periodo Fin", 
-        "Depósitos", "Cargos", "Saldo Promedio", "Comisiones",
+        "Depósitos Declarados", "Cargos Declarados",     
+        "Depósitos Extraídos", "Cargos Extraídos",       
+        "Saldo Promedio", "Comisiones",
         "Confianza de Extracción", "Descuadre Depósitos", "Descuadre Cargos",
         "Tasa de Categorización",
         "Total Páginas", "Páginas Fallidas"
@@ -120,14 +122,14 @@ def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
     for ia in res_generales:
         if not ia: continue
 
-        banco = ia.get("banco", "BANCO")
+        banco = str(ia.get("banco", "BANCO")).upper()
         es_error = banco in ["ERROR_CIFRADO", "ERROR_LECTURA", "ERROR_PROCESAMIENTO"]
 
         if es_error:
             mensaje_error = "CON CONTRASEÑA" if banco == "ERROR_CIFRADO" else "ERROR DE PROCESAMIENTO"
             ws2.append([
                 banco, "N/A", "N/A", ia.get("nombre_archivo_virtual", "N/A"), 
-                "N/A", "N/A", mensaje_error, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0
+                "N/A", "N/A", mensaje_error, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0
             ])
             for cell in ws2[ws2.max_row]:
                 cell.fill = fill_error_doc
@@ -138,11 +140,13 @@ def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
         ws2.append([
             banco, ia.get("rfc", ""), ia.get("nombre_cliente", ""),
             clabe_segura, ia.get("periodo_inicio", ""), ia.get("periodo_fin", ""),
+            
+            # Valores
             ia.get("depositos", 0.0), ia.get("cargos", 0.0),
+            ia.get("total_depositos_extraidos", 0.0), ia.get("total_cargos_extraidos", 0.0),
             ia.get("saldo_promedio", 0.0), ia.get("comisiones", 0.0), 
             ia.get("confianza_extraccion", 0.0),
-            ia.get("descuadre_depositos", 0.0),
-            ia.get("descuadre_cargos", 0.0),
+            ia.get("descuadre_depositos", 0.0), ia.get("descuadre_cargos", 0.0),
             ia.get("tasa_categorizacion", 0.0),
             ia.get("paginas_totales", 0),  
             ia.get("paginas_fallidas", 0)  
@@ -150,16 +154,16 @@ def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
     
     aplicar_estilo_header(ws2)
     
-    # Formato moneda para columnas 7 a 10 (Depósitos a Comisiones) Y 12 a 13 (Descuadres)
-    for row in ws2.iter_rows(min_row=2, min_col=7, max_col=13):
+    # Formato moneda para columnas 7 a 12 (Depósitos hasta Comisiones) y 14 a 15 (Descuadres)
+    for row in ws2.iter_rows(min_row=2, min_col=7, max_col=15):
         for cell in row: 
-            if cell.column not in [11]: # Excluimos la columna 11 de la moneda
+            if cell.column not in [13]: # Excluimos la columna 13 (Confianza) de la moneda
                 cell.style = currency_style
                 
-    # Formato porcentaje para Confianza (Col 11) y Tasa de Categorización (Col 14)
-    for row in ws2.iter_rows(min_row=2, min_col=11, max_col=14):
+    # Formato porcentaje para Confianza (Col 13) y Tasa de Categorización (Col 16)
+    for row in ws2.iter_rows(min_row=2, min_col=13, max_col=16):
         for cell in row: 
-            if cell.column in [11, 14] and isinstance(cell.value, (int, float)):
+            if cell.column in [13, 16] and isinstance(cell.value, (int, float)):
                 cell.number_format = '0.00" %"'
 
     # ==========================================
@@ -172,7 +176,8 @@ def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
         """
         ws = wb.create_sheet(nombre_hoja)
         
-        headers = ["Banco", "Fecha", "Descripción", "Monto", "Tipo", "Categoría"]
+        # 1. Agregamos "Periodo" en la segunda posición
+        headers = ["Banco", "Periodo", "Fecha", "Descripción", "Monto", "Tipo", "Categoría"]
         es_hoja_tpv = (nombre_hoja == "Transacciones TPV")
         
         if es_hoja_tpv:
@@ -188,21 +193,19 @@ def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
             
             if isinstance(transacciones, list):
                 for tx in transacciones:
-                    # Datos básicos
                     cat_tx = str(tx.get("categoria", "GENERAL")).upper()
                     
-                    # FILTRO MAESTRO: ¿Coincide la categoría?
-                    # Si categoria_filtro es None, pasa todo (Hoja "Todos los Movimientos")
                     if categoria_filtro is not None and cat_tx != categoria_filtro:
                         continue
 
-                    # Preparar fila
                     try:
                         monto_val = float(str(tx.get("monto", "0")).replace(",", ""))
                     except: monto_val = 0.0
 
+                    # 2. Inyectamos tx.get("periodo") en la fila
                     fila = [
                         banco_actual_doc, 
+                        tx.get("periodo", ""), 
                         tx.get("fecha", ""), 
                         tx.get("descripcion", ""),
                         monto_val, 
@@ -210,7 +213,6 @@ def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
                         cat_tx
                     ]
 
-                    # Columna extra para TPV
                     if es_hoja_tpv:
                         nombre_terminal = detectar_proveedor_terminal(tx.get("descripcion", ""), banco_actual_doc)
                         fila.append(nombre_terminal)
@@ -218,10 +220,16 @@ def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
                     ws.append(fila)
         
         aplicar_estilo_header(ws)
-        ws.column_dimensions['C'].width = 60
-        if es_hoja_tpv: ws.column_dimensions['G'].width = 25
-        for row in ws.iter_rows(min_row=2, min_col=4, max_col=4):
-            for cell in row: cell.style = currency_style
+        
+        # 3. Ajustamos el índice de las columnas debido al desplazamiento
+        ws.column_dimensions['D'].width = 60  # Ahora la 'D' es la Descripción
+        if es_hoja_tpv: 
+            ws.column_dimensions['H'].width = 25  # Ahora la 'H' es la Terminal / Proveedor
+            
+        # 4. Aplicar formato de moneda a la columna 'E' (que ahora es Monto)
+        for row in ws.iter_rows(min_row=2, min_col=5, max_col=5):
+            for cell in row: 
+                cell.style = currency_style
 
     # ==========================================
     # DEFINICIÓN DE HOJAS (Ahora es trivial)
@@ -242,8 +250,8 @@ def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
     # 7. TRASPASO ENTRE CUENTAS
     crear_hoja_detalle("Traspaso entre Cuentas", "TRASPASO")
 
-    # 8. BMRCASH
-    crear_hoja_detalle("BMRCASH", "BMRCASH")
+    # 8. BMRCASH y MP AGREGADOR
+    crear_hoja_detalle("BMRCASH", "BMR/MP")
 
     # 9. MORATORIOS
     crear_hoja_detalle("Moratorios", "MORATORIOS")

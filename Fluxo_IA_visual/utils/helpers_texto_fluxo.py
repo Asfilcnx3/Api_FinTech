@@ -17,7 +17,7 @@ palabras_clave_generales = [
 
 PALABRAS_TPV = [
     "terminales punto de venta", "punto de venta", "tpv", "terminal", "evopay", "clip", "izettle", "mercado pago", "netpay",
-    "pocket de latinoameric"
+    "pocket de latinoameric", "mercadopago"
 ]
 
 PALABRAS_EFECTIVO = [
@@ -33,11 +33,11 @@ PALABRAS_TRASPASO_FINANCIAMIENTO = [
 ]
 
 PALABRAS_BMRCASH = [
-    "bmrcash ref", "bmrcash"
+    "bmrcash ref", "bmrcash", "mp agregador", "mpagregador"
 ]
 
 PALABRAS_TRASPASO_MORATORIO = [ # Faltan ejemplos
-    "cargo por moratorio", "intereses moratorios", "recargo", "recargos", "penalización", "penalizaciones", "pena convencional", "penalizacion", "penalizaciones convencionales", "cargo por moratorios", "interes moratorio", "cargo por intereses moratorios", "recargo por intereses moratorios"
+    "cargo por moratorio", "intereses moratorios", "recargo", "recargos", "penalización", "penalizaciones", "pena convencional", "penalizacion", "penalizaciones convencionales", "cargo por moratorios", "interes moratorio", "cargo por intereses moratorios", "recargo por intereses moratorios", "penaliz", "penalización"
 ]
 
 # Definimos los campos esperados y sus tipos (No funcionan aún)
@@ -283,7 +283,7 @@ INSTRUCCIONES CRÍTICAS (CAMPOS A EXTRAER):
 1. NOMBRE DEL BANCO: Busca cerca de "Banco:", "Institución:", o en el encabezado. Debe ser el nombre corto, por ejemplo, "banco del bajío" es banbajío.
 2. TIPO DE MONEDA: Busca cerca de "Moneda:", "Tipo de moneda:", o en la sección de resumen. Debe ser su versión resumida como "MXN" para pesos mexicanos o "USD" para dólares estadounidenses EUR para euros, etc.
 3. NOMBRE DEL CLIENTE: Busca cerca de "Titular:", "Cliente:", o "Razón Social:". Es el texto en mayúsculas después de estas palabras.
-4. CLABE: Son EXACTAMENTE 18 dígitos (pueden ser consecutivos o tener un espacio antes del último dígito). Busca cerca de "CLABE", "Clabe Interbancaria" o en la sección de datos de cuenta, puede estar en horizontal o vertical cerca de las palabras.
+4. CLABE: Son EXACTAMENTE 18 dígitos (pueden ser consecutivos o tener un espacio antes del último dígito). Si el estado de cuenta indica textualmente "NO APLICA", "N/A" o similar en este campo, extrae ese texto. Busca cerca de "CLABE", "Clabe Interbancaria" o en la sección de datos de cuenta.
 5. RFC: Son 12-13 caracteres alfanuméricos. Busca cerca de "RFC:", "R.F.C." o después del nombre.
 6. PERIODO DE INICIO: La primera fecha del periodo en formato "YYYY-MM-DD".
 7. PERIODO DE FIN: La segunda fecha del periodo en formato "YYYY-MM-DD".
@@ -310,6 +310,8 @@ FORMATO DE RESPUESTA (JSON):
 ```
 
 REGLAS IMPORTANTES:
+- ¡ALERTA DE OVERLAP!: Las imágenes que recibes pueden contener el final (tablas resumen, sellos SAT) de una cuenta anterior y el inicio de una cuenta nueva en la misma página.
+- EXTRAE ÚNICAMENTE los datos que pertenezcan a la cuenta que se está abriendo (la del título o encabezado más reciente o que esté más arriba).
 - Ignora cualquier otra parte del documento. No infieras ni estimes valores. Si NO encuentras un dato, usa null (no inventes).
 - Extrae los campos si los ves y devuelve únicamente un JSON.
 - Para fechas, usa formato YYYY-MM-DD.
@@ -432,6 +434,7 @@ Eres un sistema OCR financiero experto en leer tablas de estados de cuenta banca
 REGLAS DE EXTRACCIÓN:
 1. Extrae solo las filas que contengan operaciones bancarias válidas.
 2. Ignora encabezados, pies de página, saldos totales o líneas de resumen.
+3. Las extracciones deben estar en MAYUSCULAS
 
 FORMATO DE EXTRACCIÓN:
 1. FECHA: Solo el número del día o fecha corta (ej. "05" o "05/12").
