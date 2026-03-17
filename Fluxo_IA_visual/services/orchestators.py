@@ -1,6 +1,6 @@
 from ..utils.helpers import (
     limpiar_monto, detectar_tipo_contribuyente, crear_objeto_resultado,
-    construir_fecha_completa, separar_fecha_y_ruido
+    construir_fecha_completa, separar_fecha_y_ruido, calcular_periodo
     
 )
 from .ia_extractor import (
@@ -102,7 +102,7 @@ def clasificar_transacciones_extraidas(
         else:
             descripcion_full = desc_original.strip()
             
-        descripcion_limpia = descripcion_full.lower() # Para tus reglas de negocio
+        descripcion_limpia = descripcion_full.lower() # Para las reglas de negocio
         
         # Manejo seguro del Enum de tipo
         tipo_detectado = trx.tipo.value if hasattr(trx.tipo, 'value') else str(trx.tipo)
@@ -111,8 +111,12 @@ def clasificar_transacciones_extraidas(
         # Tu función 'construir_fecha_completa' ahora recibe "01-DIC-25", que sabe manejar perfecto.
         fecha_final = construir_fecha_completa(fecha_pura_raw, p_inicio, p_fin)
         
+        # 4. CALCULAMOS EL PERIODO
+        periodo_calculado = calcular_periodo(fecha_final, p_inicio)
+        
         trx_procesada = {
             "fecha": fecha_final,
+            "periodo": periodo_calculado,
             "descripcion": descripcion_full,
             "monto": f"{monto_float:,.2f}", 
             "tipo": tipo_detectado,
@@ -420,31 +424,64 @@ def procesar_ocr_worker_sync(
     file_path: str, 
     filename: str
 ) -> Union[AnalisisTPV.ResultadoExtraccion, Exception]:
+    
+    # --- 1. CLASE ADAPTADORA (Igual que en el Digital Worker) ---
+    class TransaccionAdapterOCR:
+        """Adapta el dict crudo del OCR al objeto que espera el clasificador de negocio."""
+        def __init__(self, data_dict):
+            self.fecha = data_dict.get("fecha", "")
+            self.descripcion = data_dict.get("descripcion", "")
+            
+            # Manejo seguro del monto (el OCR a veces devuelve strings sucios)
+            try:
+                monto_str = str(data_dict.get("monto", "0")).replace("$", "").replace(",", "").strip()
+                self.monto = float(monto_str)
+            except:
+                self.monto = 0.0
+                
+            raw_tipo = data_dict.get("tipo", "INDEFINIDO")
+            self.tipo = str(raw_tipo).upper() if raw_tipo else "INDEFINIDO"
+            
+            # Metadatos técnicos mockeados para que no truene el clasificador
+            self.metodo_match = "OCR_AGENT" 
+            self.coords_box = None
+            self.id_interno = "OCR_TX"
+            self.score_confianza = 0.85 # Confianza arbitraria estándar
+
     try:
         # 1. Leer PDF
         with open(file_path, "rb") as f:
             pdf_bytes = f.read()
 
-        # 2. Obtener transacciones crudas del nuevo motor (solo transacciones y métricas)
+        # 2. Obtener transacciones crudas del agente OCR
         resultado_crudo = asyncio.run(
             procesar_documento_escaneado_con_agentes_async(ia_data, pdf_bytes, filename)
         )
 
-        # Fusionamos la metadata original (ia_data) con los resultados del OCR.
-        # Así construimos un diccionario idéntico al que escupe clasificar_transacciones_extraidas
-        datos_dict_unificado = {**ia_data} # Copiamos todos los datos base (banco, rfc, etc.)
-        datos_dict_unificado["nombre_archivo_virtual"] = filename
-        datos_dict_unificado["transacciones"] = resultado_crudo.get("transacciones", [])
-        datos_dict_unificado["metadata_tecnica"] = resultado_crudo.get("metricas", [])
+        txs_crudas = resultado_crudo.get("transacciones", [])
+        logger.info(f"[TRACKING OCR - 1] Worker terminó {filename}. Transacciones extraídas: {len(txs_crudas)}")
 
-        # LOGS MOMENTANEOS
-        num_txs = len(datos_dict_unificado["transacciones"])
-        logger.info(f"[TRACKING OCR - 1] Worker terminó {filename}. Transacciones extraídas: {num_txs}")
+        # --- 3. ADAPTACIÓN AL FORMATO DEL MOTOR ---
+        transacciones_objetos = [TransaccionAdapterOCR(tx) for tx in txs_crudas]
+
+        # --- 4. CLASIFICACIÓN DE NEGOCIO (EL CEREBRO COMPARTIDO) ---
+        # El OCR procesa todo el documento, simulamos el rango (1 a 999) para el log
+        rango_paginas_dummy = (1, 999)
         
-        # 4. Usamos tu función original INTACTA
-        obj_res = crear_objeto_resultado(datos_dict_unificado) 
+        resultado_dict = clasificar_transacciones_extraidas(
+            ia_data_cuenta=ia_data, 
+            transacciones_objetos=transacciones_objetos, 
+            filename=filename, 
+            rango_paginas=rango_paginas_dummy
+        )
+
+        # 5. INYECCIÓN DE METADATA TÉCNICA DEL OCR
+        resultado_dict["metadata_tecnica"] = resultado_crudo.get("metricas", [])
+
+        # 6. CREACIÓN DEL OBJETO RESULTADO FINAL
+        obj_res = crear_objeto_resultado(resultado_dict) 
         
-        # 5. Restauramos campos de trazabilidad (Igual que en el DigitalWorker)
+        # 7. Restauramos campos de trazabilidad
         obj_res.file_path_origen = file_path
         obj_res.es_digital = False
         

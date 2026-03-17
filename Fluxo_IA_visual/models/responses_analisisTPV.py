@@ -12,6 +12,7 @@ class AnalisisTPV:
     class Transaccion(BaseModel):
         """Representa una única transaccion encontrada dentro del documento [3 partes]."""
         fecha: str
+        periodo: str
         descripcion: str
         monto: str
         tipo: str
@@ -39,6 +40,10 @@ class AnalisisTPV:
         depositos: Optional[float] = None
         cargos: Optional[float] = None
         saldo_promedio: Optional[float] = None
+
+        # Métricas de medición
+        total_depositos_extraidos: Optional[float] = Field(default=0.0, description="Suma real de los abonos encontrados")
+        total_cargos_extraidos: Optional[float] = Field(default=0.0, description="Suma real de los cargos encontrados")
 
         depositos_en_efectivo: Optional[float] = None
         traspaso_entre_cuentas: Optional[float] = None

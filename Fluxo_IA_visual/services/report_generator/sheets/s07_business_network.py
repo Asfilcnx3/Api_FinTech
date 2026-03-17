@@ -19,7 +19,7 @@ def calcular_antiguedad_rfc(rfc_str):
         if not yy_str.isdigit(): return "N/A"
         yy_int = int(yy_str)
         year = (2000 + yy_int) if yy_int <= current_yy else (1900 + yy_int)
-        return f"{current_year - year} Años"
+        return f"{current_year - year}"
     except: return "N/A"
 
 def fix_percentage(val):

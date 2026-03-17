@@ -617,6 +617,32 @@ def construir_fecha_completa(dia_raw: str, periodo_inicio_str: str, periodo_fin_
     else:
         # Fallback de seguridad
         return f"{dia_int:02d}/{dt_inicio.month:02d}/{dt_inicio.year}"
+
+def calcular_periodo(fecha_transaccion: str, periodo_inicio_str: str = None) -> str:
+    """
+    Toma la fecha final de la transacción (dd/mm/yyyy) y calcula su periodo.
+    Devuelve el formato estandarizado: 01-mm-yyyy.
+    Si la fecha es inválida, usa el periodo_inicio como salvavidas.
+    """
+    # 1. Intentar extraer de la fecha de la transacción (Viene de construir_fecha_completa)
+    if fecha_transaccion and "??" not in fecha_transaccion:
+        partes = fecha_transaccion.split("/")
+        if len(partes) == 3:
+            mes = partes[1].zfill(2)
+            anio = partes[2]
+            return f"01-{mes}-{anio}"
+
+    # 2. Fallback: Si la fecha OCR fue un desastre, usamos el mes del periodo_inicio
+    if periodo_inicio_str:
+        for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y"):
+            try:
+                dt = datetime.strptime(str(periodo_inicio_str).strip(), fmt)
+                return f"01-{dt.month:02d}-{dt.year}"
+            except ValueError:
+                continue
+
+    # 3. Fallback extremo (Para que no truene la base de datos)
+    return "01-01-1900"
         
 # --- FUNCIONES AUXILIARES NOMIFLASH ---
 def verificar_fecha_comprobante(fecha_str: Optional[str]) -> Optional[bool]:
