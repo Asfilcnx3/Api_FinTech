@@ -362,7 +362,8 @@ def test_crear_objeto_resultado_completo():
                 "descripcion": "VENTA COMERCIO", 
                 "monto": "500.00",
                 "tipo": "cargo",
-                "categoria": "TPV"
+                "categoria": "TPV",
+                "periodo": "2024-01"
             }
         ],
         "error_transacciones": None,

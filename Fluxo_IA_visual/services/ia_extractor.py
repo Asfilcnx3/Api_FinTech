@@ -2,10 +2,10 @@ from .pdf_processor import convertir_pdf_a_imagenes
 from ..core.config import settings
 from ..utils.helpers import _crear_prompt_agente_unificado, parsear_respuesta_json_ocr
 from ..utils.helpers_texto_fluxo import PROMPT_FASE_3_AUDITOR_TEMPLATE, PROMPT_GENERICO, PROMPTS_POR_BANCO
+from ..utils.helpers_texto_precalificación import prompt_sistema
 
-from fastapi import HTTPException
 from openai import AsyncOpenAI
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 from io import BytesIO
 import json
 import base64
@@ -216,3 +216,36 @@ async def analizar_gpt_nomi(prompt: str, imagen_buffers: List[BytesIO], razonami
         reasoning_effort=razonamiento
     )
     return res.choices[0].message.content
+
+
+#### ----- FUNCIÓN PARA SYNTAGE Y LA PRECALIFICACIÓN DEL CLIENTE -----
+async def analizar_productos_y_tendencias_llm(payload_json: dict) -> Dict[str, str]:
+    """
+    Analiza congruencia de giro comercial y tendencias de compra/venta usando GPT.
+    payload_json debe contener las actividades económicas y el top de productos.
+    """
+
+    # Aseguramos que el JSON vaya limpiecito y sin caracteres raros
+    prompt_usuario = json.dumps(payload_json, ensure_ascii=False)
+
+    try:
+        client = get_fluxo_client()
+        response = await client.chat.completions.create(
+            model="gpt-5.2", # El modelo que está configurado por defecto
+            messages=[
+                {"role": "system", "content": prompt_sistema},
+                {"role": "user", "content": prompt_usuario}
+            ],
+            response_format={"type": "json_object"}
+        )
+        
+        content = response.choices[0].message.content
+        if not content: return {}
+        return json.loads(content)
+        
+    except Exception as e:
+        logger.error(f"Error en LLM Análisis de Productos: {e}")
+        return {
+            "analisis_actividad_redflags": "No se pudo generar el análisis debido a un error de IA.",
+            "analisis_tendencia_insumos": "No se pudo generar el análisis de tendencias debido a un error de IA."
+        }

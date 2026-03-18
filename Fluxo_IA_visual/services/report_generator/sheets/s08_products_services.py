@@ -1,5 +1,5 @@
 # Fluxo_IA_visual/services/report_generator/sheets/s08_products_services.py
-from openpyxl.styles import Alignment
+from openpyxl.styles import Alignment, Font
 from ..styles import (
     HEADER_FONT, SUB_HEADER_FILL, 
     CURRENCY_FORMAT, PERCENT_FORMAT, 
@@ -32,8 +32,37 @@ def build(ws, data: dict):
     ws.append([])
     ws.append([])
 
-    # 2. PRODUCTOS Y SERVICIOS
+    # --- 2. ANÁLISIS IA (NUEVO BLOQUE) ---
     products_data = data.get("products_data", {})
+    if products_data:
+        ws.append(["ANÁLISIS DE CONGRUENCIA Y TENDENCIAS (INTELIGENCIA ARTIFICIAL)"])
+        ws.merge_cells(start_row=ws.max_row, start_column=1, end_row=ws.max_row, end_column=5)
+        aplicar_estilo_header(ws, ws.max_row, 1, 5)
+
+        # A. Red Flags / Congruencia
+        ws.append(["Análisis de Actividad (Red Flags):"])
+        ws.cell(row=ws.max_row, column=1).font = Font(bold=True, color="000000")
+        
+        ws.append([products_data.get("llm_activity_analysis", "Sin análisis disponible.")])
+        ws.merge_cells(start_row=ws.max_row, start_column=1, end_row=ws.max_row, end_column=5)
+        ws.cell(row=ws.max_row, column=1).alignment = Alignment(wrap_text=True, vertical='top')
+        ws.row_dimensions[ws.max_row].height = 60  # Damos altura para que quepan los 4 renglones
+
+        ws.append([])
+
+        # B. Tendencias Operativas
+        ws.append(["Análisis de Tendencia de Insumos Clave:"])
+        ws.cell(row=ws.max_row, column=1).font = Font(bold=True, color="000000")
+
+        ws.append([products_data.get("llm_trend_analysis", "Sin análisis disponible.")])
+        ws.merge_cells(start_row=ws.max_row, start_column=1, end_row=ws.max_row, end_column=5)
+        ws.cell(row=ws.max_row, column=1).alignment = Alignment(wrap_text=True, vertical='top')
+        ws.row_dimensions[ws.max_row].height = 60  # Damos altura para que quepan los 4 renglones
+
+    ws.append([])
+    ws.append([])
+
+    # 3. PRODUCTOS Y SERVICIOS
     sold = products_data.get("sold", [])
     bought = products_data.get("bought", [])
 

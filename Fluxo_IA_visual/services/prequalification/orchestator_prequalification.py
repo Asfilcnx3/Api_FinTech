@@ -9,6 +9,7 @@ from .processors.financial_processor import FinancialProcessor
 from .processors.risk_processor import RiskProcessor
 from .processors.network_processor import NetworkProcessor
 from .processors.products_processor import ProductsProcessor
+from .processors.registry_processor import RegistryProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,7 @@ class PrequalificationOrchestrator:
         self.financial_processor = FinancialProcessor()
         self.network_processor = NetworkProcessor()
         self.products_processor = ProductsProcessor()
+        self.registry_processor = RegistryProcessor()
         self.forecaster = ForecastingService()
 
     async def analyze_taxpayer(self, rfc: str) -> PrequalificationResponse.PrequalificationFinalResponse:
@@ -35,7 +37,7 @@ class PrequalificationOrchestrator:
         logger.info(f"[{rfc}] FASE 2: Ejecutando procesadores de dominio...")
         
         # A. Riesgos, Buró y Credenciales
-        risk_payload = self.risk_processor.process(raw_data)
+        risk_payload = await self.risk_processor.process(raw_data)
         
         # B. Redes de Negocios y Concentración
         network_payload = self.network_processor.process(raw_data)
@@ -44,7 +46,10 @@ class PrequalificationOrchestrator:
         financial_payload = self.financial_processor.process(raw_data)
 
         # D. Productos y Servicios Vendidos/Comprados
-        products_payload = self.products_processor.process(raw_data)
+        products_payload = await self.products_processor.process(raw_data)
+
+        # E. Registros Públicos (RPC y RUG)
+        registry_payload = self.registry_processor.process(raw_data)
 
         # --- FASE 3: PRONÓSTICOS ---
         logger.info(f"[{rfc}] FASE 3: Generando predicciones financieras...")
@@ -68,6 +73,7 @@ class PrequalificationOrchestrator:
             **risk_payload,
             **network_payload,
             **products_payload,
+            **registry_payload,
             
             # Desempaquetamos finanzas (excluyendo los mapas simples temporales usados para el forecaster)
             stats_last_months=financial_payload["stats_last_months"],

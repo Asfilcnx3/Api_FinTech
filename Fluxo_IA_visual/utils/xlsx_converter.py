@@ -56,7 +56,7 @@ def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
     ws1.title = "Resumen por Cuenta"
     ws1.append([
         "Mes", "Cuenta", "Moneda", "Depósitos", "Cargos", "TPV Bruto", 
-        "Financiamientos", "Efectivo", "Traspaso entre cuentas", "BMR/MP", "Moratorios", "Sospechosas (Propias)"
+        "Financiamientos", "Efectivo", "Traspaso entre cuentas", "BMR/Mercado", "Moratorios", "Sospechosas (Propias)"
     ])
     
     for res in resultados:
