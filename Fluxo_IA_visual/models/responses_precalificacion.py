@@ -134,6 +134,38 @@ class PrequalificationResponse(BaseModel):
         nfcf_stats: "PrequalificationResponse.Stats"
         expenditures_stats: "PrequalificationResponse.Stats"  
         sales_revenue_stats: "PrequalificationResponse.Stats" 
+    
+    class EmployeeHistoryItem(BaseModel):
+        date: str
+        total: int
+
+    class EmployeePeriod(BaseModel):
+        total: int = 0
+        trend_text: str = "Sin datos" # "Aumentó", "Disminuyó", "Constante"
+        difference: int = 0 # Diferencia neta vs el periodo anterior
+
+    class EmployeeMetrics(BaseModel):
+        current_total: int = 0
+        # Las cubetas de tiempo
+        month_24: Optional["PrequalificationResponse.EmployeePeriod"] = None
+        month_12: Optional["PrequalificationResponse.EmployeePeriod"] = None
+        month_9: Optional["PrequalificationResponse.EmployeePeriod"] = None
+        month_6: Optional["PrequalificationResponse.EmployeePeriod"] = None
+        month_3: Optional["PrequalificationResponse.EmployeePeriod"] = None
+        month_1: Optional["PrequalificationResponse.EmployeePeriod"] = None
+        
+        history: List["PrequalificationResponse.EmployeeHistoryItem"] = []
+    
+    class BlacklistedCounterparty(BaseModel):
+        rfc: str = "N/A"
+        name: str = "N/A"
+        status: str = "N/A" # presumed, dismissed, definitive, favorable
+
+        # Desglose de operaciones
+        issued_count: int = 0
+        issued_amount: float = 0.0
+        received_count: int = 0
+        received_amount: float = 0.0
 
     class AdvancedPeriodMetrics(BaseModel):
         """
@@ -226,6 +258,12 @@ class PrequalificationResponse(BaseModel):
         input_gross_profit: float    # Bruta consolidada (Profit - Loss)
         input_net_income: float
         input_taxes: float
+
+        input_assets_short_term: float = 0.0
+        input_assets_long_term: float = 0.0
+        input_liabilities_short_term: float = 0.0
+        input_liabilities_long_term: float = 0.0
+        input_equity_social: float = 0.0
         
         # --- Datos Crudos  ---
         raw_net_profit: float = 0.0
@@ -281,6 +319,45 @@ class PrequalificationResponse(BaseModel):
         sold: List["PrequalificationResponse.ProductServiceItem"] = []
         bought: List["PrequalificationResponse.ProductServiceItem"] = []
 
+        llm_activity_analysis: str = "Análisis IA en proceso..."
+        llm_trend_analysis: str = "Análisis IA en proceso..."
+
+    class RpcSocio(BaseModel):
+        name: str = "N/A"
+        shares: str = "N/A"
+        value: float = 0.0
+        status: str = "N/A"
+
+    class RpcActo(BaseModel):
+        date: str = "N/A"
+        description: str = "N/A"
+        document_number: str = "N/A"
+
+    class RpcRecord(BaseModel):
+        """Modelo para el Registro Público de Comercio (RPC)"""
+        folio_mercantil: str = "N/A"
+        date: str = "N/A"
+        state: str = "N/A"
+        business_name: str = "N/A"
+        
+        socios: List["PrequalificationResponse.RpcSocio"] = []
+        actos: List["PrequalificationResponse.RpcActo"] = []
+        
+    class RugRecord(BaseModel):
+        """Modelo para el Registro Único de Garantías (RUG)"""
+        guarantee_number: str = "N/A"
+        creation_date: str = "N/A"
+        validity_date: str = "N/A"
+        creditor: str = "N/A"
+        amount: float = 0.0
+        currency: str = "MXN"
+        status: str = "N/A"
+
+    class RegistryData(BaseModel):
+        """Contenedor para la nueva hoja de Legal / Registros"""
+        rpc_records: List["PrequalificationResponse.RpcRecord"] = []
+        rug_records: List["PrequalificationResponse.RugRecord"] = []
+
     class PrequalificationFinalResponse(BaseModel):
         rfc: str
         business_name: str
@@ -289,11 +366,16 @@ class PrequalificationResponse(BaseModel):
         tax_registration_date: Optional[str] = None
         economic_activities: List["PrequalificationResponse.EconomicActivity"] = []
 
+        tax_registration_date: Optional[str] = None
+        economic_activities: List["PrequalificationResponse.EconomicActivity"] = []
+        employee_metrics: Optional["PrequalificationResponse.EmployeeMetrics"] = None
+        blacklisted_counterparties: List["PrequalificationResponse.BlacklistedCounterparty"] = []
+
         risk_indicators: List[Dict[str, Any]] = []
         ciec_info: "PrequalificationResponse.CredentialInfo"
         buro_info: "PrequalificationResponse.BuroInfo"
         compliance_opinion: "PrequalificationResponse.CredentialInfo"
-        
+        compliance_llm_explanation: str = "Análisis no disponible."
         stats_last_months: "PrequalificationResponse.StatsWindows"
         
         # Mes actual (en curso)
@@ -314,3 +396,6 @@ class PrequalificationResponse(BaseModel):
         financial_predictions: Optional[Any] = None
         job_id: Optional[str] = None
         download_url: Optional[str] = None
+
+        # Hoja de Registros
+        registry_data: Optional["PrequalificationResponse.RegistryData"] = None

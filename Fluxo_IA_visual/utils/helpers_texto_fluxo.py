@@ -33,7 +33,7 @@ PALABRAS_TRASPASO_FINANCIAMIENTO = [
 ]
 
 PALABRAS_BMRCASH = [
-    "bmrcash ref", "bmrcash", "mp agregador", "mpagregador"
+    "bmrcash ref", "bmrcash", "mercado libre", "mercadolibre"
 ]
 
 PALABRAS_TRASPASO_MORATORIO = [ # Faltan ejemplos

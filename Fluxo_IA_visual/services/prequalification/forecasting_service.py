@@ -4,6 +4,11 @@ from statsmodels.tsa.holtwinters import ExponentialSmoothing
 from ...models.responses_forecasting import Forecast
 from typing import Dict, Tuple
 import logging
+import warnings
+
+# --- SILENCIAR WARNINGS MATEMÁTICOS DE HOLT-WINTERS ---
+warnings.filterwarnings("ignore", message=".*divide by zero.*")
+warnings.filterwarnings("ignore", message=".*Optimization failed to converge.*")
 
 logger = logging.getLogger(__name__)
 

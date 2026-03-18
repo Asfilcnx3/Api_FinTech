@@ -683,14 +683,11 @@ class SyntageClient:
 
     async def get_compliance_opinion(self, client: httpx.AsyncClient, rfc: str) -> Dict[str, Any]:
         """
-        Obtiene la Opinión de Cumplimiento (32-D) más reciente.
-        FIX: Usa el endpoint específico /tax-compliance-checks para obtener 
-        estatus real y fecha dinámica ('checkedAt'), eliminando fechas hardcodeadas.
+        Obtiene la Opinión de Cumplimiento (32-D) más reciente y el ID de su archivo.
         """
-        result = {"status": "unknown", "date": None}
+        result = {"status": "unknown", "date": None, "file_id": None} # <--- Agregamos file_id
         
         try:
-            # Ordenamos por fecha descendente para obtener la última ejecución real
             params = {
                 "order[checkedAt]": "desc",
                 "itemsPerPage": 1
@@ -701,27 +698,24 @@ class SyntageClient:
             
             if resp.status_code == 200:
                 data = resp.json()
-                # Manejo robusto de Hydra (Lista vs Diccionario)
                 items = data if isinstance(data, list) else data.get("hydra:member", [])
                 
                 if items:
                     latest_check = items[0]
-                    
-                    # 1. Estatus
-                    # La API devuelve: "positive", "negative", "no_obligations", "activity_suspended"
-                    # Lo pasamos directo o lo normalizamos según tu lógica de negocio.
                     raw_result = latest_check.get("result")
                     result["status"] = raw_result if raw_result else "unknown"
-                    
-                    # 2. Fecha Real
-                    # "checkedAt" es la fecha exacta cuando Syntage verificó esto con el SAT.
                     result["date"] = latest_check.get("checkedAt")
                     
-                    logger.debug(f"Compliance Opinion actualizada: {result['status']} fecha {result['date']}")
+                    # Extraer el ID del archivo PDF asociado
+                    file_node = latest_check.get("file", {})
+                    # A veces viene como string "/files/uuid" o como objeto con "id"
+                    if isinstance(file_node, dict):
+                        result["file_id"] = file_node.get("id")
+                    elif isinstance(file_node, str):
+                        result["file_id"] = file_node.split("/")[-1]
+                        
                 else:
                     result["status"] = "not_found"
-                    logger.debug(f"No se encontraron registros de compliance checks para {rfc}")
-
             elif resp.status_code == 404:
                 result["status"] = "not_found"
                 
@@ -993,6 +987,144 @@ class SyntageClient:
         except Exception as e:
             logger.error(f"Error fetching products {type_ps}: {e}")
             return []
+    
+    async def get_employees_insight(self, client: httpx.AsyncClient, entity_id: str) -> List[Dict]:
+        """
+        Obtiene el número de empleados agrupado mensualmente (últimos 24 meses).
+        """
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=730) # 730 días (24 meses)
+
+        params = {
+            "options[from]": start_date.strftime("%Y-%m-%dT00:00:00.000Z"),
+            "options[to]": end_date.strftime("%Y-%m-%dT00:00:00.000Z"),
+            "options[periodicity]": "monthly"
+        }
+        
+        try:
+            url = f"{self.base_url}/entities/{entity_id}/insights/employees"
+            resp = await client.get(url, params=params, headers=self.headers)
+            
+            if resp.status_code == 200:
+                data = resp.json()
+                raw_list = data.get("data", [])
+                
+                # --- LOG DE DEBUG 1: ORIGEN ---
+                # logger.info(f"DEBUG EMPLEADOS (API): {entity_id} trajo {len(raw_list)} registros. RAW: {str(raw_list)[:300]}")
+                
+                return raw_list
+            else:
+                logger.warning(f"Error HTTP {resp.status_code} al obtener empleados.")
+        except Exception as e:
+            logger.error(f"Error fetching employees insight: {e}")
+            
+        return []
+    
+    async def get_invoicing_blacklist(self, client: httpx.AsyncClient, entity_id: str) -> List[Dict]:
+        """
+        Obtiene el resumen de contrapartes en lista negra (69-B del SAT).
+        """
+        try:
+            url = f"{self.base_url}/entities/{entity_id}/insights/invoicing-blacklist"
+            resp = await client.get(url, headers=self.headers)
+            
+            if resp.status_code == 200:
+                data = resp.json()
+                # Syntage puede devolverlo directo, en 'data', o en 'hydra:member'
+                return data if isinstance(data, list) else data.get("hydra:member", []) or data.get("data", [])
+            else:
+                logger.warning(f"Error HTTP {resp.status_code} al obtener lista negra.")
+        except Exception as e:
+            logger.error(f"Error fetching invoicing blacklist: {e}")
+            
+        return []
+
+    async def get_rpc_records(self, client: httpx.AsyncClient, entity_id: str) -> List[Dict]:
+        """
+        Obtiene el listado de entidades en el RPC para este contribuyente.
+        """
+        try:
+            url = f"{self.base_url}/entities/{entity_id}/datasources/rpc/entidades"
+            resp = await client.get(url, headers=self.headers)
+            
+            if resp.status_code == 200:
+                data = resp.json()
+                return data if isinstance(data, list) else data.get("hydra:member", []) or data.get("data", [])
+            else:
+                logger.warning(f"Error HTTP {resp.status_code} al obtener RPC.")
+        except Exception as e:
+            logger.error(f"Error fetching RPC records: {e}")
+        return []
+
+    async def get_rug_records(self, client: httpx.AsyncClient, entity_id: str) -> List[Dict]:
+        """
+        Obtiene el listado de operaciones/garantías en el RUG.
+        """
+        try:
+            url = f"{self.base_url}/entities/{entity_id}/datasources/rug/operaciones"
+            resp = await client.get(url, headers=self.headers)
+            
+            if resp.status_code == 200:
+                data = resp.json()
+                return data if isinstance(data, list) else data.get("hydra:member", []) or data.get("data", [])
+            else:
+                logger.warning(f"Error HTTP {resp.status_code} al obtener RUG.")
+        except Exception as e:
+            logger.error(f"Error fetching RUG records: {e}")
+        return []
+    
+    async def get_invoice_totals_by_rfc(self, client: httpx.AsyncClient, entity_id: str, rfc_contraparte: str, as_receiver: bool) -> float:
+        """
+        as_receiver=True -> Facturas donde la contraparte es RECEPTOR (Facturas Emitidas por nosotros).
+        as_receiver=False -> Facturas donde la contraparte es EMISOR (Facturas Recibidas por nosotros).
+        """
+        try:
+            # Si as_receiver es True, buscamos las facturas que le emitimos a esa contraparte
+            param_key = "receiver.rfc" if as_receiver else "issuer.rfc"
+            
+            # Usamos property filtering para que la API no nos mande los XML completos, solo el total
+            params = {
+                param_key: rfc_contraparte,
+                "properties[]": "total",
+                "itemsPerPage": 500  # Un número alto para traer todo rápido
+            }
+            url = f"{self.base_url}/entities/{entity_id}/invoices"
+            resp = await client.get(url, params=params, headers=self.headers)
+            
+            if resp.status_code == 200:
+                data = resp.json()
+                items = data if isinstance(data, list) else data.get("hydra:member", [])
+                
+                # Sumamos el campo 'total' de todas las facturas encontradas
+                return sum(float(i.get("total", 0.0)) for i in items if isinstance(i, dict))
+            else:
+                logger.warning(f"Error HTTP {resp.status_code} al obtener facturas de {rfc_contraparte}.")
+                
+        except Exception as e:
+            logger.error(f"Error sumando facturas para 69-B ({rfc_contraparte}): {e}")
+            
+        return 0.0
+
+    async def download_file_content(self, client: httpx.AsyncClient, file_id: str) -> bytes:
+        """
+        Descarga el contenido crudo (bytes) de un archivo en Syntage.
+        Útil para pasar PDFs directamente a la IA.
+        """
+        if not file_id: return b""
+        
+        try:
+            url = f"{self.base_url}/files/{file_id}/download"
+            # Aquí usamos el cliente para traer el contenido binario
+            resp = await client.get(url, headers=self.headers)
+            
+            if resp.status_code == 200:
+                return resp.content # Retorna los bytes del PDF
+            else:
+                logger.warning(f"Error HTTP {resp.status_code} al descargar file {file_id}")
+        except Exception as e:
+            logger.error(f"Error downloading file {file_id}: {e}")
+            
+        return b""
     
     @staticmethod
     def _parse_buro_amount(val_str: Any) -> float:

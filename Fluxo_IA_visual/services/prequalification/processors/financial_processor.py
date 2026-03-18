@@ -99,6 +99,13 @@ class FinancialProcessor:
         liabilities = SyntageClient.parse_values_from_tree(bs_tree, ["Pasivo", "Total Pasivo"])
         equity = SyntageClient.parse_values_from_tree(bs_tree, ["Capital Contable", "Total Capital", "Capital"])
         
+        # --- EXTRACCIÓN DEL DESGLOSE ---
+        assets_st = SyntageClient.parse_values_from_tree(bs_tree, ["Activo a corto plazo"])
+        assets_lt = SyntageClient.parse_values_from_tree(bs_tree, ["Activo a largo plazo"])
+        liabilities_st = SyntageClient.parse_values_from_tree(bs_tree, ["Pasivo a corto plazo"])
+        liabilities_lt = SyntageClient.parse_values_from_tree(bs_tree, ["Pasivo a largo plazo"])
+        equity_social = SyntageClient.parse_values_from_tree(bs_tree, ["Capital Social"])
+        
         revenue = SyntageClient.parse_values_from_tree(is_tree, ["Ingresos Netos", "Ventas netas", "Ingresos"])
         gross_profit = SyntageClient.parse_values_from_tree(is_tree, ["Utilidad Bruta"])
         gross_loss = SyntageClient.parse_values_from_tree(is_tree, ["Pérdida Bruta"])
@@ -147,6 +154,14 @@ class FinancialProcessor:
                 ebt_loss=raw_ebt_l
             )
             ratios = self.calculator.calculate_ratios_for_year(year_input)
+            
+            # --- INYECCIÓN DEL DESGLOSE ---
+            ratios.input_assets_short_term = assets_st.get(year, 0.0)
+            ratios.input_assets_long_term = assets_lt.get(year, 0.0)
+            ratios.input_liabilities_short_term = liabilities_st.get(year, 0.0)
+            ratios.input_liabilities_long_term = liabilities_lt.get(year, 0.0)
+            ratios.input_equity_social = equity_social.get(year, 0.0)
+            
             results.append(ratios)
 
         return results

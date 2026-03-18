@@ -11,6 +11,8 @@ from .sheets import s05_financial_stmts
 from .sheets import s06_buro_detail
 from .sheets import s07_business_network
 from .sheets import s08_products_services
+from .sheets import s09_rpc_rug
+from .sheets import s10_compliance
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +39,8 @@ class ExcelReportBuilder:
         ws6 = self.wb.create_sheet("Detalle de Buró")
         ws7 = self.wb.create_sheet("Red de Negocios")
         ws8 = self.wb.create_sheet("Productos y Servicios")
+        ws9 = self.wb.create_sheet("Registros Públicos")
+        ws10 = self.wb.create_sheet("Opinión Cumplimiento 32-D")
 
         # 2. Ejecutar los builders de cada hoja pasándoles su Worksheet y la Data
         # Descomentaremos estas líneas en las siguientes fases
@@ -49,6 +53,8 @@ class ExcelReportBuilder:
         s06_buro_detail.build(ws6, self.data)
         s07_business_network.build(ws7, self.data)
         s08_products_services.build(ws8, self.data)
+        s09_rpc_rug.build(ws9, self.data)
+        s10_compliance.build(ws10, self.data)
 
         # 3. Guardar en memoria y retornar bytes
         output = io.BytesIO()

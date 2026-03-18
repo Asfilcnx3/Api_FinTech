@@ -67,6 +67,51 @@ def build(ws, data: dict):
                 ws.append([k, str(v.get("value")), es_riesgoso, ""])
                 if v.get("risky"):
                     ws.cell(row=ws.max_row, column=3).fill = ALERT_FILL
+    
+    # 3.5 CONTRAPARTES EN LISTA NEGRA (69-B SAT)
+    blacklist = data.get("blacklisted_counterparties", [])
+    if blacklist:
+        ws.append([])
+        ws.append(["CONTRAPARTES EN LISTA NEGRA (69-B SAT)"])
+        fila_bl = ws.max_row
+        ws.merge_cells(f'A{fila_bl}:E{fila_bl}')
+        aplicar_estilo_header(ws, fila_bl, 1, 5)
+        
+        ws.append(["RFC", "Razón Social", "Estatus SAT", "Facturas (Emit. / Recib.)", "Monto Total Involucrado"])
+        aplicar_estilo_header(ws, ws.max_row, 1, 5)
+        
+        # Traductor de estatus para que el analista lo lea en español
+        status_map = {
+            "presumed": "Presunto",
+            "dismissed": "Desvirtuado",
+            "definitive": "Definitivo",
+            "favorable": "Favorable"
+        }
+        
+        for b in blacklist:
+            b_rfc = b.get("rfc", "N/A")
+            b_name = b.get("name", "N/A")
+            b_status_raw = b.get("status", "N/A")
+            b_status_es = status_map.get(b_status_raw, b_status_raw)
+            
+            emitidas = b.get("issued_count", 0)
+            recibidas = b.get("received_count", 0)
+            apariciones = f"{emitidas} / {recibidas}"
+            
+            # Sumamos lo que le compramos y lo que le vendimos para ver el riesgo total
+            monto_total = float(b.get("issued_amount", 0.0)) + float(b.get("received_amount", 0.0))
+            
+            ws.append([b_rfc, b_name, b_status_es, apariciones, monto_total])
+            
+            # Formato de Moneda
+            ws.cell(row=ws.max_row, column=5).number_format = CURRENCY_FORMAT
+            
+            # Alerta visual en rojo
+            if b_status_raw in ["definitive", "presumed"]:
+                ws.cell(row=ws.max_row, column=3).fill = ALERT_FILL
+                
+        # Aseguramos que la columna nueva tenga buen ancho
+        ws.column_dimensions['E'].width = 25
 
     # 4. ACTIVIDADES ECONÓMICAS
     ws.append([])
@@ -83,6 +128,48 @@ def build(ws, data: dict):
     ws.column_dimensions['B'].width = 20
     ws.column_dimensions['C'].width = 20
     ws.column_dimensions['D'].width = 20
+
+    # 4.5 EVOLUCIÓN DE EMPLEADOS (NUEVO RECUADRO)
+    ws.append([])
+    ws.append(["EVOLUCIÓN DE EMPLEADOS"])
+    fila_emp = ws.max_row
+    ws.merge_cells(f'A{fila_emp}:D{fila_emp}')
+    aplicar_estilo_header(ws, fila_emp, 1, 4)
+    
+    ws.append(["Periodo", "Total Empleados", "Tendencia (vs Anterior)", "Diferencia"])
+    aplicar_estilo_header(ws, ws.max_row, 1, 4)
+    
+    emp_metrics = data.get("employee_metrics")
+    if emp_metrics:
+        def print_emp_row(label, period_obj):
+            if not period_obj:
+                ws.append([label, "Sin datos", "-", "-"])
+                return
+            
+            # Ahora accedemos como diccionario usando .get()
+            total = period_obj.get("total", 0)
+            trend_text = period_obj.get("trend_text", "Sin datos")
+            difference = period_obj.get("difference", 0)
+            
+            diff_str = f"+{difference}" if difference > 0 else str(difference)
+            
+            ws.append([
+                label, 
+                total, 
+                trend_text, 
+                diff_str if trend_text != "Sin datos previos" else "-"
+            ])
+
+        # Extraemos usando las llaves del diccionario
+        print_emp_row("Hace 24 Meses", emp_metrics.get("month_24"))
+        print_emp_row("Hace 12 Meses", emp_metrics.get("month_12"))
+        print_emp_row("Hace 9 Meses",  emp_metrics.get("month_9"))
+        print_emp_row("Hace 6 Meses",  emp_metrics.get("month_6"))
+        print_emp_row("Hace 3 Meses",  emp_metrics.get("month_3"))
+        print_emp_row("Mes Actual",    emp_metrics.get("month_1"))
+    else:
+        ws.append(["Sin historial de empleados disponible.", "", "", ""])
+        ws.merge_cells(f'A{ws.max_row}:D{ws.max_row}')
 
     # 5. RESUMEN DE BURÓ
     summary = buro.get("summary_metrics")
@@ -167,10 +254,17 @@ def build(ws, data: dict):
         ws.cell(row=ws.max_row, column=1).font = Font(bold=True, italic=True)
         
         print_fin_row("Activo", "input_assets")
-        print_fin_row("Pasivo", "input_liabilities")
-        print_fin_row("Capital Contable", "input_equity")
+        print_fin_row("  Activo Corto Plazo", "input_assets_short_term")
+        print_fin_row("  Activo Largo Plazo", "input_assets_long_term")
         
-        ws.append([]) 
+        print_fin_row("Pasivo", "input_liabilities")
+        print_fin_row("  Pasivo Corto Plazo", "input_liabilities_short_term")
+        print_fin_row("  Pasivo Largo Plazo", "input_liabilities_long_term")
+        
+        print_fin_row("Capital Contable", "input_equity")
+        print_fin_row("  Capital Social", "input_equity_social")
+        
+        ws.append([])
 
         ws.append(["ESTADO DE RESULTADOS"] + [""] * len(years))
         ws.cell(row=ws.max_row, column=1).font = Font(bold=True, italic=True)
