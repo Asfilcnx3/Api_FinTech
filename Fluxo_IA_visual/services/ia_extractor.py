@@ -231,7 +231,7 @@ async def analizar_productos_y_tendencias_llm(payload_json: dict) -> Dict[str, s
     try:
         client = get_fluxo_client()
         response = await client.chat.completions.create(
-            model="gpt-5.2", # El modelo que está configurado por defecto
+            model="gpt-5.2", 
             messages=[
                 {"role": "system", "content": prompt_sistema},
                 {"role": "user", "content": prompt_usuario}
@@ -245,7 +245,4 @@ async def analizar_productos_y_tendencias_llm(payload_json: dict) -> Dict[str, s
         
     except Exception as e:
         logger.error(f"Error en LLM Análisis de Productos: {e}")
-        return {
-            "analisis_actividad_redflags": "No se pudo generar el análisis debido a un error de IA.",
-            "analisis_tendencia_insumos": "No se pudo generar el análisis de tendencias debido a un error de IA."
-        }
+        return {}

@@ -320,7 +320,16 @@ class PrequalificationResponse(BaseModel):
         bought: List["PrequalificationResponse.ProductServiceItem"] = []
 
         llm_activity_analysis: str = "Análisis IA en proceso..."
-        llm_trend_analysis: str = "Análisis IA en proceso..."
+        llm_ventas_peso_tendencia: str = "Análisis IA en proceso..."
+        llm_compras_insumos: str = "Análisis IA en proceso..."
+    
+    class ObligacionOmitida(BaseModel):
+        impuesto: str = "N/A"
+        periodos: str = "N/A"
+
+    class ComplianceLLMData(BaseModel):
+        opinion_ia: str = "Análisis no disponible."
+        obligaciones_omitidas: List["PrequalificationResponse.ObligacionOmitida"] = []
 
     class RpcSocio(BaseModel):
         name: str = "N/A"
@@ -375,7 +384,7 @@ class PrequalificationResponse(BaseModel):
         ciec_info: "PrequalificationResponse.CredentialInfo"
         buro_info: "PrequalificationResponse.BuroInfo"
         compliance_opinion: "PrequalificationResponse.CredentialInfo"
-        compliance_llm_explanation: str = "Análisis no disponible."
+        compliance_llm_data: Optional["PrequalificationResponse.ComplianceLLMData"] = None
         stats_last_months: "PrequalificationResponse.StatsWindows"
         
         # Mes actual (en curso)
