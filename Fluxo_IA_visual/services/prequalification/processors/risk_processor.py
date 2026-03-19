@@ -1,6 +1,7 @@
 # Fluxo_IA_visual/services/prequalification/processors/risk_processor.py
 from typing import Dict, Any, List
 import logging
+import json
 from ....models.responses_precalificacion import PrequalificationResponse
 from ...ia_extractor import analizar_gpt_fluxo
 from ....utils.helpers_texto_precalificación import prompt_32d
@@ -74,18 +75,43 @@ class RiskProcessor:
             ) for rfc, datos in dict_counterparties.items()
         ]
 
-        # --- ANÁLISIS DEL PDF 32-D CON IA ---
+        # --- 2. ANÁLISIS DEL PDF 32-D CON IA ---
         raw_compliance_pdf = raw_data.get("raw_compliance_pdf", b"")
-        analisis_32d = "El archivo PDF no estuvo disponible para su análisis."
+        
+        # Estructura por defecto en caso de fallo o falta de PDF
+        analisis_32d_dict = {
+            "opinion_ia": "El archivo PDF no estuvo disponible para su análisis.",
+            "obligaciones_omitidas": []
+        }
         
         if raw_compliance_pdf:
             logger.info(f"[{raw_data.get('rfc')}] PDF de 32-D descargado. Enviando a GPT Vision...")
+
             try:
-                # Le pasamos la página 1 (casi siempre el estatus viene ahí)
-                analisis_32d = await analizar_gpt_fluxo(prompt_32d, raw_compliance_pdf, paginas_a_procesar=[1], razonamiento="low")
+                # Le pasamos la página 1 a GPT
+                respuesta_llm = await analizar_gpt_fluxo(prompt_32d, raw_compliance_pdf, paginas_a_procesar=[1], razonamiento="low")
+
+                # Log momentaneo
+                # logger.info(f"Trace respuesta_llm: {respuesta_llm}")
+                
+                # Limpiamos los backticks de markdown (```json ... ```) por si GPT los incluye
+                respuesta_limpia = respuesta_llm.replace("```json", "").replace("```", "").strip()
+                
+                # Convertimos el string a Diccionario
+                analisis_32d_dict = json.loads(respuesta_limpia)
+                
             except Exception as e:
                 logger.error(f"Error en LLM 32-D: {e}")
-                analisis_32d = "No se pudo generar el análisis debido a un error de Inteligencia Artificial."
+                analisis_32d_dict["opinion_ia"] = "No se pudo generar el análisis estructurado debido a un error de Inteligencia Artificial."
+
+        # Mapeamos al objeto Pydantic
+        compliance_llm_data = PrequalificationResponse.ComplianceLLMData(
+            opinion_ia=analisis_32d_dict.get("opinion_ia", "Sin opinión."),
+            obligaciones_omitidas=[
+                PrequalificationResponse.ObligacionOmitida(**obl) 
+                for obl in analisis_32d_dict.get("obligaciones_omitidas", [])
+            ]
+        )
 
         return {
             "economic_activities": [
@@ -117,7 +143,7 @@ class RiskProcessor:
                 status=compliance_data.get("status", "unknown"),
                 last_check_date=compliance_data.get("date")
             ),
-            "compliance_llm_explanation": analisis_32d
+            "compliance_llm_data": compliance_llm_data
         }
 
     def _process_employees(self, raw_employees: List[Dict]) -> PrequalificationResponse.EmployeeMetrics:

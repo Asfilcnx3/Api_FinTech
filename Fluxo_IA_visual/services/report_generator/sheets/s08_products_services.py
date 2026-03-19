@@ -32,32 +32,43 @@ def build(ws, data: dict):
     ws.append([])
     ws.append([])
 
-    # --- 2. ANÁLISIS IA (NUEVO BLOQUE) ---
+    # --- 2. ANÁLISIS IA ---
     products_data = data.get("products_data", {})
     if products_data:
         ws.append(["ANÁLISIS DE CONGRUENCIA Y TENDENCIAS (INTELIGENCIA ARTIFICIAL)"])
         ws.merge_cells(start_row=ws.max_row, start_column=1, end_row=ws.max_row, end_column=5)
         aplicar_estilo_header(ws, ws.max_row, 1, 5)
 
-        # A. Red Flags / Congruencia
-        ws.append(["Análisis de Actividad (Red Flags):"])
+        # A. Red Flags y Conceptos Genéricos
+        ws.append(["1. Congruencia General y Alertas (Red Flags / Conceptos Genéricos):"])
         ws.cell(row=ws.max_row, column=1).font = Font(bold=True, color="000000")
         
         ws.append([products_data.get("llm_activity_analysis", "Sin análisis disponible.")])
         ws.merge_cells(start_row=ws.max_row, start_column=1, end_row=ws.max_row, end_column=5)
         ws.cell(row=ws.max_row, column=1).alignment = Alignment(wrap_text=True, vertical='top')
-        ws.row_dimensions[ws.max_row].height = 60  # Damos altura para que quepan los 4 renglones
+        ws.row_dimensions[ws.max_row].height = 60  
 
         ws.append([])
 
-        # B. Tendencias Operativas
-        ws.append(["Análisis de Tendencia de Insumos Clave:"])
+        # B. Análisis de Ventas (Peso vs CSF)
+        ws.append(["2. Análisis de Ventas (Peso real vs CSF y Tendencia Operativa):"])
         ws.cell(row=ws.max_row, column=1).font = Font(bold=True, color="000000")
 
-        ws.append([products_data.get("llm_trend_analysis", "Sin análisis disponible.")])
+        ws.append([products_data.get("llm_ventas_peso_tendencia", "Sin análisis disponible.")])
         ws.merge_cells(start_row=ws.max_row, start_column=1, end_row=ws.max_row, end_column=5)
         ws.cell(row=ws.max_row, column=1).alignment = Alignment(wrap_text=True, vertical='top')
-        ws.row_dimensions[ws.max_row].height = 60  # Damos altura para que quepan los 4 renglones
+        ws.row_dimensions[ws.max_row].height = 60  
+
+        ws.append([])
+
+        # C. Análisis de Compras (Insumos Clave)
+        ws.append(["3. Análisis de Compras (Insumos Clave y Tendencia de Gasto):"])
+        ws.cell(row=ws.max_row, column=1).font = Font(bold=True, color="000000")
+
+        ws.append([products_data.get("llm_compras_insumos", "Sin análisis disponible.")])
+        ws.merge_cells(start_row=ws.max_row, start_column=1, end_row=ws.max_row, end_column=5)
+        ws.cell(row=ws.max_row, column=1).alignment = Alignment(wrap_text=True, vertical='top')
+        ws.row_dimensions[ws.max_row].height = 60  
 
     ws.append([])
     ws.append([])

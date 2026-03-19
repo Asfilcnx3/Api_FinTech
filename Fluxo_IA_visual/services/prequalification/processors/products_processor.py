@@ -22,9 +22,15 @@ class ProductsProcessor:
         sold_items = self._map_items(raw_sold)
         bought_items = self._map_items(raw_bought)
 
-        # 2. Armar el paquete para la IA (Solo Top 10 para no volar tokens)
+        # 2. Armar el paquete para la IA (Ahora incluimos el porcentaje de la CSF)
         payload_ia = {
-            "actividades_economicas": [act.get("name") for act in activities if isinstance(act, dict)],
+            "actividades_economicas": [
+                {
+                    "actividad": act.get("name"),
+                    "porcentaje_csf": act.get("percentage", 0)
+                } 
+                for act in activities if isinstance(act, dict)
+            ],
             "top_10_vendidos": self._extract_top_for_ia(raw_sold),
             "top_10_comprados": self._extract_top_for_ia(raw_bought)
         }
@@ -32,11 +38,13 @@ class ProductsProcessor:
         # 3. Disparar el LLM
         analisis_ia = await analizar_productos_y_tendencias_llm(payload_ia)
         
+        # Guardamos los 3 campos nuevos en el Pydantic
         products_data = PrequalificationResponse.ProductsData(
             sold=sold_items,
             bought=bought_items,
-            llm_activity_analysis=analisis_ia.get("analisis_actividad_redflags", "No se detectaron red flags o hubo un error en el análisis."),
-            llm_trend_analysis=analisis_ia.get("analisis_tendencia_insumos", "No se detectaron tendencias o hubo un error en el análisis.")
+            llm_activity_analysis=analisis_ia.get("analisis_actividad_redflags", "No se detectaron red flags o hubo un error."),
+            llm_ventas_peso_tendencia=analisis_ia.get("analisis_ventas_peso_tendencia", "Análisis de ventas no disponible."),
+            llm_compras_insumos=analisis_ia.get("analisis_compras_insumos", "Análisis de compras no disponible.")
         )
         
         return {
