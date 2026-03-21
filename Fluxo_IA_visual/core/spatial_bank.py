@@ -320,7 +320,7 @@ class MotorExtraccionEspacial:
             "CARGO": ["CARGO", "CARGOS", "RETIRO", "RETIROS", "DEBITO", "SALIDAS"], 
             "ABONO": ["ABONO", "ABONOS", "DEPOSITO", "DEPÓSITO", "DEPOSITOS", "DEPÓSITOS", "CREDITO", "ENTRADAS"],
             "SALDO": ["SALDO", "BALANCE"],
-            "MONTO_UNIFICADO": ["VALOR"]
+            "IMPORTE": ["IMPORTE", "VALOR", "UNIFICADO"]
         }
 
         last_valid_layout = None
@@ -568,18 +568,18 @@ class MotorExtraccionEspacial:
                 y_suelo_bloque = next_stop_y
                 
                 zonas_x = {}
-                # --- FIX: ZONAS X (Fronteras dinámicas para evitar solapamiento) ---
+                # --- ZONAS X (Fronteras dinámicas para evitar solapamiento) ---
                 c_cargo = current_columns.get("CARGO")
                 c_abono = current_columns.get("ABONO")
-                c_unif = current_columns.get("MONTO_UNIFICADO")
+                c_importe = current_columns.get("IMPORTE") # Antes c_unif
 
                 zonas_x["cargo"] = (9999, 9999)
                 zonas_x["abono"] = (9999, 9999)
-                zonas_x["unificado"] = (9999, 9999)
+                zonas_x["importe"] = (9999, 9999) # Antes unificado
 
-                if c_unif:
-                    # Fintechs: Una sola columna para todo
-                    zonas_x["unificado"] = (c_unif["x0"] - 40, c_unif["x1"] + 20)
+                if c_importe:
+                    # Fintechs o Estados de Cuenta de una sola columna para todo
+                    zonas_x["importe"] = (c_importe["x0"] - 40, c_importe["x1"] + 20)
 
                 elif c_cargo and c_abono:
                     # Bancos tradicionales: Columnas separadas (lógica de punto medio)
@@ -840,7 +840,7 @@ class MotorExtraccionEspacial:
         transacciones = []
         r_cargo = zonas_x["cargo"]
         r_abono = zonas_x["abono"]
-        r_unif = zonas_x["unificado"]
+        r_importe = zonas_x["importe"]
         x_muro_saldo = zonas_x["saldo"][0] 
         x_inicio_texto = x_inicio_desc_dinamico
         x_center_desc = zonas_x.get("desc_center", -1)
@@ -891,12 +891,12 @@ class MotorExtraccionEspacial:
                     col_detectada = None
                     x_center = (w[0] + w[2]) / 2
                     
-                    if r_unif[0] <= x_center <= r_unif[1]: col_detectada = "UNIFICADO"
+                    if r_importe[0] <= x_center <= r_importe[1]: col_detectada = "IMPORTE"
                     elif r_cargo[0] <= x_center <= r_cargo[1]: col_detectada = "CARGO"
                     elif r_abono[0] <= x_center <= r_abono[1]: col_detectada = "ABONO"
                     
                     if not col_detectada: 
-                        if r_unif[0] <= w[0] <= r_unif[1]: col_detectada = "UNIFICADO"
+                        if r_importe[0] <= w[0] <= r_importe[1]: col_detectada = "IMPORTE"
                         elif r_cargo[0] <= w[0] <= r_cargo[1]: col_detectada = "CARGO"
                         elif r_abono[0] <= w[0] <= r_abono[1]: col_detectada = "ABONO"
 
@@ -907,9 +907,9 @@ class MotorExtraccionEspacial:
                             if val == 0.0:
                                 continue 
                             
-                            # Magia Fintech: Determinar el tipo real basado en la columna y el signo
-                            if col_detectada == "UNIFICADO":
-                                tipo_real = "CARGO" if val < 0 else "ABONO"
+                            # Nueva lógica: Si la columna es IMPORTE, el registro se va como IMPORTE puro
+                            if col_detectada == "IMPORTE":
+                                tipo_real = "IMPORTE"
                             else:
                                 tipo_real = col_detectada
                                 
@@ -1026,16 +1026,18 @@ class MotorExtraccionEspacial:
                     "FECHA": ["FECHA", "DIA", "DATE"],
                     "DESCRIPCION": ["DESCRIPCION", "DESCRIPCIÓN", "CONCEPTO", "DETALLE", "NARRATIVA"],
                     "REFERENCIA": ["REFERENCIA", "FOLIO", "DOCTO", "AUTORIZACION"],
-                    "CARGO": ["CARGO", "RETIRO", "DEBITO", "SALIDAS", "IMPORTE"], 
+                    "CARGO": ["CARGO", "RETIRO", "DEBITO", "SALIDAS", "MONTO"],
                     "ABONO": ["ABONO", "ABONOS", "DEPOSITO", "DEPÓSITO", "DEPOSITOS", "DEPÓSITOS", "CREDITO", "ENTRADAS"],
-                    "SALDO": ["SALDO"]
+                    "SALDO": ["SALDO"],
+                    "IMPORTE": ["IMPORTE", "VALOR"] # Nueva clase
                 }
             },
             {
                 "scan_height": 30,
                 "definitions": {
                     "FECHA": ["FECHA"],
-                    "CARGO": ["IMPORTE", "MONTO"], 
+                    "CARGO": ["MONTO"],
+                    "IMPORTE": ["IMPORTE"], # Lo delegamos a su propia columna
                     "DESCRIPCION": ["CONCEPTO", "MOTIVO", "BENEFICIARIO"], 
                     "REFERENCIA": ["RASTREO", "CLAVE", "REFERENCIA", "AUTORIZACION"],
                     "EXTRA_TRIGGER": ["RECEPTOR", "NOMBRE", "TARJETA", "CUENTA"] 
@@ -1080,7 +1082,7 @@ class MotorExtraccionEspacial:
                             "token": best[4]
                         }
             
-            has_essential = "FECHA" in current_cols and (any(k in current_cols for k in ["CARGO", "ABONO", "DESCRIPCION"]))
+            has_essential = "FECHA" in current_cols and (any(k in current_cols for k in ["CARGO", "ABONO", "DESCRIPCION", "IMPORTE"]))
             
             if has_essential:
                 if matches > max_matches:
