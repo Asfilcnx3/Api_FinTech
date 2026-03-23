@@ -1,10 +1,11 @@
 from ..core.exceptions import PDFCifradoError
-from ..utils.helpers_texto_fluxo import TRIGGERS_CONFIG
 
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional
 from io import BytesIO
 from pyzbar.pyzbar import decode
 import fitz
+import cv2
+import numpy as np
 import logging
 import pytesseract
 from PIL import Image
@@ -122,3 +123,41 @@ def extraer_texto_de_pdf(pdf_bytes: bytes, num_paginas: Optional[int] = None) ->
         raise RuntimeError(f"No se pudo leer el contenido del PDF: {e}") from e
         
     return texto_extraido
+
+# ------ LÓGICA PARA EL MOTOR DE OCR -----
+def mejorar_imagen_para_ocr(pixmap_bytes: bytes) -> bytes:
+    """Aplica filtros de OpenCV para resaltar el texto y eliminar ruido de fondo."""
+    nparr = np.frombuffer(pixmap_bytes, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+    # Escala de grises y CLAHE para mejorar contraste
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+    contrast_enhanced = clahe.apply(gray)
+
+    # Volver a codificar a bytes (PNG)
+    _, buffer = cv2.imencode('.png', contrast_enhanced)
+    return buffer.tobytes()
+
+def convertir_pdf_a_imagenes_mejorada(pdf_bytes: bytes, paginas: List[int] = [1]) -> List[BytesIO]:
+    buffers_imagenes = []
+    matriz_escala = fitz.Matrix(2, 2)  # Aumentar resolución
+
+    try:
+        with fitz.open(stream=pdf_bytes, filetype="pdf") as documento:
+            for num_pagina in paginas:
+                if 0 <= num_pagina - 1 < len(documento):
+                    pagina = documento.load_page(num_pagina - 1)
+                    pix = pagina.get_pixmap(matrix=matriz_escala)
+                    img_bytes_crudos = pix.tobytes("png")
+                    
+                    # --- Mejoramiento de imagen OCR ---
+                    img_mejorada = mejorar_imagen_para_ocr(img_bytes_crudos)
+                    buffers_imagenes.append(BytesIO(img_mejorada))
+                else:
+                    logger.warning(f"Advertencia: Página {num_pagina} fuera de rango.")
+
+    except Exception as e:
+        raise ValueError(f"No se pudo procesar el archivo como PDF: {e}")
+
+    return buffers_imagenes

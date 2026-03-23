@@ -90,11 +90,11 @@ class SyntageClient:
                     data = resp.json()
                     members = data if isinstance(data, list) else data.get("hydra:member", [])
                     # --- LOG DE DEBUG ---
-                    if members:
-                        logger.debug(f"DEBUG NAME ({inv_type}): Primer item encontrado: {str(members[0])[:200]}...")
-                    else:
-                        logger.debug(f"DEBUG NAME ({inv_type}): Lista vacía.")
-                    # --------------------
+                    # if members:
+                    #     logger.debug(f"DEBUG NAME ({inv_type}): Primer item encontrado: {str(members[0])[:200]}...")
+                    # else:
+                    #     logger.debug(f"DEBUG NAME ({inv_type}): Lista vacía.")
+                    # # --------------------
 
                     if members and isinstance(members[0], dict):
                         entity = members[0].get("issuer" if inv_type == "issued" else "receiver", {})
@@ -141,7 +141,7 @@ class SyntageClient:
             }
             
             # Log para verificar la nueva ventana ampliada
-            logger.debug(f"Consultando Riesgos con ventana (12m + Current): {params['options[from]']} a {params['options[to]']}")
+            # logger.debug(f"Consultando Riesgos con ventana (12m + Current): {params['options[from]']} a {params['options[to]']}")
 
             resp_risks = await client.get(f"{self.base_url}/insights/{rfc}/risks", params=params, headers=self.headers)
             
@@ -430,6 +430,10 @@ class SyntageClient:
                         from datetime import datetime, timedelta
                         
                         for c in raw_cuentas:
+
+                            # LOG DEBUG que se borrará
+                            # logging.info(f"DEBUG PARA CUENTAS: {raw_cuentas}")
+
                             inst = c.get("nombreOtorgante") or c.get("tipoUsuario") or "N/A"
                             tipo_codigo = str(c.get("tipoContrato") or c.get("tipoCredito") or "N/A")
                             tipo_desc = CATALOGO_TIPOS_CREDITO.get(tipo_codigo, tipo_codigo)
@@ -440,7 +444,7 @@ class SyntageClient:
                             
                             apertura = c.get("fechaAperturaCuenta") or c.get("apertura")
                             ultimo_pago = c.get("fechaUltimoPago")
-                            cierre = c.get("fechaCierre")
+                            cierre = c.get("fechaCierreCuenta") or c.get("fechaCierre") or c.get("cierre")
                             
                             actualizacion_raw = c.get("ultimoPeriodoActualizado") or c.get("fechaReporte") or c.get("fechaActualizacion") or c.get("actualizacion")
                             actualizacion_parsed = "N/A"
@@ -573,6 +577,10 @@ class SyntageClient:
                             logger.debug(f"Debug_Resultados: {result["inquiries_summary"]}")
 
                         for line in temp_lines:
+                            # log de debug
+                            logger.info(f"log de inicial balance {line["initial_balance"]}")
+                            logger.info(f"log de past due balance {line["past_due_balance"]}")
+
                             vigente = line["current_balance"]
                             
                             # Ponderación 1 (%) -> =+T3/$T$1
@@ -610,6 +618,10 @@ class SyntageClient:
                             l["initial_balance"] for l in temp_lines 
                             if str(l.get("closing_date")).strip() in ["None", "N/A", ""]
                         )
+                        sum_saldo_vencido_vigente = sum(
+                            l["past_due_balance"] for l in temp_lines
+                            if str(l.get("closing_date")).strip() in ["None", "N/A", ""]
+                        )
                         sum_saldo_vencido = sum(l["past_due_balance"] for l in temp_lines)
                         sum_pond_2 = sum(l["weighting_days"] for l in temp_lines)
                         pond_2_years = round(sum_pond_2 / 360, 2) if sum_pond_2 > 0 else 0.0
@@ -640,6 +652,7 @@ class SyntageClient:
                             "total_open_max_amount": sum_saldo_inicial_activo,
                             "total_current_balance": total_vigente,
                             "total_past_due": sum_saldo_vencido,
+                            "total_open_past_due": sum_saldo_vencido_vigente,
                             "monthly_payment_1": sum_pago_mensual,
                             "monthly_payment_2": pago_mensual_2,
                             "weighted_term_years": pond_2_years,
@@ -650,6 +663,8 @@ class SyntageClient:
                             "bucket_120_179": make_bucket(sum_120_179),
                             "bucket_180_plus": make_bucket(sum_180_plus)
                         }
+
+                        logger.info(f"summary metrics raw: {result["summary_metrics"]}")
 
                         # B. CONSULTAS
                         for cons in raw_consultas:

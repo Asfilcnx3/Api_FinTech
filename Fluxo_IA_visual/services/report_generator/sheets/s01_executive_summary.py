@@ -195,6 +195,7 @@ def build(ws, data: dict):
             ("Monto Máximo Abierto", summary.get("total_open_max_amount", 0.0), CURRENCY_FORMAT),
             ("Saldo Vigente", summary.get("total_current_balance", 0.0), CURRENCY_FORMAT),
             ("Saldo Vencido Total", summary.get("total_past_due", 0.0), CURRENCY_FORMAT),
+            ("Saldo Vencido Abierto", summary.get("total_open_past_due", 0.0), CURRENCY_FORMAT),
             ("Pago Mensual 1", summary.get("monthly_payment_1", 0.0), CURRENCY_FORMAT),
             ("Pago Mensual 2", summary.get("monthly_payment_2", 0.0), CURRENCY_FORMAT),
             ("Plazo Ponderado (años)", summary.get("weighted_term_years", 0.0), '0.00')
