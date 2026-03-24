@@ -687,7 +687,7 @@ class MotorExtraccionEspacial:
                         cursor_y += 20
 
             last_page_columns = current_columns.copy() if current_columns else {}
-
+            
             results.append({
                 "page": geo.page_num,
                 "anclas": todas_anclas_pagina,
@@ -695,7 +695,73 @@ class MotorExtraccionEspacial:
                 "transacciones": transacciones_pagina
             })
             
+        # =====================================================================
+        # POST-PROCESAMIENTO GLOBAL: DEDUPLICACIÓN DE IMPORTES (TABLAS SPEI)
+        # =====================================================================
+        todas_las_txs_del_pdf = []
+        for r in results:
+            todas_las_txs_del_pdf.extend(r["transacciones"])
+            
+        # Obtenemos las huellas dactilares (IDs) de los importes que ya absorbimos
+        ids_a_borrar = self._deduplicar_importes_global(todas_las_txs_del_pdf)
+        
+        # Limpiamos los resultados página por página
+        if ids_a_borrar:
+            for r in results:
+                r["transacciones"] = [tx for tx in r["transacciones"] if id(tx) not in ids_a_borrar]
+        
         return results
+
+    def _deduplicar_importes_global(self, todas_las_transacciones: List[Dict]) -> set:
+        """
+        Cruce global de todo el documento. Modifica los dicts originales in-place
+        añadiendo la descripción y retorna los IDs de memoria de los IMPORTES a eliminar.
+        """
+        import re
+        PALABRAS_IGNORADAS = {"de", "la", "el", "en", "por", "para", "un", "una", "spei", "pago", "envio", "transferencia", "cv", "sa"}
+
+        def obtener_palabras_clave(texto: str) -> set:
+            limpio = re.sub(r'[^\w\s]', ' ', str(texto).lower())
+            return set(p for p in limpio.split() if len(p) > 2 and p not in PALABRAS_IGNORADAS)
+
+        normales = [tx for tx in todas_las_transacciones if tx.get("tipo") in ["CARGO", "ABONO"]]
+        importes = [tx for tx in todas_las_transacciones if tx.get("tipo") == "IMPORTE"]
+        
+        self._log_debug(self.LOG_EXTRACTION, f"DEDUPLICACIÓN GLOBAL INICIADA: {len(importes)} IMPORTES vs {len(normales)} NORMALES en todo el documento.")
+        
+        ids_importes_fusionados = set()
+
+        for imp in importes:
+            try:
+                monto_imp = float(imp.get("monto", 0.0))
+            except:
+                continue
+                
+            palabras_imp = obtener_palabras_clave(imp.get("descripcion", ""))
+            match_encontrado = False
+            
+            for norm in normales:
+                try:
+                    monto_norm = float(norm.get("monto", 0.0))
+                except:
+                    continue
+
+                if abs(monto_norm - monto_imp) < 0.01:
+                    palabras_norm = obtener_palabras_clave(norm.get("descripcion", ""))
+                    coincidencias = palabras_imp.intersection(palabras_norm)
+                    
+                    if len(coincidencias) >= 1:
+                        # FUSIÓN EN LA MISMA REFERENCIA DE MEMORIA
+                        norm["descripcion"] = f"{norm['descripcion']} | {imp['descripcion']}"
+                        ids_importes_fusionados.add(id(imp))
+                        match_encontrado = True
+                        self._log_debug(self.LOG_EXTRACTION, f"   [EXITO] Fusión Global: ${monto_imp} | Coincidencias: {coincidencias}")
+                        break 
+            
+            if not match_encontrado:
+                self._log_debug(self.LOG_EXTRACTION, f"IMPORTE SIN MATCH (HUÉRFANO GLOBAL): Monto ${monto_imp}")
+
+        return ids_importes_fusionados
     
     def _encontrar_anclas_fechas(self, words: List, rango_x: Tuple[float, float], ancho_pagina: float) -> List[Dict]:
         x_min_col, x_max_col = rango_x
