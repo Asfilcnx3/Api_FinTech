@@ -1,3 +1,5 @@
+# DEPRECATED
+
 import io
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, NamedStyle, Border, Side

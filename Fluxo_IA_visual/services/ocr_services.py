@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional
 
 import openai
 from ..core.config import settings 
-from .pdf_processor import convertir_pdf_a_imagenes 
+from .pdf_processor import convertir_pdf_a_imagenes_mejorada 
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +98,7 @@ class OCRService:
                 paginas = [1] 
 
             # 2. Imágenes
-            imagen_buffers = convertir_pdf_a_imagenes(pdf_bytes, paginas=paginas)
+            imagen_buffers = convertir_pdf_a_imagenes_mejorada(pdf_bytes, paginas=paginas)
             if not imagen_buffers:
                 return {"error": "Fallo conversión imágenes", "datos": None}
 

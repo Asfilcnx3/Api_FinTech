@@ -18,6 +18,7 @@ __pycache__
 # Cosas que no usamos
 deprecated
 
+POC_OCR
 pdf_test
 caratulas_test
 transacciones_test

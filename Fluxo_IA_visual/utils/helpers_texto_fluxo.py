@@ -429,36 +429,33 @@ EJEMPLO DE SALIDA:
 
 PROMPT_FASE_2_ESCRIBA_VISION = """
 TU OBJETIVO:
-Eres un sistema OCR financiero experto en leer tablas de estados de cuenta bancarios. Tu ÚNICA tarea es extraer transacciones y devolverlas en un formato JSON estrictamente válido. No clasifiques, solo transcribe.
+Eres un sistema OCR financiero experto en leer tablas de estados de cuenta bancarios. Tu ÚNICA tarea es extraer transacciones de la tabla principal y devolverlas en un formato JSON estrictamente válido. No clasifiques, solo transcribe.
 
 REGLAS DE EXTRACCIÓN:
 1. Extrae solo las filas que contengan operaciones bancarias válidas.
-2. Ignora encabezados, pies de página, saldos totales o líneas de resumen.
-3. Las extracciones deben estar en MAYUSCULAS
+2. Si detectas tablas informativas o resúmenes como "INFORMACIÓN SPEI DURANTE EL PERIODO", o si la columna de dinero dice únicamente "MONTO DEL PAGO", extráelas, pero asígnales ESTRICTAMENTE el tipo "IMPORTE".
+3. Ignora encabezados, pies de página, saldos totales o líneas de resumen de saldos.
+4. Las extracciones deben estar en MAYUSCULAS.
+5. Omite números de referencia largos o claves de rastreo que no aporten al nombre del concepto principal.
+6. Debes pensar paso a paso usando un bloque <scratchpad>. Transcribe línea por línea lo que ves, indicando el tipo, y DESPUÉS genera el JSON.
 
 FORMATO DE EXTRACCIÓN:
 1. FECHA: Solo el número del día o fecha corta (ej. "05" o "05/12").
 2. DESCRIPCION: Todo el concepto en una sola cadena. Si abarca múltiples líneas visuales, únelas.
 3. MONTO: Solo el número (sin símbolo $, sin comas). Ej: 1540.50
-4. TIPO: Estrictamente "CARGO" (retiros/salidas) o "ABONO" (depósitos/entradas) según la columna donde aparezca el monto.
+4. TIPO: Estrictamente "CARGO" (retiros/salidas), "ABONO" (depósitos/entradas) o "IMPORTE" (si proviene de tablas SPEI o monto único).
 
 FORMATO DE SALIDA ESPERADO:
-Debes responder ÚNICAMENTE con un arreglo JSON puro, sin texto introductorio ni conclusiones.
-
+<scratchpad>
+Fila 1 detectada: 05/12 PAGO CUENTA DE TERCERO BNET $2,050.00 (Abono)
+Fila 2 detectada: 06/12 COMISION MANEJO DE CUENTA $50.00 (Cargo)
+Fila 3 detectada (Tabla SPEI): 06/12 ENVIO SPEI BANAMEX $1,000.00 (Importe)
+</scratchpad>
 ```json
 [
-  {
-    "fecha": "05",
-    "descripcion": "PAGO CUENTA DE TERCERO BNET MANUEL ALANIS REF 0031",
-    "monto": 2050.00,
-    "tipo": "ABONO"
-  },
-  {
-    "fecha": "06",
-    "descripcion": "COMISION MANEJO DE CUENTA",
-    "monto": 50.00,
-    "tipo": "CARGO"
-  }
+  {"fecha": "05/12", "descripcion": "PAGO CUENTA DE TERCERO BNET", "monto": 2050.00, "tipo": "ABONO"},
+  {"fecha": "06/12", "descripcion": "COMISION MANEJO DE CUENTA", "monto": 50.00, "tipo": "CARGO"},
+  {"fecha": "06/12", "descripcion": "ENVIO SPEI BANAMEX", "monto": 1000.00, "tipo": "IMPORTE"}
 ]
 ```
 """

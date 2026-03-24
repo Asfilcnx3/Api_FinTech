@@ -188,7 +188,7 @@ async def procesar_documento_escaneado_con_agentes_async(
     except Exception:
         return {"error": "No se pudo leer el PDF (corrupto)."}
 
-    # --- NUEVO: Wrapper para cronometrar la petición asíncrona ---
+    # --- Wrapper para cronometrar la petición asíncrona ---
     async def _llamar_agente_con_tiempo(num_pag):
         inicio = time.time()
         res_agente = await llamar_agente_ocr_vision(banco, pdf_bytes, [num_pag])

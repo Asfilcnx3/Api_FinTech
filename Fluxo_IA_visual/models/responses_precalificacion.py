@@ -90,6 +90,7 @@ class PrequalificationResponse(BaseModel):
         total_open_max_amount: float
         total_current_balance: float
         total_past_due: float
+        total_open_past_due: float
         monthly_payment_1: float
         monthly_payment_2: float
         weighted_term_years: float

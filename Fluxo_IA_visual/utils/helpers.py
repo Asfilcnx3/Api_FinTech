@@ -165,6 +165,9 @@ def parsear_respuesta_json_ocr(texto_llm: str) -> List[Dict[str, Any]]:
     """
     texto_limpio = texto_llm.strip()
     
+    if "</scratchpad>" in texto_limpio:
+        texto_limpio = texto_limpio.split("</scratchpad>")[-1].strip()
+    
     # 1. Buscar bloque JSON si el modelo añade texto/markdown alrededor
     match = re.search(r'```(?:json)?\s*(\[.*?\])\s*```', texto_limpio, re.DOTALL)
     if match:
