@@ -578,8 +578,8 @@ class SyntageClient:
 
                         for line in temp_lines:
                             # log de debug
-                            logger.info(f"log de inicial balance {line["initial_balance"]}")
-                            logger.info(f"log de past due balance {line["past_due_balance"]}")
+                            # logger.info(f"log de inicial balance {line["initial_balance"]}")
+                            # logger.info(f"log de past due balance {line["past_due_balance"]}")
 
                             vigente = line["current_balance"]
                             
@@ -664,7 +664,7 @@ class SyntageClient:
                             "bucket_180_plus": make_bucket(sum_180_plus)
                         }
 
-                        logger.info(f"summary metrics raw: {result["summary_metrics"]}")
+                        # logger.info(f"summary metrics raw: {result["summary_metrics"]}")
 
                         # B. CONSULTAS
                         for cons in raw_consultas:

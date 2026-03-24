@@ -16,8 +16,8 @@ palabras_clave_generales = [
 ]
 
 PALABRAS_TPV = [
-    "terminales punto de venta", "punto de venta", "tpv", "terminal", "evopay", "clip", "izettle", "mercado pago", "netpay",
-    "pocket de latinoameric", "mercadopago", "pocket de billpocket", "billpocket", "spei amexco", "data merchant services", "abrexpress company mexicsa"
+    "terminales punto de venta", "punto de venta", "tpv", "terminal", "evopay", "clip", "izettle", "netpay", "mp agregador", "mpagregador", "getnet",
+    "pocket de latinoameric", "pocket de billpocket", "billpocket", "spei amexco", "data merchant services", "abrexpress company mexicsa"
 ]
 
 PALABRAS_EFECTIVO = [
@@ -33,7 +33,7 @@ PALABRAS_TRASPASO_FINANCIAMIENTO = [
 ]
 
 PALABRAS_BMRCASH = [
-    "bmrcash ref", "bmrcash", "mercado libre", "mercadolibre"
+    "bmrcash ref", "bmrcash", "mercado libre", "mercadolibre", "mercado pago", "mercadopago"
 ]
 
 PALABRAS_TRASPASO_MORATORIO = [ # Faltan ejemplos
