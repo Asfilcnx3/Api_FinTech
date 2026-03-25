@@ -19,3 +19,4 @@ fpdf2
 pandas
 numpy
 statsmodels
+opencv-python
