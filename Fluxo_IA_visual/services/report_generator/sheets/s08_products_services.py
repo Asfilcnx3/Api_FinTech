@@ -1,5 +1,6 @@
 # Fluxo_IA_visual/services/report_generator/sheets/s08_products_services.py
 from openpyxl.styles import Alignment, Font
+import re
 from ..styles import (
     HEADER_FONT, SUB_HEADER_FILL, 
     CURRENCY_FORMAT, PERCENT_FORMAT, 
@@ -25,8 +26,16 @@ def build(ws, data: dict):
         ws.cell(row=sub_row, column=col).fill = SUB_HEADER_FILL
         
     acts = data.get("economic_activities", [])
+    ILLEGAL_CHARACTERS_RE = re.compile(r'[\000-\010]|[\013-\014]|[\016-\037]')
+
     for act in acts:
-        ws.append([act.get("name"), fix_percentage(act.get("percentage", 0)), act.get("start_date")])
+        # 1. Obtenemos y limpiamos el texto
+        raw_name = str(act.get("name", "N/A"))
+        clean_name = ILLEGAL_CHARACTERS_RE.sub("", raw_name)
+        clean_name = " ".join(clean_name.split())
+        
+        # 2. Insertamos a la celda usando el texto limpio
+        ws.append([clean_name, fix_percentage(act.get("percentage", 0)), act.get("start_date")])
         ws.cell(row=ws.max_row, column=2).number_format = PERCENT_FORMAT
 
     ws.append([])
