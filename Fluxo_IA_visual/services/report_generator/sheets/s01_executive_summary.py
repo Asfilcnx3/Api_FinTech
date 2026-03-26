@@ -1,6 +1,7 @@
 # Fluxo_IA_visual/services/report_generator/sheets/s01_executive_summary.py
 from openpyxl.styles import Font, Alignment
 from datetime import datetime
+import re
 from ..styles import (
     HEADER_FONT, HEADER_FILL, SUB_HEADER_FILL, ALERT_FILL, 
     CURRENCY_FORMAT, PERCENT_FORMAT, 
@@ -119,10 +120,49 @@ def build(ws, data: dict):
     ws.merge_cells(f'A{ws.max_row}:D{ws.max_row}')
     aplicar_estilo_header(ws, ws.max_row, 1, 4)
     ws.append(["Actividad", "Porcentaje", "Fecha Inicio", ""])
+    
     acts = data.get("economic_activities", [])
+    
+    # Regex para detectar caracteres de control ilegales en XML/Excel
+    ILLEGAL_CHARACTERS_RE = re.compile(r'[\000-\010]|[\013-\014]|[\016-\037]')
+
     for act in acts:
         pct_str = f"{act.get('percentage', 0)}%"
-        ws.append([act.get("name"), pct_str, act.get("start_date"), ""])
+        
+        # 1. Obtenemos el texto crudo
+        raw_name = str(act.get("name", "N/A"))
+        
+        # 2. Eliminamos caracteres ilegales
+        clean_name = ILLEGAL_CHARACTERS_RE.sub("", raw_name)
+        
+        # 3. Quitamos saltos de línea y espacios múltiples para que se vea limpio
+        clean_name = " ".join(clean_name.split())
+        
+        ws.append([clean_name, pct_str, act.get("start_date"), ""])# 4. ACTIVIDADES ECONÓMICAS
+    ws.append([])
+    ws.append(["ACTIVIDADES ECONÓMICAS"])
+    ws.merge_cells(f'A{ws.max_row}:D{ws.max_row}')
+    aplicar_estilo_header(ws, ws.max_row, 1, 4)
+    ws.append(["Actividad", "Porcentaje", "Fecha Inicio", ""])
+    
+    acts = data.get("economic_activities", [])
+    
+    # Regex para detectar caracteres de control ilegales en XML/Excel
+    ILLEGAL_CHARACTERS_RE = re.compile(r'[\000-\010]|[\013-\014]|[\016-\037]')
+
+    for act in acts:
+        pct_str = f"{act.get('percentage', 0)}%"
+        
+        # 1. Obtenemos el texto crudo
+        raw_name = str(act.get("name", "N/A"))
+        
+        # 2. Eliminamos caracteres ilegales
+        clean_name = ILLEGAL_CHARACTERS_RE.sub("", raw_name)
+        
+        # 3. Quitamos saltos de línea y espacios múltiples para que se vea limpio
+        clean_name = " ".join(clean_name.split())
+        
+        ws.append([clean_name, pct_str, act.get("start_date"), ""])
 
     ws.column_dimensions['A'].width = 30
     ws.column_dimensions['B'].width = 20
