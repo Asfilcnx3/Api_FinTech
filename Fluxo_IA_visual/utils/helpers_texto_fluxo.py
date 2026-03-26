@@ -17,7 +17,9 @@ palabras_clave_generales = [
 
 PALABRAS_TPV = [
     "terminales punto de venta", "punto de venta", "tpv", "terminal", "evopay", "clip", "izettle", "netpay", "mp agregador", "mpagregador", "getnet",
-    "pocket de latinoameric", "pocket de billpocket", "billpocket", "spei amexco", "data merchant services", "abrexpress company mexicsa"
+    "pocket de latinoameric", "pocket de billpocket", "billpocket", "spei amexco", "data merchant services", "abrexpress company mexicsa",
+    "net pay", "netpay", "payclip", "pocket", "kiwi", "kiwi international", "zettle", "gananciasclip", "ganancias clip", "deposito bpu", "depositobpu",
+    "net pay sapi de cv", "srpago", "sr pago", "señor pago", "señorpago", "wuzi", "bn-nts"
 ]
 
 PALABRAS_EFECTIVO = [

@@ -913,7 +913,7 @@ class MotorExtraccionEspacial:
         x_center_desc = zonas_x.get("desc_center", -1)
 
         REGEX_FILA_TOTAL = re.compile(
-            r'^\s*(TOTAL|SUMA|GRAN\s+TOTAL|SALDO\s+M[IÍ]NIMO|COMISIONES\s+COBRADAS|Y\s+DEP[ÓO]SITOS|NOMINAL3\s+GAT|EN\s+EL\s+AÑO\s+DEL\s+PERIODO)',
+            r'^\s*(TOTAL|SUMA|GRAN\s+TOTAL|SALDO\s+M[IÍ]NIMO|COMISIONES\s+COBRADAS|Y\s+DEP[ÓO]SITOS|NOMINAL3\s+GAT|EN\s+EL\s+AÑO\s+DEL\s+PERIODO)|(?:\n|\s{3,})\s*(TOTAL|SUMA|GRAN\s+TOTAL)\s*$',
             re.IGNORECASE
         )
 
@@ -1064,7 +1064,8 @@ class MotorExtraccionEspacial:
                     # Unimos todos los renglones detectados con el salto de línea real
                     desc_str = "\n".join(lineas_desc).strip()
 
-                    if REGEX_FILA_TOTAL.match(desc_str): continue
+                    if REGEX_FILA_TOTAL.search(desc_str): 
+                        continue
 
                     tx = {
                         "fecha": ancla["texto_fecha"],
