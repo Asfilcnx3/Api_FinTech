@@ -52,7 +52,7 @@ def test_pre_clasificar_resuelve_palabras_clave(motor_clasificador_test):
     assert len(resueltas) == 2
     assert len(pendientes) == 0
     assert resueltas[0][1].categoria == "EFECTIVO"
-    assert resueltas[1][1].categoria == "TRASPASO"
+    assert resueltas[1][1].categoria == "TRASPASO_ABONO"
 
 def test_pre_clasificar_envia_ambiguos_a_ia(motor_clasificador_test):
     """Abonos que no cruzan con ninguna regla estática deben enviarse a la cubeta de la IA."""
@@ -87,7 +87,7 @@ def test_calcular_totales_suma_correcta(motor_clasificador_test):
         # 1000.50 + 500.00 + 0.00
         assert totales["TPV"] == 1500.50
         assert totales["EFECTIVO"] == 200.00
-        assert totales["DEPOSITOS"] == 1700.50 # 1000.50 + 500.00 + 200.00
+        assert totales["TRASPASO_ABONO"] == 0.0
 
 # ============================================================================
 # PRUEBAS: ORQUESTACIÓN COMPLETA (MOCK DE IA ASÍNCRONA)

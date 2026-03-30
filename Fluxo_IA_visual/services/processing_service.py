@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import copy
+import re
 from fastapi.encoders import jsonable_encoder
 from concurrent.futures import ProcessPoolExecutor
 
@@ -339,6 +340,96 @@ class ProcessingService:
         if tareas_documentos:
             await asyncio.gather(*tareas_documentos)
 
+        # =====================================================================
+        # --- ETAPA 5.5: ANÁLISIS GLOBAL DE TRASPASOS (NOMBRES Y CUENTAS) ---
+        # =====================================================================
+        self.passport.actualizar(job_id, descripcion="Realizando cruce global de traspasos propios (Nombres y Cuentas)...")
+        logger.info(f"Iniciando barrido global de clientes y cuentas para Job {job_id}...")
+
+        # 1. Recopilar todos los nombres y cuentas del lote entero
+        nombres_clientes_lote = set()
+        cuentas_lote = set()
+
+        for res in resultados_fase_2:
+            if not res or not res.AnalisisIA:
+                continue
+                
+            # A) Guardar Nombre
+            if res.AnalisisIA.nombre_cliente:
+                nombres_clientes_lote.add(res.AnalisisIA.nombre_cliente)
+                
+            # B) Guardar Cuentas (CLABE y derivadas)
+            if res.AnalisisIA.clabe_interbancaria:
+                # Quitamos cualquier espacio o guión por seguridad
+                clabe_limpia = ''.join(filter(str.isdigit, str(res.AnalisisIA.clabe_interbancaria)))
+                if clabe_limpia:
+                    cuentas_lote.add(clabe_limpia)
+                    # Si es una CLABE de 18, guardamos los últimos 10 y 11 dígitos 
+                    # (que suelen ser el número de cuenta interno que arrojan los SPEI)
+                    if len(clabe_limpia) == 18:
+                        cuentas_lote.add(clabe_limpia[-10:])
+                        cuentas_lote.add(clabe_limpia[-11:])
+
+        logger.info(f"Pool Nombres: {len(nombres_clientes_lote)} | Pool Cuentas: {len(cuentas_lote)}")
+
+        # 2. Segunda pasada masiva sobre todas las transacciones ya procesadas
+        for res in resultados_fase_2:
+            if not res or isinstance(res.DetalleTransacciones, AnalisisTPV.ErrorRespuesta):
+                continue
+
+            ia = res.AnalisisIA
+            transacciones = res.DetalleTransacciones.transacciones
+
+            suma_abonos_traspaso = 0.0
+            suma_cargos_traspaso = 0.0
+
+            for tx in transacciones:
+                tipo_lower = str(tx.tipo).lower().strip()
+                es_abono = tipo_lower in ["abono", "deposito", "depósito", "credito", "crédito"]
+                
+                try:
+                    monto_val = float(str(tx.monto).replace("$", "").replace(",", "").strip())
+                except ValueError:
+                    monto_val = 0.0
+
+                es_propia_global = False
+                desc_lower = str(tx.descripcion).lower()
+
+                # --- 3A. CRUCE POR NÚMERO DE CUENTA (PRIORIDAD ALTA) ---
+                if cuentas_lote:
+                    # Extraemos secuencias numéricas de 10 o más dígitos de la descripción
+                    # Esto ignora montos pequeños, fechas o referencias cortas.
+                    secuencias_numericas = re.findall(r'\b\d{10,18}\b', desc_lower)
+                    
+                    for num_en_desc in secuencias_numericas:
+                        if num_en_desc in cuentas_lote:
+                            es_propia_global = True
+                            self.passport.actualizar(job_id, descripcion=f"Match numérico encontrado: {num_en_desc}")
+                            break # Encontramos la cuenta, no necesitamos buscar más
+
+                # --- 3B. CRUCE POR NOMBRE DEL CLIENTE (PRIORIDAD MEDIA) ---
+                if not es_propia_global and nombres_clientes_lote:
+                    for nombre_original in nombres_clientes_lote:
+                        if self.motor_clasificador._es_transaccion_propia(tx.descripcion, nombre_original):
+                            es_propia_global = True
+                            break
+
+                # 4. Asignación si hubo match
+                if es_propia_global:
+                    tx.es_sospechosa = True
+                    tx.categoria = "TRASPASO_ABONO" if es_abono else "TRASPASO_CARGO"
+
+                # 5. Sumatorias
+                cat_actual = str(getattr(tx, "categoria", "GENERAL")).upper().strip()
+                if cat_actual == "TRASPASO_ABONO":
+                    suma_abonos_traspaso += monto_val
+                elif cat_actual == "TRASPASO_CARGO":
+                    suma_cargos_traspaso += monto_val
+
+            # Actualizamos el objeto AnalisisIA
+            ia.traspasos_abonos = suma_abonos_traspaso
+            ia.traspasos_cargos = suma_cargos_traspaso
+
         # --- SAFETY CHECK ---
         conteo_validos = len([r for r in resultados_fase_2 if r is not None])
         logger.info(f"PRE-REPORTE: Se enviarán {conteo_validos} documentos a generar reporte.")
@@ -598,7 +689,12 @@ class ProcessingService:
         # --- INYECCIÓN DE RESULTADOS AL OBJETO PADRE ---
         analisis_ia = resultado_doc.AnalisisIA
         analisis_ia.depositos_en_efectivo = totales.get("EFECTIVO", 0.0)
-        analisis_ia.traspaso_entre_cuentas = totales.get("TRASPASO", 0.0)
+        
+        # Traspasos separados
+        analisis_ia.traspasos_abonos = totales.get("TRASPASO_ABONO", 0.0)
+        analisis_ia.traspasos_cargos = totales.get("TRASPASO_CARGO", 0.0)
+        
+        # Los demás campos
         analisis_ia.total_entradas_financiamiento = totales.get("FINANCIAMIENTO", 0.0)
         analisis_ia.entradas_bmrcash = totales.get("BMRCASH", 0.0)
         analisis_ia.total_moratorios = totales.get("MORATORIOS", 0.0)
@@ -612,7 +708,6 @@ class ProcessingService:
             comisiones = 0.0
             
         analisis_ia.entradas_TPV_neto = totales.get("TPV", 0.0) - comisiones
-        analisis_ia.total_sospechosas = totales.get("SOSPECHOSA_PROPIA", 0.0)
 
         # =========================================================
         # NUEVO: CÁLCULO DE CONFIANZA DE EXTRACCIÓN

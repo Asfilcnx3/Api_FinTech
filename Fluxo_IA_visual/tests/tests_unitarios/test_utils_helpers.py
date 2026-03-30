@@ -351,7 +351,8 @@ def test_crear_objeto_resultado_completo():
         "cargos": 2000.75,
         "saldo_promedio": 5000.00,
         "depositos_en_efectivo": 3000.00,
-        "traspaso_entre_cuentas": 1500.00,
+        "traspasos_abonos": 1500.00,
+        "traspasos_cargos": 500.00,
         "total_entradas_financiamiento": 2500.00,
         "entradas_bmrcash": 4000.00,
         "entradas_TPV_bruto": 12000.00,
@@ -378,7 +379,8 @@ def test_crear_objeto_resultado_completo():
     assert resultado.AnalisisIA.cargos == 2000.75
     assert resultado.AnalisisIA.saldo_promedio == 5000.00
     assert resultado.AnalisisIA.depositos_en_efectivo == 3000.00
-    assert resultado.AnalisisIA.traspaso_entre_cuentas == 1500.00
+    assert resultado.AnalisisIA.traspasos_abonos == 1500.00
+    assert resultado.AnalisisIA.traspasos_cargos == 500.00
     assert resultado.AnalisisIA.entradas_bmrcash == 4000.00
     assert resultado.AnalisisIA.total_entradas_financiamiento == 2500.00
     assert resultado.AnalisisIA.entradas_TPV_bruto == 12000.00
@@ -401,25 +403,35 @@ def test_crear_objeto_resultado_parcial():
     assert resultado.AnalisisIA is not None
     assert resultado.AnalisisIA.banco == "SANTANDER"
     assert resultado.AnalisisIA.rfc == "XYZ987654321"
-    # Campos faltantes deberían ser None
+
+    # Campos faltantes
     assert resultado.AnalisisIA.depositos is None
+    assert resultado.AnalisisIA.cargos is None
+
+    assert resultado.DetalleTransacciones is not None
     assert resultado.DetalleTransacciones.transacciones == []
 
 
 def test_crear_objeto_resultado_invalido(monkeypatch):
-    # Forzamos un error en el modelo Pydantic
+    # Patch correcto: sobre el módulo donde se USA
     def mock_constructor(*args, **kwargs):
         raise ValueError("Falla simulada")
 
-    monkeypatch.setattr("Fluxo_IA_visual.utils.helpers.AnalisisTPV.ResultadoAnalisisIA", mock_constructor)
+    monkeypatch.setattr(
+        "Fluxo_IA_visual.utils.helpers.AnalisisTPV.ResultadoAnalisisIA",
+        mock_constructor
+    )
 
     datos = {"banco": "HSBC"}
 
     resultado = crear_objeto_resultado(datos)
 
     assert resultado.AnalisisIA is None
-    assert isinstance(resultado.DetalleTransacciones, type(resultado.DetalleTransacciones))
-    assert "Error estructural: Falla simulada" == resultado.DetalleTransacciones.error
+
+    assert resultado.DetalleTransacciones is not None
+    assert hasattr(resultado.DetalleTransacciones, "error")
+
+    assert resultado.DetalleTransacciones.error == "Error estructural: Falla simulada"
 
 # ---- Pruebas para verificar_fecha_comprobante ----
 def test_verificar_fecha_comprobante_valida_reciente():
