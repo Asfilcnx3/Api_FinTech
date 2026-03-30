@@ -17,6 +17,7 @@ class AnalisisTPV:
         monto: str
         tipo: str
         categoria: str
+        es_sospechosa: bool = False
     
     class ResultadoTPV(BaseModel):
         """Representa todas las transacciones TPV encontadas dentro del documento."""
@@ -46,13 +47,13 @@ class AnalisisTPV:
         total_cargos_extraidos: Optional[float] = Field(default=0.0, description="Suma real de los cargos encontrados")
 
         depositos_en_efectivo: Optional[float] = None
-        traspaso_entre_cuentas: Optional[float] = None
         total_entradas_financiamiento: Optional[float] = None
         entradas_bmrcash: Optional[float] = None
         total_moratorios: Optional[float] = None
         entradas_TPV_bruto: Optional[float] = None
         entradas_TPV_neto: Optional[float] = None
-        total_sospechosas: Optional[float] = None
+        traspasos_abonos: Optional[float] = None
+        traspasos_cargos: Optional[float] = None
 
         # Métricas de medición
         confianza_extraccion: Optional[float] = Field(default=None, description="Porcentaje de cuadre entre la carátula y los movimientos extraídos (0.0 a 100.0)")

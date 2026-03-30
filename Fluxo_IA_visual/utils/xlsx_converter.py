@@ -54,9 +54,11 @@ def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
     # ==========================================
     ws1 = wb.active
     ws1.title = "Resumen por Cuenta"
+    
+    # CAMBIO: Quitamos "Traspaso entre cuentas" y "Sospechosas", metemos Abonos y Cargos
     ws1.append([
         "Mes", "Cuenta", "Moneda", "Depósitos", "Cargos", "TPV Bruto", 
-        "Financiamientos", "Efectivo", "Traspaso entre cuentas", "BMR/Mercado", "Moratorios", "Sospechosas (Propias)"
+        "Financiamientos", "Efectivo", "Traspasos (Abonos)", "Traspasos (Cargos)", "BMR/Mercado", "Moratorios"
     ])
     
     for res in resultados:
@@ -89,10 +91,10 @@ def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
             ia.get("entradas_TPV_bruto", 0.0),
             ia.get("total_entradas_financiamiento", 0.0),
             ia.get("depositos_en_efectivo", 0.0),
-            ia.get("traspaso_entre_cuentas", 0.0),
+            ia.get("traspasos_abonos", 0.0),   # NUEVO
+            ia.get("traspasos_cargos", 0.0),   # NUEVO
             ia.get("entradas_bmrcash", 0.0),
-            ia.get("total_moratorios", 0.0),
-            ia.get("total_sospechosas", 0.0)
+            ia.get("total_moratorios", 0.0)
         ])
 
     aplicar_estilo_header(ws1)
@@ -232,7 +234,7 @@ def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
                 cell.style = currency_style
 
     # ==========================================
-    # DEFINICIÓN DE HOJAS (Ahora es trivial)
+    # DEFINICIÓN DE HOJAS
     # ==========================================
 
     # 3. TODOS LOS MOVIMIENTOS (Filtro None = Todo)
@@ -247,17 +249,15 @@ def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
     # 6. FINANCIAMIENTOS
     crear_hoja_detalle("Financiamientos", "FINANCIAMIENTO")
 
-    # 7. TRASPASO ENTRE CUENTAS
-    crear_hoja_detalle("Traspaso entre Cuentas", "TRASPASO")
+    # 7 TRASPASOS SEPARADOS
+    crear_hoja_detalle("Traspasos (Abonos)", "TRASPASO_ABONO")
+    crear_hoja_detalle("Traspasos (Cargos)", "TRASPASO_CARGO")
 
     # 8. BMRCASH y MP AGREGADOR
     crear_hoja_detalle("BMRCASH", "BMR/MP")
 
     # 9. MORATORIOS
     crear_hoja_detalle("Moratorios", "MORATORIOS")
-
-    # 10. TRANSACCIONES SOSPECHOSAS (PROPIAS)
-    crear_hoja_detalle("Transacciones Sospechosas", "SOSPECHOSA_PROPIA")
 
     # ==========================================
     # 10. RESUMEN GENERAL
