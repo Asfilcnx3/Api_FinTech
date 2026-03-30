@@ -718,7 +718,6 @@ class MotorExtraccionEspacial:
         Cruce global de todo el documento. Modifica los dicts originales in-place
         añadiendo la descripción y retorna los IDs de memoria de los IMPORTES a eliminar.
         """
-        import re
         PALABRAS_IGNORADAS = {"de", "la", "el", "en", "por", "para", "un", "una", "spei", "pago", "envio", "transferencia", "cv", "sa"}
 
         def obtener_palabras_clave(texto: str) -> set:
@@ -738,10 +737,30 @@ class MotorExtraccionEspacial:
             except:
                 continue
                 
+            fecha_imp = str(imp.get("fecha", "")).strip()
             palabras_imp = obtener_palabras_clave(imp.get("descripcion", ""))
             match_encontrado = False
             
-            for norm in normales:
+            # --- 1. FILTRO DE ORO: Coincidencia EXACTA y ÚNICA de Monto y Fecha ---
+            candidatos_exactos = [
+                n for n in normales 
+                if abs(float(n.get("monto", 0.0)) - monto_imp) < 0.01 and str(n.get("fecha", "")).strip() == fecha_imp
+            ]
+
+            # Si encontramos exactamente UNO, es un match perfecto garantizado
+            if len(candidatos_exactos) == 1:
+                norm = candidatos_exactos[0]
+                norm["descripcion"] = f"{norm['descripcion']} | {imp['descripcion']}"
+                ids_importes_fusionados.add(id(imp))
+                self._log_debug(self.LOG_EXTRACTION, f"   [EXITO] Fusión por Fecha+Monto Único: ${monto_imp} el {fecha_imp}")
+                continue
+
+            # --- 2. FILTRO DE PLATA: Desempate por texto (Heurística clásica) ---
+            # Si hay múltiples candidatos exactos, buscamos solo entre ellos. 
+            # Si no hay ninguno (por errores de OCR en fecha), buscamos en todo el documento.
+            lista_busqueda = candidatos_exactos if len(candidatos_exactos) > 1 else normales
+
+            for norm in lista_busqueda:
                 try:
                     monto_norm = float(norm.get("monto", 0.0))
                 except:
@@ -756,10 +775,10 @@ class MotorExtraccionEspacial:
                         norm["descripcion"] = f"{norm['descripcion']} | {imp['descripcion']}"
                         ids_importes_fusionados.add(id(imp))
                         match_encontrado = True
-                        self._log_debug(self.LOG_EXTRACTION, f"   [EXITO] Fusión Global: ${monto_imp} | Coincidencias: {coincidencias}")
+                        self._log_debug(self.LOG_EXTRACTION, f"   [EXITO] Fusión por Texto: ${monto_imp} | Coincidencias: {coincidencias}")
                         break 
             
-            if not match_encontrado:
+            if not match_encontrado and len(candidatos_exactos) != 1:
                 self._log_debug(self.LOG_EXTRACTION, f"IMPORTE SIN MATCH (HUÉRFANO GLOBAL): Monto ${monto_imp}")
 
         return ids_importes_fusionados

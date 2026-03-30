@@ -97,7 +97,7 @@ class FinancialProcessor:
 
         assets = SyntageClient.parse_values_from_tree(bs_tree, ["Activo", "Total Activo"])
         liabilities = SyntageClient.parse_values_from_tree(bs_tree, ["Pasivo", "Total Pasivo"])
-        equity = SyntageClient.parse_values_from_tree(bs_tree, ["Capital Contable", "Total Capital", "Capital"])
+        equity = SyntageClient.parse_values_from_tree(bs_tree, ["capital contable", "total capital", "capital"])
         
         # --- EXTRACCIÓN DEL DESGLOSE ---
         assets_st = SyntageClient.parse_values_from_tree(bs_tree, ["Activo a corto plazo"])
@@ -114,8 +114,8 @@ class FinancialProcessor:
         net_loss = SyntageClient.parse_values_from_tree(is_tree, ["Pérdida neta", "Pérdida del ejercicio"])
         ebit_profit = SyntageClient.parse_values_from_tree(is_tree, ["Utilidad de operación", "EBIT"])
         ebit_loss = SyntageClient.parse_values_from_tree(is_tree, ["Pérdida de operación"])
-        ebt_profit = SyntageClient.parse_values_from_tree(is_tree, ["Utilidad antes de impuestos", "EBT"])
-        ebt_loss = SyntageClient.parse_values_from_tree(is_tree, ["Pérdida antes de impuestos"])
+        ebt_profit = SyntageClient.parse_values_from_tree(is_tree, ["Utilidad antes de Impuestos a la utilidad", "Utilidad antes de impuestos", "EBT"])
+        ebt_loss = SyntageClient.parse_values_from_tree(is_tree, ["Pérdida antes de Impuestos a la utilidad", "Pérdida antes de impuestos"])
 
         valid_years = set()
         candidates = set(assets.keys()) | set(revenue.keys()) | set(ebit_profit.keys())

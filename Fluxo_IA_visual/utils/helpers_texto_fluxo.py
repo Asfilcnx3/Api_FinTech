@@ -42,6 +42,57 @@ PALABRAS_TRASPASO_MORATORIO = [ # Faltan ejemplos
     "cargo por moratorio", "intereses moratorios", "recargo", "recargos", "penalización", "penalizaciones", "pena convencional", "penalizacion", "penalizaciones convencionales", "cargo por moratorios", "interes moratorio", "cargo por intereses moratorios", "recargo por intereses moratorios", "penaliz", "penalización"
 ]
 
+### DICCIONARIOS PARA COMISIONES
+
+# 1. Comisiones por Tarjeta de Crédito
+PALABRAS_COMISION_CREDITO = [
+    "comision aplicacion de tasas de descuento de cr",
+    "com. tasa de descuento cre",
+    "com tasa de descuento cre",
+    "comision descuento cr",
+    "com descuento cr",
+    "venta tpv cr", # a veces el cargo por la venta dice 'cr'
+    "ventas crédito"
+]
+
+# 2. Comisiones por Tarjeta de Débito
+PALABRAS_COMISION_DEBITO = [
+    "comision aplicacion de tasas de descuento de db",
+    "com. tasa de descuento deb",
+    "com tasa de descuento deb",
+    "comision descuento db",
+    "com descuento db",
+    "venta tpv db",
+    "ventas débito",
+    "ventas debito"
+]
+
+# 3. Comisiones por American Express (AMEX)
+PALABRAS_COMISION_AMEX = [
+    "comision amex",
+    "com amex",
+    "venta nal. amex",
+    "venta nal amex",
+    "american express",
+    "amexco"
+]
+
+# 4. Comisiones TPV Mixtas o Genéricas (Ej. Netpay, Clip, "Comisiones por ventas")
+# Aquí metemos las que sabemos que son de terminal pero no especifican CR/DB
+PALABRAS_COMISION_TPV_GENERICA = [
+    "com vtas",
+    "com. vtas",
+    "comision ventas",
+    "comision vtas",
+    "net pay",
+    "netpay",
+    "clip",
+    "izettle",
+    "zettle",
+    "terminales punto de venta",
+    "tpv"
+]
+
 # Definimos los campos esperados y sus tipos (No funcionan aún)
 CAMPOS_STR = [
     "banco", "rfc", "nombre_cliente", "clabe_interbancaria", "periodo_inicio", "periodo_fin", "tipo_moneda"
@@ -104,7 +155,12 @@ TERMINALES_BANCO_MAPPING = {
     "BBVA": ["terminales punto de venta", "tdc inter", "ventas crédito", "ventas débito", "ventas nal. amex", "ventas nal amex"],
     "AFIRME": ["venta tpv cr", "venta tpv db", "venta tpvcr", "venta tpvdb"],
     "HSBC": ["venta tpv hsbc", "ventatpv hsbc", "venta tpvhsbc", "venta tpv cr hsbc", "venta tpv db hsbc", "venta tpvcr hsbc", "venta tpvdb hsbc", "transf rec hsbcnet tpv cr", "transf rec hsbcnet tpv db", "transf rec hsbcnet tpvcr", "transf rec hsbcnet tpvdb"],
-    "MIFEL": ["venta tpv mifel", "ventatpv mifel", "venta tpvmifel", "venta tpv cr mifel", "venta tpv db mifel", "venta tpvcr mifel", "venta tpvdb mifel", "transf rec mifelnet tpv cr", "transf rec mifelnet tpv db", "transf rec mifelnet tpvcr", "transf rec mifelnet tpvdb"],
+    "MIFEL": [
+        "venta tpv mifel", "ventatpv mifel", "venta tpvmifel", 
+        "venta tpv cr mifel", "venta tpv db mifel", "venta tpvcr mifel", "venta tpvdb mifel", 
+        "transf rec mifelnet tpv cr", "transf rec mifelnet tpv db", "transf rec mifelnet tpvcr", "transf rec mifelnet tpvdb",
+        "vta. cre", "vta. deb", "vta cre", "vta deb"
+    ],
     "SCOTIABANK": ["amexco se", "american express company mexico", "american express company"],
     "BANREGIO": ["abono ventas tdd", "abono ventas tdc", "abono ventastdd", "abono ventastdc"],
     "SANTANDER": ["deposito ventas del día afil", "deposito ventas del dia afil"],
