@@ -41,57 +41,115 @@ class MotorClasificador:
         """
         resueltas_por_python = []
         pendientes_para_ia = []
+        
+        import unicodedata
+        import re
 
         for idx_real, tx in enumerate(transacciones):
-            # --- NORMALIZACIÓN BÁSICA ---
+            # --- NORMALIZACIÓN BÁSICA Y PLANA ---
             tipo_lower = str(getattr(tx, "tipo", "")).lower().strip()
-            desc_lower = str(getattr(tx, "descripcion", "")).lower()
+            desc_raw = str(getattr(tx, "descripcion", "")).lower()
+            desc_norm = unicodedata.normalize('NFKD', desc_raw).encode('ASCII', 'ignore').decode('utf-8')
+            desc_plana = re.sub(r'\s+', ' ', desc_norm).strip()
 
+            # FILTRO ANTI-BASURA OCR (CFDI / TIMBRES)
+            # Si el tipo dice "importe" (o cualquier otra anomalía detectada), lo matamos aquí.
+            if tipo_lower == "importe":
+                tx.categoria = "BASURA_OCR"
+                resueltas_por_python.append((idx_real, tx))
+                self._log_debug(1, f"Tx {idx_real} descartada (Basura OCR/CFDI) -> {desc_plana[:40]}...")
+                continue
+            
             es_abono = tipo_lower in ["abono", "deposito", "depósito", "credito", "crédito"]
 
-            # --- REGLA 1: DESCARTE DE CARGOS COMUNES ---
-            # Si es un cargo, se va a GENERAL. La evaluación global de sospechosas los atrapará después.
+            # ==========================================
+            # REGLA 1: RUTEO DE CARGOS (COMISIONES E IVA)
+            # ==========================================
             if not es_abono:
+                # A) Filtro anti-IVA inmediato
+                if re.search(r'\biva\b', desc_plana):
+                    tx.categoria = "GENERAL"
+                    resueltas_por_python.append((idx_real, tx))
+                    self._log_debug(1, f"Tx {idx_real} descartada (Es IVA) -> {desc_plana[:40]}...")
+                    continue
+
+                # B) La Atarraya: Atrapar comisiones TPV
+                es_comision = re.search(r'\b(com|comision|comisiones|tasa de descuento|descuento)\b', desc_plana)
+                
+                if es_comision:
+                    tx.categoria = "COMISION_PENDIENTE"
+                    resueltas_por_python.append((idx_real, tx))
+                    self._log_debug(2, f"Tx {idx_real} atrapada como CANDIDATA A COMISIÓN -> {desc_plana[:40]}...")
+                    continue
+
+                # C) Si no es IVA ni comisión, se va a GENERAL
                 tx.categoria = "GENERAL"
                 resueltas_por_python.append((idx_real, tx))
-                self._log_debug(1, f"Tx {idx_real} descartada (Es cargo) -> {desc_lower[:40]}...")
+                self._log_debug(1, f"Tx {idx_real} descartada (Es cargo común) -> {desc_plana[:40]}...")
                 continue
 
-            # --- REGLA 2: PALABRAS CLAVE EXACTAS (Solo para Abonos) ---
+            # ==========================================
+            # REGLA 2: PALABRAS CLAVE EXACTAS (ABONOS)
+            # ==========================================
             clasificado_estatico = False
             
-            if any(p in desc_lower for p in self.diccionarios.get('excluidas', [])):
+            if any(p in desc_plana for p in self.diccionarios.get('excluidas', [])):
                 tx.categoria = "GENERAL"
                 clasificado_estatico = True
-            elif any(p in desc_lower for p in self.diccionarios.get('tpv', [])):
+            elif any(p in desc_plana for p in self.diccionarios.get('tpv', [])):
                 tx.categoria = "TPV"
                 clasificado_estatico = True
-            elif any(p in desc_lower for p in self.diccionarios.get('efectivo', [])):
+            elif any(p in desc_plana for p in self.diccionarios.get('efectivo', [])):
                 tx.categoria = "EFECTIVO"
                 clasificado_estatico = True
-            elif any(p in desc_lower for p in self.diccionarios.get('traspaso', [])):
-                # CAMBIO: Usamos la nueva etiqueta
-                tx.categoria = "TRASPASO_ABONO" 
+            elif any(p in desc_plana for p in self.diccionarios.get('traspaso', [])):
+                tx.categoria = "TRASPASO_ABONO"
                 clasificado_estatico = True
-            elif any(p in desc_lower for p in self.diccionarios.get('financiamiento', [])):
+            elif any(p in desc_plana for p in self.diccionarios.get('financiamiento', [])):
                 tx.categoria = "FINANCIAMIENTO"
                 clasificado_estatico = True
-            elif any(p in desc_lower for p in self.diccionarios.get('bmrcash', [])):
+            elif any(p in desc_plana for p in self.diccionarios.get('bmrcash', [])):
                 tx.categoria = "BMRCASH"
                 clasificado_estatico = True
-            elif any(p in desc_lower for p in self.diccionarios.get('moratorio', [])):
+            elif any(p in desc_plana for p in self.diccionarios.get('moratorio', [])):
                 tx.categoria = "MORATORIOS"
                 clasificado_estatico = True
 
             # --- REPARTO A LAS CUBETAS ---
             if clasificado_estatico:
                 resueltas_por_python.append((idx_real, tx))
-                self._log_debug(2, f"Tx {idx_real} clasificada como {tx.categoria} por regla -> {desc_lower[:40]}...")
+                self._log_debug(2, f"Tx {idx_real} clasificada como {tx.categoria} por regla -> {desc_plana[:40]}...")
             else:
                 pendientes_para_ia.append((idx_real, tx))
 
         self._log_debug(2, f"Pre-clasificación lista: {len(resueltas_por_python)} resueltas estáticamente, {len(pendientes_para_ia)} enviadas a IA.")
         return resueltas_por_python, pendientes_para_ia
+
+    def _procesar_sub_comisiones(self, transacciones: List[Any]):
+        """
+        Sub-motor heurístico para clasificar las comisiones previamente atrapadas.
+        Toma todo lo que diga 'COMISION_PENDIENTE' y lo separa por tipo de tarjeta.
+        """
+
+        for _, tx in enumerate(transacciones):
+            if getattr(tx, "categoria", "") == "COMISION_PENDIENTE":
+                # Limpieza agresiva (aplanar texto y quitar acentos/símbolos)
+                desc_raw = str(getattr(tx, "descripcion", "")).lower()
+                desc_norm = unicodedata.normalize('NFKD', desc_raw).encode('ASCII', 'ignore').decode('utf-8')
+                desc_plana = re.sub(r'\s+', ' ', desc_norm).strip()
+
+                # Sub-clasificación heurística
+                if re.search(r'\b(cr|cre|credito)\b', desc_plana):
+                    tx.categoria = "COMISION_CR"
+                elif re.search(r'\b(db|deb|debito)\b', desc_plana):
+                    tx.categoria = "COMISION_DB"
+                elif re.search(r'\b(amex|american express|amexco)\b', desc_plana):
+                    tx.categoria = "COMISION_AMEX"
+                else:
+                    # Si dice comisión pero no especifica tarjeta, se va a mixta/genérica
+                    tx.categoria = "COMISION_TPV_MIXTA"
+                
+                self._log_debug(2, f"Sub-motor resolvió: {tx.categoria} -> {desc_plana[:40]}...")
     
     async def clasificar_y_sumar_transacciones(
         self, 
@@ -103,9 +161,11 @@ class MotorClasificador:
     ) -> dict:
         """
         El orquestador maestro del clasificador.
-        1. Filtra estáticamente.
+        1. Filtra estáticamente (La Atarraya).
         2. Envía lotes pequeños a la IA.
-        3. Ensambla y calcula totales.
+        3. Ensambla resultados.
+        4. Pasa por el Sub-Motor de Comisiones.
+        5. Calcula totales.
         """
         if not transacciones:
             return {}
@@ -123,8 +183,7 @@ class MotorClasificador:
             batch_size_max=batch_size
         )
 
-        # --- CAPA 3: ENSAMBLAJE ---
-        # Recorremos SOLO las que mandamos a la IA y les inyectamos la respuesta
+        # --- CAPA 3: ENSAMBLAJE DE LA IA ---
         for idx_real, tx in pendientes_ia:
             str_idx = str(idx_real)
             nueva_cat = mapa_ia.get(str_idx)
@@ -133,12 +192,14 @@ class MotorClasificador:
                 tx.categoria = nueva_cat
                 self._log_debug(3, f"Tx {idx_real} clasificada por IA como -> {nueva_cat}")
             else:
-                # Fallback de seguridad si la IA se saltó este índice
                 tx.categoria = "GENERAL"
                 self._log_debug(3, f"⚠️ Tx {idx_real} sin etiqueta IA -> GENERAL (Fallback)")
 
+        # --- CAPA 3.5: SUB-MOTOR DE COMISIONES ---
+        # Pasamos TODAS las transacciones para que convierta las "COMISION_PENDIENTE" en su tipo real
+        self._procesar_sub_comisiones(transacciones)
+
         # --- CAPA 4: SUMATORIAS FINALES ---
-        # Ahora que TODAS las transacciones tienen su categoría final, sumamos.
         totales_calculados = self._calcular_totales(transacciones)
         
         return totales_calculados
@@ -207,7 +268,8 @@ class MotorClasificador:
         totales = {
             "EFECTIVO": 0.0, "TRASPASO_ABONO": 0.0, "TRASPASO_CARGO": 0.0, 
             "FINANCIAMIENTO": 0.0, "BMRCASH": 0.0, "MORATORIOS": 0.0, 
-            "TPV": 0.0, "DEPOSITOS": 0.0
+            "TPV": 0.0, "DEPOSITOS": 0.0,
+            "COMISION_CR": 0.0, "COMISION_DB": 0.0, "COMISION_AMEX": 0.0, "COMISION_TPV_MIXTA": 0.0
         }
         
         conteo_categorias = {"TPV": 0, "GENERAL": 0, "OTROS": 0}
@@ -237,6 +299,9 @@ class MotorClasificador:
                 conteo_categorias["GENERAL"] += 1
 
         self._log_debug(4, f"Resumen -> TPV: {conteo_categorias['TPV']} | Otros: {conteo_categorias['OTROS']} | General: {conteo_categorias['GENERAL']}")
+
+        logger.info(f"--- DEBUG MOTOR ---")
+        logger.info(f"CR: {totales.get('COMISION_CR', 0)} | DB: {totales.get('COMISION_DB', 0)} | AMEX: {totales.get('COMISION_AMEX', 0)} | MIXTA: {totales.get('COMISION_TPV_MIXTA', 0)}")
         
         return totales
     

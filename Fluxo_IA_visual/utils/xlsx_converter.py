@@ -1,6 +1,6 @@
 # utils/xlsx_converter.py
 
-import io, re
+import io, re, unicodedata
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, NamedStyle
 from typing import Dict, Any
@@ -26,25 +26,51 @@ def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
 
     # --- LÓGICA DE DETECCIÓN DE PROVEEDOR (SOLO PARA LA COLUMNA EXTRA DE TPV) ---
     def detectar_proveedor_terminal(descripcion: str, banco_actual: str) -> str:
-        desc_lower = descripcion.lower()
-        banco_upper = banco_actual.upper() if banco_actual else "GENERICO"
+        # 1. Aplanar el texto, normalizar y ELIMINAR PUNTUACIÓN
+        desc_raw = str(descripcion).lower()
+        desc_norm = unicodedata.normalize('NFKD', desc_raw).encode('ASCII', 'ignore').decode('utf-8')
+        desc_sin_puntuacion = re.sub(r'[^\w\s]', '', desc_norm)
+        desc_plana = re.sub(r'\s+', ' ', desc_sin_puntuacion).strip()
+        
+        banco_upper = str(banco_actual).upper().strip() # <-- Le metemos strip() para matar espacios fantasma
+
+        # print(f"\n[DEBUG TPV] Banco: '{banco_upper}' | Desc plana: '{desc_plana}'")
 
         # 1. Regex Banorte
         if banco_upper == "BANORTE":
-            if re.search(r"\b\d{8}[cd]\b", desc_lower):
+            if re.search(r"\b\d{8}[cd]\b", desc_plana):
                 return "BANORTE TERMINAL"
 
         # 2. Agregadores Globales
         for nombre_agg, keywords in AGREGADORES_MAPPING.items():
-            if any(k in desc_lower for k in keywords):
-                return nombre_agg
+            for k in keywords:
+                # Limpiamos el keyword exactamente con la misma regla
+                k_norm = unicodedata.normalize('NFKD', str(k).lower()).encode('ASCII', 'ignore').decode('utf-8')
+                k_limpio = re.sub(r'\s+', ' ', re.sub(r'[^\w\s]', '', k_norm)).strip()
+                
+                if k_limpio in desc_plana:
+                    # print(f"[DEBUG TPV] -> Match con Agregador: {nombre_agg} (Keyword: '{k_limpio}')")
+                    return nombre_agg
 
-        # 3. Terminales del Banco
+        # 3. Terminales propias del Banco
         if banco_upper in TERMINALES_BANCO_MAPPING:
             keywords_banco = TERMINALES_BANCO_MAPPING[banco_upper]
-            if any(k in desc_lower for k in keywords_banco):
-                return banco_upper 
+            for k in keywords_banco:
+                k_norm = unicodedata.normalize('NFKD', str(k).lower()).encode('ASCII', 'ignore').decode('utf-8')
+                k_limpio = re.sub(r'\s+', ' ', re.sub(r'[^\w\s]', '', k_norm)).strip()
+                # print(f"[DEBUG TPV] -> Verificando keywords sucias: {k}")
+                # print(f"[DEBUG TPV] -> Verificando keywords normalizadas: {k_norm}")
+                # print(f"[DEBUG TPV] -> Verificando keywords limpias: {k_limpio}")
 
+                
+                if k_limpio in desc_plana:
+                    # print(f"[DEBUG TPV] -> Match con Terminal Banco: {banco_upper} (Keyword: '{k_limpio}')")
+                    return banco_upper 
+        else:
+            pass
+            # print(f"[DEBUG TPV] -> ¡ALERTA! El banco '{banco_upper}' NO existe en el diccionario TERMINALES_BANCO_MAPPING.")
+
+        # print("[DEBUG TPV] -> Resultado Final: NO DEFINIDA")
         return "NO DEFINIDA"
 
     resultados = data_json.get("resultados_individuales", [])
@@ -108,12 +134,15 @@ def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
     # 2. RESUMEN PORTADAS
     # ==========================================
     ws2 = wb.create_sheet("Resumen Portadas")
+    
+    # Encabezados actualizados con las columnas de comisiones extraídas
     ws2.append([
         "Banco", "RFC", "Cliente", "CLABE / Cuenta", 
         "Periodo Inicio", "Periodo Fin", 
         "Depósitos Declarados", "Cargos Declarados",     
         "Depósitos Extraídos", "Cargos Extraídos",       
-        "Saldo Promedio", "Comisiones",
+        "Saldo Promedio", "Comisiones (Carátula)",
+        "Comisiones Crédito", "Comisiones Débito", "Comisiones Amex", "Comisiones Totales",
         "Confianza de Extracción", "Descuadre Depósitos", "Descuadre Cargos",
         "Tasa de Categorización",
         "Total Páginas", "Páginas Fallidas"
@@ -129,9 +158,10 @@ def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
 
         if es_error:
             mensaje_error = "CON CONTRASEÑA" if banco == "ERROR_CIFRADO" else "ERROR DE PROCESAMIENTO"
+            # Ajustado para 22 columnas
             ws2.append([
                 banco, "N/A", "N/A", ia.get("nombre_archivo_virtual", "N/A"), 
-                "N/A", "N/A", mensaje_error, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0
+                "N/A", "N/A", mensaje_error, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0
             ])
             for cell in ws2[ws2.max_row]:
                 cell.fill = fill_error_doc
@@ -147,6 +177,14 @@ def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
             ia.get("depositos", 0.0), ia.get("cargos", 0.0),
             ia.get("total_depositos_extraidos", 0.0), ia.get("total_cargos_extraidos", 0.0),
             ia.get("saldo_promedio", 0.0), ia.get("comisiones", 0.0), 
+            
+            # Variables de comisiones
+            ia.get("comisiones_credito", 0.0),
+            ia.get("comisiones_debito", 0.0),
+            ia.get("comisiones_amex", 0.0),
+            ia.get("comisiones_totales", 0.0),
+            
+            # Métricas recorridas
             ia.get("confianza_extraccion", 0.0),
             ia.get("descuadre_depositos", 0.0), ia.get("descuadre_cargos", 0.0),
             ia.get("tasa_categorizacion", 0.0),
@@ -156,16 +194,17 @@ def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
     
     aplicar_estilo_header(ws2)
     
-    # Formato moneda para columnas 7 a 12 (Depósitos hasta Comisiones) y 14 a 15 (Descuadres)
-    for row in ws2.iter_rows(min_row=2, min_col=7, max_col=15):
+    # Formato moneda para columnas 7 a 16 (Depósitos hasta Comisiones Totales) y 18 a 19 (Descuadres)
+    for row in ws2.iter_rows(min_row=2, min_col=7, max_col=19):
         for cell in row: 
-            if cell.column not in [13]: # Excluimos la columna 13 (Confianza) de la moneda
+            # Excluimos la columna 17 (Confianza) del formato de moneda
+            if cell.column != 17: 
                 cell.style = currency_style
                 
-    # Formato porcentaje para Confianza (Col 13) y Tasa de Categorización (Col 16)
-    for row in ws2.iter_rows(min_row=2, min_col=13, max_col=16):
+    # Formato porcentaje para Confianza (Col 17) y Tasa de Categorización (Col 20)
+    for row in ws2.iter_rows(min_row=2, min_col=17, max_col=20):
         for cell in row: 
-            if cell.column in [13, 16] and isinstance(cell.value, (int, float)):
+            if cell.column in [17, 20] and isinstance(cell.value, (int, float)):
                 cell.number_format = '0.00" %"'
 
     # ==========================================
@@ -196,9 +235,20 @@ def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
             if isinstance(transacciones, list):
                 for tx in transacciones:
                     cat_tx = str(tx.get("categoria", "GENERAL")).upper()
+                    tipo_tx_lower = str(tx.get("tipo", "")).lower().strip()
                     
-                    if categoria_filtro is not None and cat_tx != categoria_filtro:
+                    #  OMITIR BASURA DEL EXCEL
+                    # Si el motor lo marcó como basura o el tipo es importe, nos saltamos la fila por completo
+                    if cat_tx == "BASURA_OCR" or tipo_tx_lower == "importe":
                         continue
+
+                    # --- Soporte para filtrar por lista de categorías ---
+                    if categoria_filtro is not None:
+                        if isinstance(categoria_filtro, list):
+                            if cat_tx not in categoria_filtro:
+                                continue
+                        elif cat_tx != categoria_filtro:
+                            continue
 
                     try:
                         monto_val = float(str(tx.get("monto", "0")).replace(",", ""))
@@ -258,6 +308,12 @@ def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
 
     # 9. MORATORIOS
     crear_hoja_detalle("Moratorios", "MORATORIOS")
+
+    # 10. COMISIONES TPV
+    crear_hoja_detalle(
+        "Comisiones TPV", 
+        ["COMISION_CR", "COMISION_DB", "COMISION_AMEX", "COMISION_TPV_MIXTA"]
+    )
 
     # ==========================================
     # 10. RESUMEN GENERAL

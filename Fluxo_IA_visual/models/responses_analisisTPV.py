@@ -55,6 +55,12 @@ class AnalisisTPV:
         traspasos_abonos: Optional[float] = None
         traspasos_cargos: Optional[float] = None
 
+        # Campos para comisiones de TPV
+        comisiones_credito: Optional[float] = Field(default=0.0, description="Comisiones por TPV Crédito")
+        comisiones_debito: Optional[float] = Field(default=0.0, description="Comisiones por TPV Débito")
+        comisiones_amex: Optional[float] = Field(default=0.0, description="Comisiones por TPV AMEX")
+        comisiones_totales: Optional[float] = Field(default=0.0, description="Suma de las 3 anteriores + comisiones genéricas de terminal")
+
         # Métricas de medición
         confianza_extraccion: Optional[float] = Field(default=None, description="Porcentaje de cuadre entre la carátula y los movimientos extraídos (0.0 a 100.0)")
 

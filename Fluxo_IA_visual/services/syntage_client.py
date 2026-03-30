@@ -875,19 +875,20 @@ class SyntageClient:
             children_results = SyntageClient.parse_values_from_tree(children, target_keys)
             
             # --- FUSIÓN DE RESULTADOS ---
-            # Si encontramos resultados en los hijos, esos suelen ser más precisos (desglose)
+            # Si el padre ya tiene un valor válido (el total agrupado), lo respetamos.
+            # Solo usamos el valor del hijo (el desglose) si el padre está en ceros.
             if children_results:
                 for year, val in children_results.items():
-                    if val != 0: # Priorizamos valores no cero de los hijos
+                    if val != 0 and local_results.get(year, 0.0) == 0.0:
                         local_results[year] = val
             
             # Si este nodo era match exacto y tiene valores, tiene alta prioridad
             if is_match and local_results:
-                # Merge con lo que traigamos de hijos
+                # Merge con lo que traigamos para devolverlo
                 for year, val in local_results.items():
                     if year not in results:
                         results[year] = val
-                    elif val != 0: # Si tenemos valor local, lo usamos
+                    elif val != 0 and results.get(year, 0.0) == 0.0: 
                         results[year] = val
 
             # Si no hubo match local, devolvemos lo de los hijos

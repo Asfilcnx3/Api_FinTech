@@ -19,7 +19,7 @@ from ..utils.helpers import total_depositos_verificacion
 
 from ..core.motor_caratulas import MotorCaratulas
 from ..utils.helpers_texto_fluxo import (
-    TRIGGERS_CONFIG, PALABRAS_CLAVE_VERIFICACION, 
+    PALABRAS_COMISION_CREDITO, TRIGGERS_CONFIG, PALABRAS_CLAVE_VERIFICACION, 
     ALIAS_A_BANCO_MAP, BANCO_DETECTION_REGEX, 
     PATRONES_COMPILADOS, prompt_base_fluxo
 )
@@ -33,7 +33,9 @@ from ..utils.helpers_texto_fluxo import (
     PALABRAS_TRASPASO_FINANCIAMIENTO,
     PALABRAS_BMRCASH,
     PALABRAS_TRASPASO_MORATORIO,
-    PALABRAS_TPV
+    PALABRAS_TPV,
+    PALABRAS_COMISION_CREDITO, PALABRAS_COMISION_DEBITO,
+    PALABRAS_COMISION_AMEX, PALABRAS_COMISION_TPV_GENERICA
 )
 
 from ..services.orchestators import (
@@ -70,11 +72,15 @@ class ProcessingService:
             'financiamiento': PALABRAS_TRASPASO_FINANCIAMIENTO,
             'bmrcash': PALABRAS_BMRCASH,
             'moratorio': PALABRAS_TRASPASO_MORATORIO,
-            'tpv': PALABRAS_TPV
+            'tpv': PALABRAS_TPV,
+            'comision_credito': PALABRAS_COMISION_CREDITO,
+            'comision_debito': PALABRAS_COMISION_DEBITO,
+            'comision_amex': PALABRAS_COMISION_AMEX,
+            'comision_tpv_generica': PALABRAS_COMISION_TPV_GENERICA
         }
         self.motor_clasificador = MotorClasificador(
             diccionarios_palabras=diccionarios_clasificacion,
-            debug_flags=None  # Silencioso para producción
+            debug_flags=None # Silencioso para producción
         )
 
     async def ejecutar_pipeline_background(self, job_id: str, lista_archivos: list):
@@ -611,6 +617,10 @@ class ProcessingService:
         try:
             # Opción A: Pydantic V2 (Recomendada)
             datos_dict = respuesta_final.model_dump(mode='json')
+            if datos_dict.get("resultados_generales"):
+                rg = datos_dict["resultados_generales"][0]
+                logger.info(f"--- DEBUG JSON FINAL ---")
+                logger.info(f"CR: {rg.get('comisiones_credito')} | DB: {rg.get('comisiones_debito')} | TOTAL: {rg.get('comisiones_totales')}")
         except AttributeError:
             # Opción B: Pydantic V1 (Fallback)
             datos_dict = jsonable_encoder(respuesta_final)
@@ -690,6 +700,23 @@ class ProcessingService:
         analisis_ia = resultado_doc.AnalisisIA
         analisis_ia.depositos_en_efectivo = totales.get("EFECTIVO", 0.0)
         
+        # --- INYECCIÓN DE COMISIONES TPV ---
+        analisis_ia.comisiones_credito = totales.get("COMISION_CR", 0.0)
+        analisis_ia.comisiones_debito = totales.get("COMISION_DB", 0.0)
+        analisis_ia.comisiones_amex = totales.get("COMISION_AMEX", 0.0)
+        
+        # La comisión genérica (COMISION_TPV_MIXTA) se suma directo al total
+        comision_mixta = totales.get("COMISION_TPV_MIXTA", 0.0)
+        analisis_ia.comisiones_totales = (
+            analisis_ia.comisiones_credito + 
+            analisis_ia.comisiones_debito + 
+            analisis_ia.comisiones_amex + 
+            comision_mixta
+        )
+
+        logger.info(f"--- DEBUG PYDANTIC INYECCIÓN ---")
+        logger.info(f"CR: {analisis_ia.comisiones_credito} | DB: {analisis_ia.comisiones_debito} | TOTAL CALCULADO: {analisis_ia.comisiones_totales}")
+
         # Traspasos separados
         analisis_ia.traspasos_abonos = totales.get("TRASPASO_ABONO", 0.0)
         analisis_ia.traspasos_cargos = totales.get("TRASPASO_CARGO", 0.0)
@@ -710,7 +737,7 @@ class ProcessingService:
         analisis_ia.entradas_TPV_neto = totales.get("TPV", 0.0) - comisiones
 
         # =========================================================
-        # NUEVO: CÁLCULO DE CONFIANZA DE EXTRACCIÓN
+        # CÁLCULO DE CONFIANZA DE EXTRACCIÓN
         # =========================================================
         suma_abonos = 0.0
         suma_cargos = 0.0
