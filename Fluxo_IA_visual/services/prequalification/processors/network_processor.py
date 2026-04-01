@@ -52,12 +52,21 @@ class NetworkProcessor:
         transactions = item.get("transactions", [])
         slope = 0.0
         trend_text = "Sin datos"
+        monthly_history_objs = []
         
         if transactions:
             # 1. Ordenar cronológicamente
             transactions_sorted = sorted(transactions, key=lambda x: x.get("date", ""))
             
-            # 2. Excluir el mes actual (regla de meses cerrados)
+            # Guardamos el historial completo para la sábana cruda 
+            monthly_history_objs = [
+                PrequalificationResponse.MonthlyTransaction(
+                    date=t.get("date", ""),
+                    total=float(t.get("total", 0.0))
+                ) for t in transactions_sorted
+            ]
+            
+            # 2. Excluir el mes actual SOLO para la matemática de la pendiente
             current_month = datetime.now().strftime("%Y-%m")
             transactions_clean = [t for t in transactions_sorted if t.get("date") != current_month]
             
@@ -91,7 +100,8 @@ class NetworkProcessor:
             total_amount=item.get("total_amount", 0.0),
             percentage=item.get("percentage", 0.0),
             linear_slope=round(slope, 2),
-            trend_text=trend_text
+            trend_text=trend_text,
+            monthly_history=monthly_history_objs # Aquí incluimos el historial mensual completo para la sábana cruda
         )
 
     def _map_nodes(self, raw_list: Any, name_key: str, pending_key: str, installments_key: str, days_key: str) -> List[PrequalificationResponse.NetworkNode]:

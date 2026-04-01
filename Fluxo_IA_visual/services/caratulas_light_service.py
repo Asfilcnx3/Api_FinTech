@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import re
+import fitz
 from pathlib import Path
 
 # Ajusta las rutas relativas según la ubicación exacta de tu carpeta services
@@ -27,6 +29,110 @@ class CaratulasLightService:
         self.motor_base = motor_base
         self.file_manager = file_manager
         self.storage = storage
+    
+    def _evaluar_viabilidad_documento(self, pdf_bytes: bytes, nombre_archivo: str) -> dict:
+        """
+        Gatekeeper inteligente: Evalúa si vale la pena enviar el PDF a la IA.
+        Retorna un dict con {"viable": bool, "razon": str}
+        """
+        texto_global = ""
+        tiene_imagenes = False
+        
+        try:
+            with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+                paginas_a_revisar = min(3, len(doc))
+                for i in range(paginas_a_revisar):
+                    pagina = doc[i]
+                    texto_global += pagina.get_text("text").lower() + "\n"
+                    if pagina.get_images(full=True):
+                        tiene_imagenes = True
+        except Exception as e:
+            logger.warning(f"No se pudo pre-evaluar el PDF {nombre_archivo}: {e}")
+            return {"viable": False, "razon": "PDF corrupto o ilegible."}
+
+        nombre_limpio = nombre_archivo.lower()
+        texto_limpio = texto_global.strip()
+        
+        # ==========================================================
+        # 1. LISTA NEGRA: VETO INMEDIATO (El asesino de CSF y Nóminas)
+        # ==========================================================
+        palabras_veto_texto = [
+            "constancia de situación fiscal", 
+            "cédula de identificación fiscal",
+            "comprobante fiscal digital",
+            "recibo de nómina",
+            "comisión federal de electricidad"
+        ]
+        palabras_veto_nombre = ["csf", "nomi", "factura", "recibo"]
+        
+        if any(veto in texto_limpio for veto in palabras_veto_texto) or any(veto in nombre_limpio for veto in palabras_veto_nombre):
+            logger.info(f"[Gatekeeper] VETO APLICADO a: {nombre_archivo}")
+            return {"viable": False, "razon": "Documento vetado (Detectado como CSF, Nómina o Factura)."}
+
+        # ==========================================================
+        # 2. SISTEMA DE PUNTOS
+        # ==========================================================
+        score = 0
+        
+        # A. Bono de Confianza por Nombre de Archivo (+40 pts)
+        bancos_conocidos = ["hsbc", "banamex", "bbva", "banorte", "santander", "scotiabank", "bajio", "inbursa", "regio", "azteca"]
+        if any(b in nombre_limpio for b in bancos_conocidos) or "edo" in nombre_limpio or "cta" in nombre_limpio:
+            score += 40
+
+        # B. Detección de Texto Basura (Mojibake)
+        # Contamos cuántos caracteres son letras normales, números o espacios (ASCII básico)
+        caracteres_normales = sum(1 for c in texto_limpio if c.isascii() and (c.isalnum() or c.isspace()))
+        ratio_normalidad = caracteres_normales / len(texto_limpio) if len(texto_limpio) > 0 else 0
+        
+        # Es texto real si tiene más de 50 chars Y al menos el 40% son caracteres legibles
+        es_texto_real = len(texto_limpio) > 50 and ratio_normalidad > 0.4
+
+        # C. Evaluación de Texto (Solo si es texto real y legible)
+        if es_texto_real:
+            # Palabras clave financieras
+            if self.motor_base.palabras_clave_regex.search(texto_limpio):
+                score += 30
+                
+            # Datos Duros (RFC o CLABE)
+            patron_rfc = r"[a-zñ&]{3,4}\d{6}[a-z0-9]{3}"
+            patron_clabe = r"\b\d{18}\b"
+            if re.search(patron_rfc, texto_limpio) or re.search(patron_clabe, texto_limpio):
+                score += 30
+                
+            # Identidad del Banco
+            match_banco = self.motor_base.banco_detection_regex.search(texto_limpio)
+            if match_banco and self.motor_base.alias_banco_map.get(match_banco.group(0)):
+                score += 30
+                
+        else:
+            # CASO ESPECIAL: PDF de Puras Imágenes o TEXTO BASURA
+            # Si el texto es ilegible o muy corto, pero tiene imágenes y el nombre sugiere que es un banco, pasa.
+            if tiene_imagenes and score >= 40:
+                logger.info(f"[Gatekeeper] Salvado por Caso Especial (Imagen/Basura): {nombre_archivo} | Ratio normalidad: {ratio_normalidad:.2f}")
+                return {"viable": True, "razon": "PDF de imágenes/texto basura aprobado por nombre de archivo."}
+
+        # ==========================================================
+        # 3. VEREDICTO FINAL Y ENRUTAMIENTO (ROUTING)
+        # ==========================================================
+        UMBRAL_APROBACION = 50
+        
+        # Si NO pasó el umbral y tampoco es el caso especial de puras imágenes
+        if score < UMBRAL_APROBACION and not (tiene_imagenes and score >= 40):
+            logger.debug(f"[Gatekeeper] Rechazado {nombre_archivo} | Score: {score} | Ratio Normalidad: {ratio_normalidad:.2f}")
+            return {"viable": False, "razon": f"Rechazado (Score: {score}/100). No parece un estado de cuenta válido."}
+
+        # Si llegó hasta aquí, ES VIABLE. Ahora decidimos el enrutamiento:
+        # Si es texto real (legible y suficiente), usamos el LLM de texto (Barato).
+        # Si es Mojibake o puras imágenes, usamos Visión (Caro).
+        requiere_vision = not es_texto_real
+        
+        razon = f"Aprobado con {score} puntos." if es_texto_real else "Aprobado por Caso Especial (Imagen/Basura)."
+        
+        return {
+            "viable": True, 
+            "requiere_vision": requiere_vision, 
+            "razon": razon
+        }
 
     async def _procesar_archivo_individual(self, info_archivo: dict, semaforo: asyncio.Semaphore) -> dict:
         """Método privado: Procesa un solo archivo respetando el límite del semáforo."""
@@ -48,14 +154,23 @@ class CaratulasLightService:
                     
                     f.seek(0)
                     pdf_bytes = f.read()
+                
+                # C. Evaluación de viabilidad inteligente (gatekeeper de costos)
+                evaluacion = self._evaluar_viabilidad_documento(pdf_bytes, nombre_original)
+                if not evaluacion["viable"]:
+                    return {"error": f"{nombre_original}: {evaluacion['razon']}"}
+                
+                # Le pasamos la instrucción al motor de si debe usar Visión o Texto
+                requiere_vision_flag = evaluacion.get("requiere_vision", True)
 
-                # C. Extracción real con el motor ligero
+                # D. Extracción real con el motor ligero
                 res_estructurada = await procesar_caratula_frontend(
                     pdf_bytes=pdf_bytes, 
-                    motor_base=self.motor_base
+                    motor_base=self.motor_base,
+                    requiere_vision=requiere_vision_flag # <--- AGREGAMOS ESTE PARÁMETRO
                 )
 
-                # D. Evaluar resultado
+                # E. Evaluar resultado
                 if res_estructurada.error_procesamiento:
                     return {"error": f"{nombre_original}: {res_estructurada.error_procesamiento}"}
                 

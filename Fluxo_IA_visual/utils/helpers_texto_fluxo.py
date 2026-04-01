@@ -42,6 +42,26 @@ PALABRAS_TRASPASO_MORATORIO = [ # Faltan ejemplos
     "cargo por moratorio", "intereses moratorios", "recargo", "recargos", "penalización", "penalizaciones", "pena convencional", "penalizacion", "penalizaciones convencionales", "cargo por moratorios", "interes moratorio", "cargo por intereses moratorios", "recargo por intereses moratorios", "penaliz", "penalización"
 ]
 
+PALABRAS_PAGO_FINANCIAMIENTO = [
+    "pago interes de credito",
+    "pago capital de credito",
+    "pago interes moratorio de credito",
+    "pago preferente pm no crm cred",
+    "domiciliacion",
+    "sofom",
+    "cgo domiciliacion",
+    "druo sa de cv",
+    "pago de capital",
+    "intereses exento tasa",
+    "pago credito",
+    "retiro por domiciliacion",
+    "pago a interes-capoital de credito",
+    "pago a interes-capital de credito",
+    "cargo por intereses de credito",
+    "cargo capital de credito",
+    "domi-druo sa de cv"
+]
+
 ### DICCIONARIOS PARA COMISIONES
 
 # 1. Comisiones por Tarjeta de Crédito

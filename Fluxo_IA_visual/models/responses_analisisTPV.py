@@ -28,32 +28,35 @@ class AnalisisTPV:
         """Clase de respuesta para un analisis de carátula exitóso."""
         nombre_archivo_virtual: Optional[str] = None
 
+        # Campos de la carátula
         banco: str
-        tipo_moneda: Optional[str] = None
+        tipo_moneda: Optional[str] = Field(default=None, description="Ejemplo: MXN, USD, etc.")
         
-        rfc: Optional[str] = None
-        nombre_cliente: Optional[str] = None
-        clabe_interbancaria: Optional[str] = None
-        periodo_inicio: Optional[str] = None
-        periodo_fin: Optional[str] = None
+        rfc: Optional[str] = Field(default=None, description="Ejemplo: GODE561231GR8")
+        nombre_cliente: Optional[str] = Field(default=None, description="Nombre del cliente")
+        clabe_interbancaria: Optional[str] = Field(default=None, description="CLABE interbancaria")
+        periodo_inicio: Optional[str] = Field(default=None, description="Período de inicio")
+        periodo_fin: Optional[str] = Field(default=None, description="Período de fin")
         
-        comisiones: Optional[float] = None
-        depositos: Optional[float] = None
-        cargos: Optional[float] = None
-        saldo_promedio: Optional[float] = None
+        comisiones: Optional[float] = Field(default=None, description="Comisiones totales del período que se muestran en la carátula")
+        depositos: Optional[float] = Field(default=None, description="Total de depósitos del período que se muestran en la carátula")
+        cargos: Optional[float] = Field(default=None, description="Total de cargos del período que se muestran en la carátula")
+        saldo_promedio: Optional[float] = Field(default=None, description="Saldo promedio del período que se muestran en la carátula")
 
         # Métricas de medición
         total_depositos_extraidos: Optional[float] = Field(default=0.0, description="Suma real de los abonos encontrados")
         total_cargos_extraidos: Optional[float] = Field(default=0.0, description="Suma real de los cargos encontrados")
 
-        depositos_en_efectivo: Optional[float] = None
-        total_entradas_financiamiento: Optional[float] = None
-        entradas_bmrcash: Optional[float] = None
-        total_moratorios: Optional[float] = None
-        entradas_TPV_bruto: Optional[float] = None
-        entradas_TPV_neto: Optional[float] = None
-        traspasos_abonos: Optional[float] = None
+        # Campos específicos de clasificación
+        depositos_en_efectivo: Optional[float] = Field(default=0.0, description="Suma de depósitos en efectivo")
+        total_entradas_financiamiento: Optional[float] = Field(default=0.0, description="Suma de entradas por financiamiento o créditos")
+        entradas_bmrcash: Optional[float] = Field(default=0.0, description="Suma de entradas por BMRCASH")
+        total_moratorios: Optional[float] = Field(default=0.0, description="Suma de cargos moratorios")
+        entradas_TPV_bruto: Optional[float] = Field(default=0.0, description="Suma de entradas brutas por TPV")
+        entradas_TPV_neto: Optional[float] = Field(default=0.0, description="Suma de entradas netas por TPV")
+        traspasos_abonos: Optional[float] = Field(default=0.0, description="Suma de traspasos como abonos")
         traspasos_cargos: Optional[float] = None
+        pagos_financiamiento: Optional[float] = Field(default=0.0, description="Suma de pagos a financiamientos o créditos")
 
         # Campos para comisiones de TPV
         comisiones_credito: Optional[float] = Field(default=0.0, description="Comisiones por TPV Crédito")

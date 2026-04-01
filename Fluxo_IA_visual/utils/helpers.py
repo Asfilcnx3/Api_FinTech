@@ -411,6 +411,7 @@ def crear_objeto_resultado(datos_dict: dict) -> AnalisisTPV.ResultadoExtraccion:
             traspasos_abonos=datos_dict.get("traspasos_abonos"),
             traspasos_cargos=datos_dict.get("traspasos_cargos"),
             total_entradas_financiamiento=datos_dict.get("total_entradas_financiamiento"),
+            pagos_financiamiento=datos_dict.get("pagos_financiamiento"),
             entradas_bmrcash=datos_dict.get("entradas_bmrcash"),
             total_moratorios=datos_dict.get("total_moratorios"),
             entradas_TPV_bruto=datos_dict.get("entradas_TPV_bruto"),

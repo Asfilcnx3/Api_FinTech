@@ -207,6 +207,10 @@ class PrequalificationResponse(BaseModel):
         nfcf: float
         sales_revenue: float 
         expenditures: float  
+    
+    class MonthlyTransaction(BaseModel):
+        date: str
+        total: float
 
     class ConcentrationItem(BaseModel):
         name: str
@@ -215,6 +219,7 @@ class PrequalificationResponse(BaseModel):
         percentage: float
         linear_slope: float = 0.0
         trend_text: str = "Sin datos"
+        monthly_history: List["PrequalificationResponse.MonthlyTransaction"] = []
 
     class ConcentrationMetrics(BaseModel):
         top_5_clients: List["PrequalificationResponse.ConcentrationItem"]
