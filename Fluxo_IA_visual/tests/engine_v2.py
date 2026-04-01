@@ -118,7 +118,8 @@ class MotorExtraccionEspacial:
             "DEPÓSITOS": 2, "DEPOSITOS": 2, "ENTRADAS": 2, "ABONO": 2, "DEPOSITO": 2, "CREDITO": 2, "DEPÓSITO": 2,
             "SALDO": 2, "BALANCE": 2,
             "SUCURSAL": 1, "OFICINA": 1,
-            "IMPORTE": 2, "BENEFICIARIO": 2, "RASTREO": 2, "CLAVE": 1, "RECEPTOR": 2, "MOTIVO": 1, "VALOR": 1
+            "IMPORTE": 2, "BENEFICIARIO": 2, "RASTREO": 2, "CLAVE": 1, "RECEPTOR": 2, "MOTIVO": 1, "VALOR": 1,
+            "MONTO": 2
         }
 
         # Blacklist
@@ -142,7 +143,7 @@ class MotorExtraccionEspacial:
         self.REGEX_DIA_AISLADO = re.compile(r'^(\d{1,2})$')
 
         # 4. Validar Montos
-        self.REGEX_MONTO_SIMPLE = re.compile(r'-?\d{1,3}(?:,\d{3})*\.\d{2}')
+        self.REGEX_MONTO_SIMPLE = re.compile(r'[-+]?\d{1,3}(?:,\d{3})*\.\d{2}') # Cambiamos el r'-?\d...' por r'[-+]?\d...' para aceptar el signo de más
         
         self.NOISE_DATE_TOKENS = ["SUC", "HORA", "CAJA", "AUT", "REF", "SEC", "MOV"]
         self.KEYWORDS_HEADER_FECHA = ["FECHA", "DIA", "DATE"]
@@ -321,7 +322,7 @@ class MotorExtraccionEspacial:
             "CARGO": ["CARGO", "CARGOS", "RETIRO", "RETIROS", "DEBITO", "SALIDAS"], 
             "ABONO": ["ABONO", "ABONOS", "DEPOSITO", "DEPÓSITO", "DEPOSITOS", "DEPÓSITOS", "CREDITO", "ENTRADAS"],
             "SALDO": ["SALDO", "BALANCE"],
-            "IMPORTE": ["IMPORTE", "VALOR", "UNIFICADO"]
+            "IMPORTE": ["IMPORTE", "VALOR", "UNIFICADO", "MONTO"]
         }
 
         last_valid_layout = None
@@ -1113,18 +1114,18 @@ class MotorExtraccionEspacial:
                     "FECHA": ["FECHA", "DIA", "DATE"],
                     "DESCRIPCION": ["DESCRIPCION", "DESCRIPCIÓN", "CONCEPTO", "DETALLE", "NARRATIVA"],
                     "REFERENCIA": ["REFERENCIA", "FOLIO", "DOCTO", "AUTORIZACION"],
-                    "CARGO": ["CARGO", "RETIRO", "DEBITO", "SALIDAS", "MONTO"],
+                    "CARGO": ["CARGO", "RETIRO", "DEBITO", "SALIDAS"], 
                     "ABONO": ["ABONO", "ABONOS", "DEPOSITO", "DEPÓSITO", "DEPOSITOS", "DEPÓSITOS", "CREDITO", "ENTRADAS"],
                     "SALDO": ["SALDO"],
-                    "IMPORTE": ["IMPORTE", "VALOR"] # Nueva clase
+                    "IMPORTE": ["IMPORTE", "VALOR", "MONTO"]
                 }
             },
             {
                 "scan_height": 30,
                 "definitions": {
                     "FECHA": ["FECHA"],
-                    "CARGO": ["MONTO"],
-                    "IMPORTE": ["IMPORTE"], # Lo delegamos a su propia columna
+                    "CARGO": ["CARGO", "RETIRO"],
+                    "IMPORTE": ["IMPORTE", "MONTO"],
                     "DESCRIPCION": ["CONCEPTO", "MOTIVO", "BENEFICIARIO"], 
                     "REFERENCIA": ["RASTREO", "CLAVE", "REFERENCIA", "AUTORIZACION"],
                     "EXTRA_TRIGGER": ["RECEPTOR", "NOMBRE", "TARJETA", "CUENTA"] 

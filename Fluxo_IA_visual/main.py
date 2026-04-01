@@ -1,5 +1,5 @@
 from .core.config import settings
-from .api.endpoints import router_fluxo, router_csf, router_nomi, router_precalificacion
+from .api.endpoints import router_fluxo, router_csf, router_nomi, router_precalificacion, router_front
 
 import sys
 import logging
@@ -74,6 +74,12 @@ app.include_router( # Ruta Pre-calificación
     router_precalificacion.router,
     prefix=f"{settings.API_V1_STR}/PreCalificacion",
     tags=["Pre-calificación RFC"]
+)
+
+app.include_router( # Ruta FrontEnd (Solo para la extracción ligera de carátulas)
+    router_front.router,
+    prefix=f"{settings.API_V1_STR}/ExtraccionCaratulaLigera",
+    tags=["Extracción de Carátulas Ligeras"]
 )
     
 # Endpoint Raíz

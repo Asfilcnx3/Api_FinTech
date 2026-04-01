@@ -4,7 +4,7 @@ from typing import List
 
 from dotenv import load_dotenv
 from pydantic import field_validator, ValidationError, SecretStr
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Carga las variables de entorno desde un archivo .env si existe
 load_dotenv()
@@ -63,12 +63,14 @@ class Settings(BaseSettings):
         env_file = ".env"
         case_sensitive = True
 
+    @property
+    def max_file_size_bytes(self) -> int:
+        """Calcula los bytes dinámicamente basado en la configuración final en MB."""
+        return self.MAX_FILE_SIZE_MB * 1024 * 1024
+
     @field_validator("OPENAI_API_KEY_FLUXO")
     @classmethod
-    def validate_fluxo_api_key(cls, secret: str) -> SecretStr:
-        """
-        Valida que la clave de OpenAI no esté vacía y tenga un formato plausible.
-        """
+    def validate_fluxo_api_key(cls, secret: SecretStr) -> SecretStr:
         v = secret.get_secret_value()
         if not v:
             raise ValueError("La variable de entorno OPENAI_API_KEY_FLUXO no puede estar vacía.")
@@ -78,7 +80,7 @@ class Settings(BaseSettings):
     
     @field_validator("OPENAI_API_KEY_NOMI")
     @classmethod
-    def validate_nomi_api_key(cls, secret: str) -> SecretStr:
+    def validate_nomi_api_key(cls, secret: SecretStr) -> SecretStr:
         """
         Valida que la clave de OpenAI no esté vacía y tenga un formato plausible.
         """
@@ -91,7 +93,7 @@ class Settings(BaseSettings):
     
     @field_validator("OPENROUTER_API_KEY")
     @classmethod
-    def validate_openrouter_api_key(cls, secret: str) -> SecretStr:
+    def validate_openrouter_api_key(cls, secret: SecretStr) -> SecretStr:
         """
         Valida que la clave de OpenAI no esté vacía y tenga un formato plausible.
         """
@@ -105,7 +107,7 @@ class Settings(BaseSettings):
 
     @field_validator("SYNTAGE_API_KEY")
     @classmethod
-    def validate_syntage_api_key(cls, secret: str) -> SecretStr:
+    def validate_syntage_api_key(cls, secret: SecretStr) -> SecretStr:
         """
         Valida que la clave de Syntage no esté vacía y tenga un formato plausible.
         """

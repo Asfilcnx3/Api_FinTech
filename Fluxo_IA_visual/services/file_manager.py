@@ -78,18 +78,48 @@ class FileManagerService:
         # Caso 1: Es un ZIP
         if str(temp_path).lower().endswith(".zip"):
             try:
-                # Extraemos en una subcarpeta única para este ZIP
+                # --- PARÁMETROS DE SEGURIDAD (ANTI ZIP-BOMB) ---
+                MAX_FILES_IN_ZIP = 50  # Máximo de PDFs permitidos por ZIP
+                MAX_TOTAL_UNCOMPRESSED_MB = 100 # 100 MB máximo en total al extraer todo
+                MAX_COMPRESSION_RATIO = 100 # Si se expande más de 100 veces su tamaño, es sospechoso
+                
+                max_bytes = MAX_TOTAL_UNCOMPRESSED_MB * 1024 * 1024
+                
                 extract_dir = self.upload_dir / f"extracted_{uuid.uuid4()}"
                 extract_dir.mkdir(exist_ok=True)
 
                 with zipfile.ZipFile(temp_path, "r") as zip_ref:
-                    # Filtramos archivos basura (__MACOSX, etc) antes de extraer
-                    files_to_extract = [
-                        f for f in zip_ref.namelist() 
-                        if f.lower().endswith(".pdf") and not f.startswith("__MACOSX")
-                    ]
+                    archivos_a_extraer = []
+                    peso_total_descomprimido = 0
                     
-                    for member in files_to_extract:
+                    # 1. Inspección de metadatos (Sin extraer nada todavía)
+                    for info_archivo in zip_ref.infolist():
+                        # Ignoramos carpetas y basura del sistema operativo
+                        if info_archivo.is_dir() or info_archivo.filename.startswith("__MACOSX") or not info_archivo.filename.lower().endswith(".pdf"):
+                            continue
+                        
+                        # A. Validar Ratio de Compresión (Prevención de bombas altamente comprimidas)
+                        if info_archivo.compress_size > 0:
+                            ratio = info_archivo.file_size / info_archivo.compress_size
+                            if ratio > MAX_COMPRESSION_RATIO:
+                                logger.critical(f"Alerta de Seguridad: Zip Bomb detectada. Ratio anormal: {ratio}:1")
+                                raise HTTPException(status_code=400, detail="El archivo ZIP contiene datos sospechosos o está corrupto.")
+                        
+                        archivos_a_extraer.append(info_archivo.filename)
+                        peso_total_descomprimido += info_archivo.file_size
+                    
+                    # B. Validar cantidad total de archivos
+                    if len(archivos_a_extraer) > MAX_FILES_IN_ZIP:
+                        logger.warning(f"ZIP rechazado: Contenía {len(archivos_a_extraer)} archivos.")
+                        raise HTTPException(status_code=400, detail=f"El ZIP contiene demasiados archivos. El máximo es {MAX_FILES_IN_ZIP}.")
+                    
+                    # C. Validar peso total en disco
+                    if peso_total_descomprimido > max_bytes:
+                        logger.warning(f"ZIP rechazado: Peso inflado superaría {MAX_TOTAL_UNCOMPRESSED_MB}MB.")
+                        raise HTTPException(status_code=413, detail="El contenido del ZIP es demasiado grande para procesarse.")
+
+                    # 2. Si pasó todas las auditorías, procedemos a extraer
+                    for member in archivos_a_extraer:
                         zip_ref.extract(member, path=extract_dir)
                         full_path = extract_dir / member
                         
@@ -105,6 +135,10 @@ class FileManagerService:
 
             except zipfile.BadZipFile:
                 raise HTTPException(status_code=400, detail="El archivo ZIP está corrupto.")
+            except HTTPException:
+                # Si nosotros lanzamos el error de validación, limpiamos y lo dejamos subir al router
+                os.remove(temp_path)
+                raise
         
         # Caso 2: Es un PDF
         elif str(temp_path).lower().endswith(".pdf"):
