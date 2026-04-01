@@ -143,6 +143,7 @@ def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
         "Depósitos Extraídos", "Cargos Extraídos",       
         "Saldo Promedio", "Comisiones (Carátula)",
         "Comisiones Crédito", "Comisiones Débito", "Comisiones Amex", "Comisiones Totales",
+        "Pagos Financiamiento",
         "Confianza de Extracción", "Descuadre Depósitos", "Descuadre Cargos",
         "Tasa de Categorización",
         "Total Páginas", "Páginas Fallidas"
@@ -183,28 +184,31 @@ def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
             ia.get("comisiones_debito", 0.0),
             ia.get("comisiones_amex", 0.0),
             ia.get("comisiones_totales", 0.0),
-            
+
+            # Pago de financiamientos
+            ia.get("pagos_financiamiento", 0.0),
+
             # Métricas recorridas
             ia.get("confianza_extraccion", 0.0),
             ia.get("descuadre_depositos", 0.0), ia.get("descuadre_cargos", 0.0),
             ia.get("tasa_categorizacion", 0.0),
             ia.get("paginas_totales", 0),  
-            ia.get("paginas_fallidas", 0)  
+            ia.get("paginas_fallidas", 0)
         ])
     
     aplicar_estilo_header(ws2)
     
-    # Formato moneda para columnas 7 a 16 (Depósitos hasta Comisiones Totales) y 18 a 19 (Descuadres)
-    for row in ws2.iter_rows(min_row=2, min_col=7, max_col=19):
+    # Formato moneda para columnas 7 a 17 (Depósitos hasta Pagos Financiamiento) y 19 a 20 (Descuadres)
+    for row in ws2.iter_rows(min_row=2, min_col=7, max_col=20):
         for cell in row: 
-            # Excluimos la columna 17 (Confianza) del formato de moneda
-            if cell.column != 17: 
+            # Excluimos la columna 18 (Confianza) del formato de moneda
+            if cell.column != 18: 
                 cell.style = currency_style
                 
-    # Formato porcentaje para Confianza (Col 17) y Tasa de Categorización (Col 20)
-    for row in ws2.iter_rows(min_row=2, min_col=17, max_col=20):
+    # Formato porcentaje para Confianza (Col 18) y Tasa de Categorización (Col 21)
+    for row in ws2.iter_rows(min_row=2, min_col=18, max_col=21):
         for cell in row: 
-            if cell.column in [17, 20] and isinstance(cell.value, (int, float)):
+            if cell.column in [18, 21] and isinstance(cell.value, (int, float)):
                 cell.number_format = '0.00" %"'
 
     # ==========================================
@@ -314,6 +318,9 @@ def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
         "Comisiones TPV", 
         ["COMISION_CR", "COMISION_DB", "COMISION_AMEX", "COMISION_TPV_MIXTA"]
     )
+
+    # 11. PAGOS DE FINANCIAMIENTO 
+    crear_hoja_detalle("Pagos Financiamiento", "PAGO_FINANCIAMIENTO")
 
     # ==========================================
     # 10. RESUMEN GENERAL

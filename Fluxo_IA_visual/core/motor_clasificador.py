@@ -66,23 +66,33 @@ class MotorClasificador:
             # REGLA 1: RUTEO DE CARGOS (COMISIONES E IVA)
             # ==========================================
             if not es_abono:
-                # A) Filtro anti-IVA inmediato
+                
+                # A) PRIMERO: Atrapar Pagos de Financiamiento (Tienen prioridad máxima, incluso si mencionan IVA)
+                es_pago_fin = any(p in desc_plana for p in self.diccionarios.get('pago_financiamiento', []))
+                es_dru_domi = re.search(r'\bdru\d+\s*domiciliacion\b', desc_plana)
+                
+                if es_pago_fin or es_dru_domi:
+                    tx.categoria = "PAGO_FINANCIAMIENTO"
+                    resueltas_por_python.append((idx_real, tx))
+                    self._log_debug(2, f"Tx {idx_real} clasificada como PAGO_FINANCIAMIENTO -> {desc_plana[:40]}...")
+                    continue
+
+                # B) SEGUNDO: Filtro anti-IVA (Descartamos renglones sueltos de impuestos de comisiones)
                 if re.search(r'\biva\b', desc_plana):
                     tx.categoria = "GENERAL"
                     resueltas_por_python.append((idx_real, tx))
                     self._log_debug(1, f"Tx {idx_real} descartada (Es IVA) -> {desc_plana[:40]}...")
                     continue
 
-                # B) La Atarraya: Atrapar comisiones TPV
+                # C) TERCERO: La Atarraya (Atrapar candidatas a comisiones TPV)
                 es_comision = re.search(r'\b(com|comision|comisiones|tasa de descuento|descuento)\b', desc_plana)
-                
                 if es_comision:
                     tx.categoria = "COMISION_PENDIENTE"
                     resueltas_por_python.append((idx_real, tx))
                     self._log_debug(2, f"Tx {idx_real} atrapada como CANDIDATA A COMISIÓN -> {desc_plana[:40]}...")
                     continue
 
-                # C) Si no es IVA ni comisión, se va a GENERAL
+                # D) CUARTO: Si no fue nada de lo anterior, se va a GENERAL
                 tx.categoria = "GENERAL"
                 resueltas_por_python.append((idx_real, tx))
                 self._log_debug(1, f"Tx {idx_real} descartada (Es cargo común) -> {desc_plana[:40]}...")
@@ -269,7 +279,8 @@ class MotorClasificador:
             "EFECTIVO": 0.0, "TRASPASO_ABONO": 0.0, "TRASPASO_CARGO": 0.0, 
             "FINANCIAMIENTO": 0.0, "BMRCASH": 0.0, "MORATORIOS": 0.0, 
             "TPV": 0.0, "DEPOSITOS": 0.0,
-            "COMISION_CR": 0.0, "COMISION_DB": 0.0, "COMISION_AMEX": 0.0, "COMISION_TPV_MIXTA": 0.0
+            "COMISION_CR": 0.0, "COMISION_DB": 0.0, "COMISION_AMEX": 0.0, "COMISION_TPV_MIXTA": 0.0,
+            "PAGO_FINANCIAMIENTO": 0.0
         }
         
         conteo_categorias = {"TPV": 0, "GENERAL": 0, "OTROS": 0}

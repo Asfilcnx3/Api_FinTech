@@ -21,7 +21,7 @@ from ..core.motor_caratulas import MotorCaratulas
 from ..utils.helpers_texto_fluxo import (
     PALABRAS_COMISION_CREDITO, TRIGGERS_CONFIG, PALABRAS_CLAVE_VERIFICACION, 
     ALIAS_A_BANCO_MAP, BANCO_DETECTION_REGEX, 
-    PATRONES_COMPILADOS, prompt_base_fluxo
+    PATRONES_COMPILADOS, prompt_base_fluxo,
 )
 from ..utils.helpers import extraer_json_del_markdown, sanitizar_datos_ia
 from ..services.ia_extractor import analizar_gpt_fluxo, analizar_con_ocr_fluxo
@@ -35,7 +35,8 @@ from ..utils.helpers_texto_fluxo import (
     PALABRAS_TRASPASO_MORATORIO,
     PALABRAS_TPV,
     PALABRAS_COMISION_CREDITO, PALABRAS_COMISION_DEBITO,
-    PALABRAS_COMISION_AMEX, PALABRAS_COMISION_TPV_GENERICA
+    PALABRAS_COMISION_AMEX, PALABRAS_COMISION_TPV_GENERICA,
+    PALABRAS_PAGO_FINANCIAMIENTO
 )
 
 from ..services.orchestators import (
@@ -76,7 +77,8 @@ class ProcessingService:
             'comision_credito': PALABRAS_COMISION_CREDITO,
             'comision_debito': PALABRAS_COMISION_DEBITO,
             'comision_amex': PALABRAS_COMISION_AMEX,
-            'comision_tpv_generica': PALABRAS_COMISION_TPV_GENERICA
+            'comision_tpv_generica': PALABRAS_COMISION_TPV_GENERICA,
+            'pago_financiamiento': PALABRAS_PAGO_FINANCIAMIENTO
         }
         self.motor_clasificador = MotorClasificador(
             diccionarios_palabras=diccionarios_clasificacion,
@@ -726,6 +728,7 @@ class ProcessingService:
         analisis_ia.entradas_bmrcash = totales.get("BMRCASH", 0.0)
         analisis_ia.total_moratorios = totales.get("MORATORIOS", 0.0)
         analisis_ia.entradas_TPV_bruto = totales.get("TPV", 0.0)
+        analisis_ia.pagos_financiamiento = totales.get("PAGO_FINANCIAMIENTO", 0.0)
         
         # Cálculo de Neto
         try:
