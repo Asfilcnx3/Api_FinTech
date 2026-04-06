@@ -80,7 +80,7 @@ class MotorExtraccionEspacial:
         }
 
         # ====================================================================
-        # D. TRIGGERS Y REGEX (Sin cambios de lógica, solo organización)
+        # D. TRIGGERS Y REGEX 
         # ====================================================================
         self.RX_FOOTER_TRIGGERS = [
             re.compile(r'este\s+documento\s+es\s+una\s+representaci[oó]n', re.IGNORECASE),
@@ -95,7 +95,8 @@ class MotorExtraccionEspacial:
             re.compile(r'inversi[oó]n\s+creciente', re.IGNORECASE),
             re.compile(r'saldo\s+final\s+del\s+periodo', re.IGNORECASE),
             re.compile(r'detalles\s+del\s+cr[eé]dito', re.IGNORECASE),
-            re.compile(r'spei\s+enviados', re.IGNORECASE)
+            re.compile(r'spei\s+enviados', re.IGNORECASE),
+            re.compile(r'comisiones\s+pendientes\s+de\s+pago', re.IGNORECASE),
         ]
         
         self.RX_HARD_STOP_TRIGGERS = [
@@ -106,7 +107,8 @@ class MotorExtraccionEspacial:
             re.compile(r'operaciones\s+vigentes', re.IGNORECASE),
             re.compile(r'detalle\s+de\s+vencimientos', re.IGNORECASE),
             re.compile(r'apartados\s+vigentes', re.IGNORECASE),
-            re.compile(r'^\[\s*saldo\s+inicial\s+de', re.IGNORECASE)
+            re.compile(r'^\[\s*saldo\s+inicial\s+de', re.IGNORECASE),
+            re.compile(r'resumen\s*fiscal\s*de\s*cr[eé]dito', re.IGNORECASE),
         ]
         
         # Keywords para SCORING de Header
@@ -147,7 +149,7 @@ class MotorExtraccionEspacial:
         
         self.NOISE_DATE_TOKENS = ["SUC", "HORA", "CAJA", "AUT", "REF", "SEC", "MOV"]
         self.KEYWORDS_HEADER_FECHA = ["FECHA", "DIA", "DATE"]
-        self.KEYWORDS_IGNORE_DESC = ["SALDO ANTERIOR", "TOTAL", "TRASPASO ENTRE CUENTAS", "SALDO FINAL"]
+        self.KEYWORDS_IGNORE_DESC = ["SALDO ANTERIOR", "TOTAL", "TRASPASO ENTRE CUENTAS", "SALDO FINAL", "NUEVOS CARGOS Y ABONOS"]
         
         # Estado Global
         self.global_stop = False
@@ -393,7 +395,7 @@ class MotorExtraccionEspacial:
                     }
             
             has_anchor = "FECHA" in detected_cols
-            has_money = any(k in detected_cols for k in ["CARGO", "ABONO", "SALDO"])
+            has_money = any(k in detected_cols for k in ["CARGO", "ABONO", "SALDO", "IMPORTE"])
             
             if has_anchor and has_money:
                 # Inferencia de Abono usando Config
@@ -573,19 +575,24 @@ class MotorExtraccionEspacial:
                 # --- ZONAS X (Fronteras dinámicas para evitar solapamiento) ---
                 c_cargo = current_columns.get("CARGO")
                 c_abono = current_columns.get("ABONO")
-                c_importe = current_columns.get("IMPORTE") # Antes c_unif
+                c_importe = current_columns.get("IMPORTE")
+
+                # --- EL PARADIGMA DE LA COLUMNA SOLITARIA ---
+                # Si detectamos que solo existe 1 de las 2 columnas de dinero, la transformamos internamente en IMPORTE para que fluya hacia la limpieza final.
+                if c_cargo and not c_abono and not c_importe:
+                    c_importe = c_cargo
+                    c_cargo = None
+                elif c_abono and not c_cargo and not c_importe:
+                    c_importe = c_abono
+                    c_abono = None
 
                 zonas_x["cargo"] = (9999, 9999)
                 zonas_x["abono"] = (9999, 9999)
-                zonas_x["importe"] = (9999, 9999) # Antes unificado
+                zonas_x["importe"] = (9999, 9999)
 
-                if c_importe:
-                    # Fintechs o Estados de Cuenta de una sola columna para todo
-                    zonas_x["importe"] = (c_importe["x0"] - 40, c_importe["x1"] + 20)
-
-                elif c_cargo and c_abono:
+                # Prioridad a Bancos Tradicionales con Columnas Separadas (Lógica de Punto Medio)
+                if c_cargo and c_abono:
                     # Bancos tradicionales: Columnas separadas (lógica de punto medio)
-                    # (Si existen ambas, calculamos una frontera exacta a la mitad)
                     if c_cargo["center"] > c_abono["center"]:
                         # Caso Santander: Abono a la Izquierda, Cargo a la Derecha
                         midpoint = (c_abono["x1"] + c_cargo["x0"]) / 2
@@ -596,31 +603,38 @@ class MotorExtraccionEspacial:
                         midpoint = (c_cargo["x1"] + c_abono["x0"]) / 2
                         zonas_x["cargo"] = (c_cargo["x0"] - 40, midpoint)
                         zonas_x["abono"] = (midpoint, c_abono["x1"] + 15)
-                else:
-                    # Lógica original de holgura si solo hay una columna de dinero
-                    if c_cargo: 
-                        zonas_x["cargo"] = (c_cargo["x0"] - 40, c_cargo["x1"] + 15)
-                    if c_abono: 
-                        zonas_x["abono"] = (c_abono["x0"] - 40, c_abono["x1"] + 15)
-                
-                if "ABONO" in current_columns:
-                    c = current_columns["ABONO"]
-                    zonas_x["abono"] = (c["x0"] - 40, c["x1"] + 15)
-                else: zonas_x["abono"] = (9999, 9999)
+                        
+                    # Si el motor leyó Importe adicionalmente (Banorte)
+                    if c_importe:
+                        zonas_x["importe"] = (c_importe["x0"] - 40, c_importe["x1"] + 20)
+                        
+                elif c_importe:
+                    # Columna única real (Mercado Libre) o convertida por el Paradigma (Santander ENTRADAS)
+                    zonas_x["importe"] = (c_importe["x0"] - 40, c_importe["x1"] + 40)
                 
                 if "SALDO" in current_columns:
                     c = current_columns["SALDO"]
                     zonas_x["saldo"] = (c["x0"] - 10, c["x1"] + 10)
-                else: zonas_x["saldo"] = (geo.width + 100, geo.width + 100)
+                else: 
+                    zonas_x["saldo"] = (geo.width + 100, geo.width + 100)
                 
                 if "DESCRIPCION" in current_columns:
                     zonas_x["desc_center"] = current_columns["DESCRIPCION"]["center"]
-                else: zonas_x["desc_center"] = -1
+                else: 
+                    zonas_x["desc_center"] = -1
 
                 rango_fecha_x = (0, geo.width * 0.14)
                 if "FECHA" in current_columns:
                     col_f = current_columns["FECHA"]
-                    rango_fecha_x = (max(0, col_f["x0"]-40), col_f["x1"]+10)
+                    ancho_columna = col_f["x1"] - col_f["x0"]
+                    
+                    # --- LIMITADOR DE COLUMNA (AMEX FIX) ---
+                    if ancho_columna > 70:
+                        # Forzamos la zona de fecha a ser pequeña para no comerse la descripción
+                        rango_fecha_x = (max(0, col_f["x0"] - 10), col_f["x0"] + 60)
+                    else:
+                        rango_fecha_x = (max(0, col_f["x0"] - 40), col_f["x1"] + 10)
+                
                 x_inicio_desc = rango_fecha_x[1] + 5
 
                 # Extraer
@@ -646,6 +660,7 @@ class MotorExtraccionEspacial:
                         
                         txs_huerfanas = self._extraer_transacciones_por_slice(
                             ancla_virtual, words_block, zonas_x, y_limite_huerfano, x_inicio_desc,
+                            current_columns=current_columns,
                             y_techo_bloque_origen=y_techo_bloque
                         )
                         transacciones_pagina.extend(txs_huerfanas)
@@ -654,6 +669,7 @@ class MotorExtraccionEspacial:
                     todas_anclas_pagina.extend(anclas)
                     txs = self._extraer_transacciones_por_slice(
                         anclas, words_block, zonas_x, y_suelo_bloque, x_inicio_desc,
+                        current_columns=current_columns,
                         y_techo_bloque_origen=y_techo_bloque
                     )
                     transacciones_pagina.extend(txs)
@@ -711,7 +727,22 @@ class MotorExtraccionEspacial:
         if ids_a_borrar:
             for r in results:
                 r["transacciones"] = [tx for tx in r["transacciones"] if id(tx) not in ids_a_borrar]
-        
+
+        # =====================================================================
+        # LIMPIEZA FINAL: Restaurar tipos y limpiar JSON
+        # =====================================================================
+        for r in results:
+            for tx in r["transacciones"]:
+                # Extraemos las banderas y las borramos del diccionario (.pop)
+                era_importe = tx.pop("es_importe_original", False)
+                tenia_signo = tx.pop("tiene_signo", False)
+                
+                # Tu lógica magistral: Si era IMPORTE y NO tenía signo (Mifel SPEI), 
+                # lo regresamos a IMPORTE. 
+                # Si SÍ tenía signo (Mercado Libre), se queda como CARGO/ABONO.
+                if era_importe and not tenia_signo:
+                    tx["tipo"] = "IMPORTE"
+
         return results
 
     def _deduplicar_importes_global(self, todas_las_transacciones: List[Dict]) -> set:
@@ -725,8 +756,14 @@ class MotorExtraccionEspacial:
             limpio = re.sub(r'[^\w\s]', ' ', str(texto).lower())
             return set(p for p in limpio.split() if len(p) > 2 and p not in PALABRAS_IGNORADAS)
 
-        normales = [tx for tx in todas_las_transacciones if tx.get("tipo") in ["CARGO", "ABONO"]]
-        importes = [tx for tx in todas_las_transacciones if tx.get("tipo") == "IMPORTE"]
+        # --- FIX: BYPASS PARA MERCADO LIBRE ---
+        # Las transacciones "normales" son los Cargos/Abonos clásicos, 
+        # O los importes que traen su propio signo (Mercado Libre).
+        normales = [tx for tx in todas_las_transacciones if not tx.get("es_importe_original") or tx.get("tiene_signo")]
+        
+        # Los "importes" que buscan fusionarse (y que arrojan logs si no encuentran match) 
+        # son SOLO los que no tienen signo explícito (ej. la tabla SPEI de Mifel).
+        importes = [tx for tx in todas_las_transacciones if tx.get("es_importe_original") and not tx.get("tiene_signo")]
         
         self._log_debug(self.LOG_EXTRACTION, f"DEDUPLICACIÓN GLOBAL INICIADA: {len(importes)} IMPORTES vs {len(normales)} NORMALES en todo el documento.")
         
@@ -921,7 +958,7 @@ class MotorExtraccionEspacial:
         clean = txt.replace("$", "").replace(",", "")
         return bool(self.REGEX_MONTO_SIMPLE.search(clean))
 
-    def _extraer_transacciones_por_slice(self, anclas: List[Dict], words: List, zonas_x: Dict, y_limite_total: float, x_inicio_desc_dinamico: float, y_techo_bloque_origen: float = None) -> List[Dict]:
+    def _extraer_transacciones_por_slice(self, anclas: List[Dict], words: List, zonas_x: Dict, y_limite_total: float, x_inicio_desc_dinamico: float, current_columns: Dict, y_techo_bloque_origen: float = None) -> List[Dict]:
         if not anclas: return []
             
         transacciones = []
@@ -961,7 +998,33 @@ class MotorExtraccionEspacial:
             # self._log_debug(self.LOG_EXTRACTION, f"SLICE [{i}] Fecha: '{ancla['texto_fecha']}' Y={y_actual:.1f} | Techo: {y_techo_slice:.1f} | Suelo: {y_suelo_slice:.1f}")
 
             # Filtrar palabras dentro del slice
-            palabras_slice = [w for w in words if y_techo_slice <= w[1] < y_suelo_slice]
+            palabras_slice_raw = [w for w in words if y_techo_slice <= w[1] < y_suelo_slice]
+            
+            # PRE-STITCHING DE SIGNOS Y MONTOS 
+            palabras_slice = []
+            skip_next = False
+            for j, w in enumerate(palabras_slice_raw):
+                if skip_next:
+                    skip_next = False
+                    continue
+                
+                texto_limpio = w[4].strip()
+                # Si detectamos un signo de moneda aislado
+                if texto_limpio in ["-$", "+$", "-", "+", "- $", "+ $"]:
+                    if j + 1 < len(palabras_slice_raw):
+                        w_next = palabras_slice_raw[j+1]
+                        # Verificamos que el siguiente token esté en la misma línea y cerca en X
+                        if abs(w[1] - w_next[1]) < 5 and (w_next[0] - w[2]) < 15:
+                            nuevo_token = list(w_next)
+                            # Extraemos solo el signo (+ o -) y lo pegamos al número
+                            signo = "-" if "-" in texto_limpio else "+"
+                            nuevo_token[4] = signo + w_next[4] 
+                            nuevo_token[0] = w[0] # Expandimos la caja visual (x0)
+                            palabras_slice.append(tuple(nuevo_token))
+                            skip_next = True
+                            continue
+                
+                palabras_slice.append(w)
             
             montos_detectados = []
             tokens_texto = []
@@ -978,14 +1041,14 @@ class MotorExtraccionEspacial:
                     col_detectada = None
                     x_center = (w[0] + w[2]) / 2
                     
-                    if r_importe[0] <= x_center <= r_importe[1]: col_detectada = "IMPORTE"
-                    elif r_cargo[0] <= x_center <= r_cargo[1]: col_detectada = "CARGO"
+                    if r_cargo[0] <= x_center <= r_cargo[1]: col_detectada = "CARGO"
                     elif r_abono[0] <= x_center <= r_abono[1]: col_detectada = "ABONO"
+                    elif r_importe[0] <= x_center <= r_importe[1]: col_detectada = "IMPORTE"
                     
                     if not col_detectada: 
-                        if r_importe[0] <= w[0] <= r_importe[1]: col_detectada = "IMPORTE"
-                        elif r_cargo[0] <= w[0] <= r_cargo[1]: col_detectada = "CARGO"
+                        if r_cargo[0] <= w[0] <= r_cargo[1]: col_detectada = "CARGO"
                         elif r_abono[0] <= w[0] <= r_abono[1]: col_detectada = "ABONO"
+                        elif r_importe[0] <= w[0] <= r_importe[1]: col_detectada = "IMPORTE"
 
                     if col_detectada:
                         try:
@@ -994,19 +1057,40 @@ class MotorExtraccionEspacial:
                             if val == 0.0:
                                 continue 
                             
-                            # Nueva lógica: Si la columna es IMPORTE, el registro se va como IMPORTE puro
+                            # --- DETECTAR SIGNO EXPLÍCITO ---
+                            tiene_signo_explicito = "-" in clean_txt or "+" in clean_txt
+
+                            # CLASIFICACIÓN DINÁMICA POR SIGNO
                             if col_detectada == "IMPORTE":
-                                tipo_real = "IMPORTE"
+                                if val < 0:
+                                    tipo_real = "CARGO"
+                                elif val > 0:
+                                    tipo_real = "ABONO"
+                                else:
+                                    tipo_real = "IMPORTE"
                             else:
                                 tipo_real = col_detectada
                                 
                             val_limpio = abs(val) # Limpiamos el signo para el JSON final
 
-                            montos_detectados.append({"val": val_limpio, "y": w[1], "x": w[0], "col": tipo_real, "box": w[:4]})
-                            continue 
+                            # --- FIX: GUARDAR EL ORIGEN Y EL SIGNO ---
+                            montos_detectados.append({
+                                "val": val_limpio, 
+                                "y": w[1], 
+                                "x": w[0], 
+                                "col": tipo_real, 
+                                "box": w[:4],
+                                "es_importe_original": (col_detectada == "IMPORTE"),
+                                "tiene_signo": tiene_signo_explicito  # <--- GUARDAMOS LA BANDERA
+                            })
+                            continue
                         except ValueError: pass
                 
-                if x > x_inicio_texto:
+                # --- FIX 1: HOLGURA IZQUIERDA UNIVERSAL ---
+                # Le damos 25 píxeles de gracia hacia la izquierda para rescatar
+                # descripciones que inician muy pegadas a la fecha (Afirme),
+                # sin afectar a bancos con espacios normales (Mifel, Amex).
+                if x > (x_inicio_texto - 25.0):
                     tokens_texto.append(w)
 
             # Agrupación de filas (Clustering)
@@ -1041,7 +1125,8 @@ class MotorExtraccionEspacial:
                     else:
                         y_suelo_local = y_suelo_slice
 
-                    x_limite_lectura = x_inicio_texto - 15.0 
+                    # Alineamos el límite de lectura interno con la holgura que dimos arriba
+                    x_limite_lectura = x_inicio_texto - 25.0 
                     
                     is_desc_right_sided = False
                     if x_center_desc > 0 and x_center_desc > mejor_monto["x"]:
@@ -1058,6 +1143,19 @@ class MotorExtraccionEspacial:
                         else:
                             if w[0] >= mejor_monto["x"] - 5: hit_monto = True
                             
+                        # --- FIX 2: FILTRO ESPACIAL FRANCOTIRADOR (AFIRME FIX) ---
+                        # En lugar de muros, medimos la distancia exacta de cada palabra hacia el monto.
+                        if not hit_monto:
+                            texto_token = w[4].strip()
+                            dist_al_monto = mejor_monto["x"] - w[0]
+                            
+                            # Si es un "$" flotando a menos de 120px a la izquierda del monto... ¡fuego!
+                            if texto_token == "$" and 0 < dist_al_monto < 120:
+                                hit_monto = True
+                            # Si es un ID numérico (4-8 dígitos) a menos de 180px del monto... ¡fuego!
+                            elif re.match(r'^\d{4,8}$', texto_token) and 0 < dist_al_monto < 180 and w[0] > 200:
+                                hit_monto = True
+                                
                         if not hit_monto:
                             tokens_desc.append(w)
                     
@@ -1080,11 +1178,46 @@ class MotorExtraccionEspacial:
                             
                     if linea_actual:
                         lineas_desc.append(" ".join(linea_actual))
+                    
+                    # Revisamos si en las líneas físicas originales (antes de limpiar)
+                    # existe la palabra TOTAL o SUBTOTAL de forma aislada.
+                    es_total_camuflado = False
+                    for linea in lineas_desc:
+                        txt_limpio = linea.strip().upper()
+                        if txt_limpio in ["TOTAL", "SUBTOTAL", "SUMA", "SALDO FINAL", "TOTALES"]:
+                            es_total_camuflado = True
+                            break
+                            
+                    if es_total_camuflado:
+                        continue
                         
-                    # Unimos todos los renglones detectados con el salto de línea real
-                    desc_str = "\n".join(lineas_desc).strip()
+                    # --- SÚPER FILTRO DE TOTALES Y BASURA ---
+                    # 1. Visión Periférica: Leemos la fila COMPLETA (sin límites de X) para cazar el "Total"
+                    tokens_fila_completa = [w for w in palabras_slice if y_techo_local <= w[1] < y_suelo_local]
+                    tokens_fila_completa.sort(key=lambda w: w[0])
+                    texto_fila_completo = " ".join([w[4] for w in tokens_fila_completa]).upper()
+                    
+                    # Si detectamos que la fila entera es un Total, aniquilamos la transacción
+                    if REGEX_FILA_TOTAL.search(texto_fila_completo) or "TOTAL DE LAS" in texto_fila_completo or "MOVIMIENTOS DEL PRESENTE ESTADO" in texto_fila_completo:
+                        continue
+                        
+                    # 2. Limpieza de Descripciones: Quitamos la basura (ej. "Nuevos cargos y abonos...")
+                    lineas_desc_filtradas = []
+                    
+                    # --- NUEVO FILTRO PARA AFIRME ---
+                    regex_basura = re.compile(r'^(\$|\d{4,6})$') # Atrapa un '$' solo, o un ID de 4 a 6 dígitos.
+                    
+                    for linea in lineas_desc:
+                        if not any(k in linea.upper() for k in self.KEYWORDS_IGNORE_DESC):
+                            # Filtramos si la línea completa es solo basura
+                            if not regex_basura.match(linea.strip()):
+                                lineas_desc_filtradas.append(linea)
+                            
+                    desc_str = "\n".join(lineas_desc_filtradas).strip()
 
-                    if REGEX_FILA_TOTAL.search(desc_str): 
+                    # Filtro, nose permiten descripciones vacías. Si no quedó nada después de limpiar, descartamos la transacción.
+                    # significa que la fila entera era un Total o Saldo camuflado.
+                    if not desc_str:
                         continue
 
                     tx = {
@@ -1094,7 +1227,9 @@ class MotorExtraccionEspacial:
                         "tipo": mejor_monto["col"],
                         "id_interno": f"Y{int(y_monto)}_IDX{idx_fila}",
                         "score_confianza": 0.95,
-                        "coords_box": mejor_monto["box"]
+                        "coords_box": mejor_monto["box"],
+                        "es_importe_original": mejor_monto.get("es_importe_original", False),
+                        "tiene_signo": mejor_monto.get("tiene_signo", False) # <--- HEREDAMOS LA BANDERA
                     }
                     transacciones.append(tx)
 
