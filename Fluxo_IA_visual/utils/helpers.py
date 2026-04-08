@@ -432,10 +432,12 @@ def crear_objeto_resultado(datos_dict: dict) -> AnalisisTPV.ResultadoExtraccion:
         )
 
     except Exception as e:
-        # Si algo falla, devolvemos un error
         return AnalisisTPV.ResultadoExtraccion(
             AnalisisIA=None,
-            DetalleTransacciones=AnalisisTPV.ErrorRespuesta(error=f"Error estructural: {e}")
+            DetalleTransacciones=AnalisisTPV.ErrorRespuesta(
+                nombre_documento=datos_dict.get("nombre_archivo_virtual", "desconocido"),
+                detalle_error=f"Error estructural: {e}"
+            )
         )
 
 def separar_fecha_y_ruido(raw_text: str) -> Tuple[str, str]:

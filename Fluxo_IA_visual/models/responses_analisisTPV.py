@@ -1,11 +1,11 @@
-from .responses_general import ErrorRespuestaBase
+from .responses_general import ErrorRespuestaBase # Por si en el futuro se rompe, quitamos esto
 from pydantic import BaseModel, Field
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 # ----- Clases para respuestas de Análisis TPV (Fluxo) -----
 class AnalisisTPV:
     """Namespace para todos los modelos relacionados con el analisis de cuenta TPV."""
-    class ErrorRespuesta(ErrorRespuestaBase):
+    class ErrorRespuesta(BaseModel):
         """Error específico para el procesamiento de TPV."""
         nombre_documento: str
         estatus_documento: str = "fallido"
