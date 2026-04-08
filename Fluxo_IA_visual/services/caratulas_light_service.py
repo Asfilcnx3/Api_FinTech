@@ -3,6 +3,7 @@ import logging
 import re
 import fitz
 from pathlib import Path
+from datetime import datetime
 
 # Ajusta las rutas relativas según la ubicación exacta de tu carpeta services
 from ..core.motor_caratulas_light import procesar_caratula_frontend
@@ -133,6 +134,29 @@ class CaratulasLightService:
             "requiere_vision": requiere_vision, 
             "razon": razon
         }
+    
+    def _obtener_sets_de_meses_requeridos(self) -> tuple:
+        """
+        Retorna dos sets con los periodos MM-YYYY obligatorios.
+        Opción A: Los últimos 3 meses cerrados (ej. en Abril: Enero, Febrero, Marzo)
+        Opción B: Los 3 meses asumiendo un mes de desfase (ej. en Abril: Diciembre, Enero, Febrero)
+        """
+        hoy = datetime.now()
+        
+        def calcular_mes_anio(meses_atras):
+            mes = hoy.month - meses_atras
+            anio = hoy.year
+            while mes <= 0:
+                mes += 12
+                anio -= 1
+            return f"{mes:02d}-{anio}"
+
+        # Set A: Mes actual -1, -2, -3
+        set_a = {calcular_mes_anio(1), calcular_mes_anio(2), calcular_mes_anio(3)}
+        # Set B: Mes actual -2, -3, -4
+        set_b = {calcular_mes_anio(2), calcular_mes_anio(3), calcular_mes_anio(4)}
+        
+        return set_a, set_b
 
     async def _procesar_archivo_individual(self, info_archivo: dict, semaforo: asyncio.Semaphore) -> dict:
         """Método privado: Procesa un solo archivo respetando el límite del semáforo."""
@@ -144,13 +168,21 @@ class CaratulasLightService:
                 # A. Validar límite de peso
                 tamanio_archivo = ruta_pdf.stat().st_size
                 if tamanio_archivo > self.settings.max_file_size_bytes:
-                    return {"error": f"{nombre_original}: Supera límite de {self.settings.MAX_FILE_SIZE_MB}MB."}
+                    return {"error": {
+                        "nombre_documento": nombre_original, 
+                        "estatus_documento": "fallido", 
+                        "detalle_error": f"Supera límite de {self.settings.MAX_FILE_SIZE_MB}MB."
+                    }}
 
                 # B. Leer de disco y validar Magic Bytes
                 with open(ruta_pdf, "rb") as f:
                     magic_bytes = f.read(5)
                     if magic_bytes != b"%PDF-":
-                        return {"error": f"{nombre_original}: Firma de archivo inválida (no es PDF)."}
+                        return {"error": {
+                            "nombre_documento": nombre_original,
+                            "estatus_documento": "fallido",
+                            "detalle_error": "Firma de archivo inválida (no es PDF)."
+                        }}
                     
                     f.seek(0)
                     pdf_bytes = f.read()
@@ -158,7 +190,11 @@ class CaratulasLightService:
                 # C. Evaluación de viabilidad inteligente (gatekeeper de costos)
                 evaluacion = self._evaluar_viabilidad_documento(pdf_bytes, nombre_original)
                 if not evaluacion["viable"]:
-                    return {"error": f"{nombre_original}: {evaluacion['razon']}"}
+                    return {"error": {
+                        "nombre_documento": nombre_original,
+                        "estatus_documento": "fallido",
+                        "detalle_error": evaluacion["razon"]
+                    }}
                 
                 # Le pasamos la instrucción al motor de si debe usar Visión o Texto
                 requiere_vision_flag = evaluacion.get("requiere_vision", True)
@@ -167,20 +203,34 @@ class CaratulasLightService:
                 res_estructurada = await procesar_caratula_frontend(
                     pdf_bytes=pdf_bytes, 
                     motor_base=self.motor_base,
-                    requiere_vision=requiere_vision_flag # <--- AGREGAMOS ESTE PARÁMETRO
+                    requiere_vision=requiere_vision_flag
                 )
 
                 # E. Evaluar resultado
                 if res_estructurada.error_procesamiento:
-                    return {"error": f"{nombre_original}: {res_estructurada.error_procesamiento}"}
+                    return {"error": {
+                        "nombre_documento": nombre_original,
+                        "estatus_documento": "fallido",
+                        "detalle_error": res_estructurada.error_procesamiento
+                    }}
                 
-                # Convertimos el modelo Pydantic a diccionario para JSON
-                resultados_dict = [item.model_dump() for item in res_estructurada.resultados]
+                # Convertimos el modelo Pydantic a diccionario e inyectamos los nuevos campos
+                resultados_dict = []
+                for item in res_estructurada.resultados:
+                    dict_item = item.model_dump()
+                    dict_item["nombre_documento"] = nombre_original
+                    dict_item["estatus_documento"] = "exitoso"
+                    resultados_dict.append(dict_item)
+                    
                 return {"exito": resultados_dict}
                 
             except Exception as e:
                 logger.error(f"Error procesando {nombre_original}: {str(e)}")
-                return {"error": f"{nombre_original}: Error interno al extraer - {str(e)}"}
+                return {"error": {
+                    "nombre_documento": nombre_original,
+                    "estatus_documento": "fallido",
+                    "detalle_error": f"Error interno al extraer - {str(e)}"
+                }}
 
     async def ejecutar_pipeline_concurrente(self, job_id: str, lista_archivos: list):
         """Orquestador background: Dispara N archivos a la vez, guardando estado en disco (JSON)."""
@@ -208,9 +258,19 @@ class CaratulasLightService:
                     errores.append(res["error"])
                 elif "exito" in res:
                     exitos.extend(res["exito"])
+            
+            # LÓGICA DE INDICADOR ESTRICTO 
+            set_a, set_b = self._obtener_sets_de_meses_requeridos()
+            
+            # Extraemos todos los periodos que la IA encontró en los PDFs y los hacemos un Set
+            periodos_encontrados = set(caratula.get("periodo") for caratula in exitos if caratula.get("periodo"))
+            
+            # El booleano será True SOLO SI el Set A completo o el Set B completo están dentro de lo que subió el usuario
+            tiene_caratulas_recientes = set_a.issubset(periodos_encontrados) or set_b.issubset(periodos_encontrados)
                     
             self.storage.update_job(job_id, {
                 "estatus": "completado",
+                "indicador_caratulas_recientes": tiene_caratulas_recientes,
                 "resultados_exitosos": exitos,
                 "errores": errores
             })

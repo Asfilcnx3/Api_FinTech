@@ -7,7 +7,9 @@ class AnalisisTPV:
     """Namespace para todos los modelos relacionados con el analisis de cuenta TPV."""
     class ErrorRespuesta(ErrorRespuestaBase):
         """Error específico para el procesamiento de TPV."""
-        pass
+        nombre_documento: str
+        estatus_documento: str = "fallido"
+        detalle_error: str
 
     class Transaccion(BaseModel):
         """Representa una única transaccion encontrada dentro del documento [3 partes]."""
@@ -80,6 +82,10 @@ class AnalisisTPV:
 
     class ResultadoExtraccion(BaseModel):
         """Representa la respuesta para los documentos individuales -> Caratula + Resultados TPV."""
+        # --- CAMPOS DE ESTATUS ---
+        nombre_documento: Optional[str] = Field(None, description="Nombre original del archivo procesado")
+        estatus_documento: str = Field("exitoso", description="Estatus general del documento")
+        
         AnalisisIA: Optional["AnalisisTPV.ResultadoAnalisisIA"] = None
         DetalleTransacciones: Optional[Union["AnalisisTPV.ResultadoTPV", "AnalisisTPV.ErrorRespuesta"]] = None
 

@@ -1,8 +1,8 @@
 # routers/router_fluxo.py
 
-from fastapi import APIRouter, UploadFile, File, BackgroundTasks, HTTPException, Query
-from fastapi.responses import FileResponse
-from typing import List
+from fastapi import APIRouter, UploadFile, File, Form, BackgroundTasks, HTTPException, Query, Depends
+from fastapi.responses import FileResponse, JSONResponse
+from typing import List, Optional
 import uuid
 import logging
 
@@ -12,16 +12,36 @@ from ...services.processing_service import ProcessingService
 from ...services.storage_service import StorageService
 from ...models.responses_general import RespuestaProcesamientoIniciado
 from ...services.passport_service import PassportService
+from ...services.webhook_service import WebhookService
+from ...services.webhook_general_orchestrator import OrquestadorWebhooks
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
-storage = StorageService()
-passport_service = PassportService()
 
-# Inyección de dependencias (Manual por ahora)
-file_manager = FileManagerService()
-processing_service = ProcessingService(file_manager)
+# =================================================================
+# INYECTORES DE DEPENDENCIAS (El estándar de FastAPI)
+# =================================================================
+def get_storage() -> StorageService: return StorageService()
+def get_passport_service() -> PassportService: return PassportService()
+def get_file_manager() -> FileManagerService: return FileManagerService()
+def get_webhook_service() -> WebhookService: return WebhookService()
 
+# Inyector compuesto: ProcessingService necesita un FileManager
+def get_processing_service(
+    file_manager: FileManagerService = Depends(get_file_manager)
+) -> ProcessingService:
+    return ProcessingService(file_manager)
+
+# Inyector del Orquestador Universal
+def get_orquestador_general(
+    storage: StorageService = Depends(get_storage),
+    webhook_service: WebhookService = Depends(get_webhook_service)
+) -> OrquestadorWebhooks:
+    return OrquestadorWebhooks(storage, webhook_service)
+
+# =================================================================
+# ENDPOINTS
+# =================================================================
 @router.post(
     "/fluxo/procesar_pdf/", 
     response_model=RespuestaProcesamientoIniciado,
@@ -29,15 +49,16 @@ processing_service = ProcessingService(file_manager)
 )
 async def procesar_pdf_api(
     background_tasks: BackgroundTasks,
-    archivos: List[UploadFile] = File(..., description="Archivos PDF o ZIP")
+    archivos: List[UploadFile] = File(..., description="Archivos PDF o ZIP"),
+    webhook_url: Optional[str] = Form(None, description="URL para notificar al terminar"),
+    # --- INYECCIÓN DE DEPENDENCIAS AQUÍ ---
+    file_manager: FileManagerService = Depends(get_file_manager),
+    processing_service: ProcessingService = Depends(get_processing_service),
+    orquestador: OrquestadorWebhooks = Depends(get_orquestador_general)
 ):
-    """
-    Endpoint asíncrono. Sube archivos -> Valida -> Lanza proceso en Background -> Retorna ID.
-    """
     job_id = str(uuid.uuid4())
     lista_archivos_trabajo = []
 
-    # 1. Cargar y validar archivos (Streaming a Disco)
     try:
         for archivo in archivos:
             resultado = file_manager.procesar_entrada(archivo)
@@ -51,21 +72,29 @@ async def procesar_pdf_api(
     if not lista_archivos_trabajo:
         raise HTTPException(status_code=400, detail="No se encontraron archivos PDF válidos.")
 
-    # 2. Delegar lógica de negocio al servicio (Background)
+    # DELEGAMOS AL ORQUESTADOR GENERAL
     background_tasks.add_task(
-        processing_service.ejecutar_pipeline_background,
-        job_id,
-        lista_archivos_trabajo
+        orquestador.ejecutar_y_notificar,
+        processing_service.ejecutar_pipeline_background, # 1. La función a ejecutar
+        job_id,                                          # 2. El Job ID
+        webhook_url,                                     # 3. El webhook
+        lista_archivos_trabajo                           # 4. Los *args que necesita tu pipeline
     )
 
     return RespuestaProcesamientoIniciado(
-        mensaje="Procesamiento iniciado. Descarga los resultados usando el job_id.",
+        mensaje="Procesamiento iniciado. Descarga los resultados usando el job_id o espera el webhook.",
         job_id=job_id,
         estatus="procesando"
     )
 
 @router.get("/fluxo/descargar-resultado/{job_id}")
-async def descargar_resultado(job_id: str, formato: str = Query("excel", enum=["excel", "json"])):
+async def descargar_resultado(
+    job_id: str, 
+    formato: str = Query("excel", enum=["excel", "json"]),
+    # --- INYECCIÓN DE DEPENDENCIAS AQUÍ ---
+    storage: StorageService = Depends(get_storage),
+    passport_service: PassportService = Depends(get_passport_service)
+):
     """
     Intenta descargar. Si no está listo, retorna un 202 (Accepted) con el Pasaporte 
     para que el frontend sepa qué mostrar.
@@ -87,8 +116,6 @@ async def descargar_resultado(job_id: str, formato: str = Query("excel", enum=["
     
     if pasaporte:
         # Retornamos 202 Accepted (estándar REST para "estoy en ello")
-        # Y en el body mandamos el JSON del pasaporte para que el usuario vea el avance
-        from fastapi.responses import JSONResponse
         return JSONResponse(
             status_code=202, 
             content={
