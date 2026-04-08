@@ -429,9 +429,9 @@ def test_crear_objeto_resultado_invalido(monkeypatch):
     assert resultado.AnalisisIA is None
 
     assert resultado.DetalleTransacciones is not None
-    assert hasattr(resultado.DetalleTransacciones, "error")
+    assert hasattr(resultado.DetalleTransacciones, "detalle_error")
 
-    assert resultado.DetalleTransacciones.error == "Error estructural: Falla simulada"
+    assert resultado.DetalleTransacciones.detalle_error == "Error estructural: Falla simulada"
 
 # ---- Pruebas para verificar_fecha_comprobante ----
 def test_verificar_fecha_comprobante_valida_reciente():

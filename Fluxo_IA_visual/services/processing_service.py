@@ -162,8 +162,13 @@ class ProcessingService:
                 )
                 
                 resultados_finales[i] = AnalisisTPV.ResultadoExtraccion(
+                    nombre_documento=filename,
+                    estatus_documento="fallido",
                     AnalisisIA=ia_dummy, 
-                    DetalleTransacciones=AnalisisTPV.ErrorRespuesta(error=error_msg)
+                    DetalleTransacciones=AnalisisTPV.ErrorRespuesta(
+                        nombre_documento=filename,
+                        detalle_error=error_msg
+                    )
                 )
                 continue
 
@@ -193,7 +198,14 @@ class ProcessingService:
 
             except Exception as e:
                 logger.error(f"Error separando cuentas {filename}: {e}")
-                resultados_finales[i] = AnalisisTPV.ErrorRespuesta(error="Error interno separando cuentas.")
+                resultados_finales[i] = AnalisisTPV.ResultadoExtraccion(
+                    nombre_documento=filename,
+                    estatus_documento="fallido",
+                    DetalleTransacciones=AnalisisTPV.ErrorRespuesta(
+                        nombre_documento=filename,
+                        detalle_error="Error interno separando cuentas."
+                    )
+                )
 
         # [IMPLEMENTACIÓN DE LÓGICA MATEMÁTICA 1]
         # Recorremos para saber cuántas páginas digitales vamos a procesar y ajustar el tiempo estimado
@@ -466,20 +478,33 @@ class ProcessingService:
         elif not es_mayor: msg = "Monto total insuficiente para procesar OCR (<250k)."
         
         for doc in docs_escaneados:
+            filename = doc.get("filename", "Desconocido")
             resultados_finales[doc["index"]] = AnalisisTPV.ResultadoExtraccion(
+                nombre_documento=filename,
+                estatus_documento="fallido",
                 AnalisisIA=doc["ia_data"],
-                DetalleTransacciones=AnalisisTPV.ErrorRespuesta(error=msg)
+                DetalleTransacciones=AnalisisTPV.ErrorRespuesta(
+                    nombre_documento=filename,
+                    detalle_error=msg
+                )
             )
 
     def _manejar_timeout_ocr(self, tareas_ocr, docs_escaneados, resultados_finales):
-        error_obj = AnalisisTPV.ErrorRespuesta(error="Timeout: Procesamiento OCR excedió 13 min.")
         for index, _ in tareas_ocr:
             # Buscamos la data original para no perder lo que ya teníamos (carátula)
             # Esto es ineficiente O(N), pero N es pequeño (<20)
             doc_data = next((d for d in docs_escaneados if d["index"] == index), None)
             ia_data = doc_data["ia_data"] if doc_data else None
+            filename = doc_data.get("filename", "Desconocido") if doc_data else "Desconocido"
+            
+            error_obj = AnalisisTPV.ErrorRespuesta(
+                nombre_documento=filename,
+                detalle_error="Timeout: Procesamiento OCR excedió 13 min."
+            )
             
             resultados_finales[index] = AnalisisTPV.ResultadoExtraccion(
+                nombre_documento=filename,
+                estatus_documento="fallido",
                 AnalisisIA=ia_data,
                 DetalleTransacciones=error_obj
             )
@@ -505,11 +530,16 @@ class ProcessingService:
                 if isinstance(res, Exception):
                     nombre_arch = contexto.get("filename", str(contexto.get("file_path", "Desconocido")))
                     res_model = AnalisisTPV.ResultadoExtraccion(
+                        nombre_documento=nombre_arch,
+                        estatus_documento="fallido",
                         AnalisisIA=AnalisisTPV.ResultadoAnalisisIA(
                             banco="ERROR_PROCESAMIENTO",
                             nombre_archivo_virtual=nombre_arch
                         ),
-                        DetalleTransacciones=AnalisisTPV.ErrorRespuesta(error=str(res))
+                        DetalleTransacciones=AnalisisTPV.ErrorRespuesta(
+                            nombre_documento=nombre_arch,
+                            detalle_error=str(res)
+                        )
                     )
                     # Inyectar contexto
                     res_model.file_path_origen = contexto["file_path"]
@@ -549,6 +579,8 @@ class ProcessingService:
 
                             # Empaquetar en ResultadoExtraccion
                             item_obj = AnalisisTPV.ResultadoExtraccion(
+                                nombre_documento=contexto.get("filename", "Desconocido"),
+                                estatus_documento="exitoso",
                                 AnalisisIA=analisis_ia,
                                 DetalleTransacciones=detalle_tpv,
                                 metadata_tecnica=[item.get("metricas", {})]
@@ -556,6 +588,8 @@ class ProcessingService:
                         else:
                             # Ya es un objeto (quizás vino de otro lado)
                             item_obj = item
+                            item_obj.nombre_documento = contexto.get("filename", "Desconocido")
+                            item_obj.estatus_documento = "exitoso"
 
                         # AHORA SÍ podemos usar notación de punto
                         item_obj.file_path_origen = contexto["file_path"]
@@ -566,6 +600,13 @@ class ProcessingService:
                 # --- CASO 3: OBJETO ÚNICO ---
                 else:
                     # Asumimos que si no es lista ni Exception, ya es un objeto Pydantic
+                    res.nombre_documento = contexto.get("filename", "Desconocido")
+                    
+                    if isinstance(res.DetalleTransacciones, AnalisisTPV.ErrorRespuesta):
+                        res.estatus_documento = "fallido"
+                    else:
+                        res.estatus_documento = "exitoso"
+                        
                     res.file_path_origen = contexto["file_path"]
                     res.rango_paginas = contexto.get("rango_paginas", (1, 100))
                     res.es_digital = es_digital_flag
