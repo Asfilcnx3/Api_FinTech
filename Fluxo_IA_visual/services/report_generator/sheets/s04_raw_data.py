@@ -5,7 +5,7 @@ def build(ws, data: dict):
     raw_history = data.get("raw_data_history", [])
     
     headers_raw = [
-        "startDate", "Revenue", "Expenses", 
+        "startDate", "Revenue", "Revenue PUE", "Revenue PPD", "Expenses", 
         "Inflows mxn amounts", "Outflows mxn amounts", 
         "NFCF", "Inflows transactions", "Outflows transactions"
     ]
@@ -17,20 +17,24 @@ def build(ws, data: dict):
         ws.append([
             item.get("date"),
             item.get("revenue", 0.0),
+            item.get("revenue_pue", 0.0),
+            item.get("revenue_ppd", 0.0),
             item.get("expenses", 0.0),
             item.get("inflows_amount", 0.0),
             item.get("outflows_amount", 0.0),
             item.get("nfcf", 0.0),
-            item.get("inflows_count", 0),  # Notar que en tu modelo se llamaba _count
+            item.get("inflows_count", 0),  
             item.get("outflows_count", 0)
         ])
 
     # Formatos Raw Data
     ws.column_dimensions['A'].width = 15
-    for i in range(2, 9): 
+    
+    # Ahora vamos hasta la columna 10 (J). chr(64+10) = 'J'
+    for i in range(2, 11): 
         ws.column_dimensions[chr(64+i)].width = 20
     
-    # Moneda para cols B a F (índices 2 al 6)
-    for row in ws.iter_rows(min_row=2, min_col=2, max_col=6):
+    # Moneda para cols B a H (índices 2 al 8)
+    for row in ws.iter_rows(min_row=2, min_col=2, max_col=8):
         for cell in row: 
             cell.number_format = CURRENCY_FORMAT

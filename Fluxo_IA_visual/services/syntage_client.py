@@ -196,10 +196,15 @@ class SyntageClient:
                     if not norm_date: continue
 
                     val = float(item.get("mxnAmount") or item.get("amount") or 0.0)
-                    count = int(item.get("count") or item.get("movements") or 0) # Intentar obtener conteo
+                    count = int(item.get("transactions") or item.get("count") or item.get("movements") or 0)
                     type_str = item.get("type", "total")
                     
                     if endpoint == "cash-flow":
+                        
+                        # # ---> LOG 3: VER LAS LLAVES DEL CASHFLOW <---
+                        # if len(result_map) < 2:  # Solo imprimimos un par para no inundar la consola
+                        #     logger.info(f"DEBUG CASH-FLOW LLAVES: {list(item.keys())} | Valores: {item}")
+                        
                         if norm_date not in result_map: 
                             result_map[norm_date] = {
                                 "in": {"amount": 0.0, "count": 0}, 
@@ -772,6 +777,109 @@ class SyntageClient:
             logger.error(f"Error crítico resolviendo Entity ID: {e}")
             
         return None
+
+    async def get_sales_pue_ppd(self, client: httpx.AsyncClient, entity_id: str) -> Dict[str, Dict[str, float]]:
+        """Obtiene el desglose de ventas por método de pago (PUE / PPD)"""
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=1100)
+        
+        params = {
+            "options[periodicity]": "monthly",
+            "options[type]": "payment-type", # <-- El secreto según el bot
+            "options[from]": start_date.strftime("%Y-%m-%dT00:00:00.000Z"),
+            "options[to]": end_date.strftime("%Y-%m-%dT00:00:00.000Z")
+        }
+        
+        result_map = {}
+        try:
+            url = f"{self.base_url}/entities/{entity_id}/insights/sales-revenue"
+            resp = await client.get(url, params=params, headers=self.headers)
+            
+            if resp.status_code == 200:
+                data = resp.json()
+
+                # # ---> LOG 1: VER EL JSON CRUDO <---
+                # logger.info(f"DEBUG PUE/PPD JSON CRUDO: {str(data)[:800]}")
+
+                items = data if isinstance(data, list) else data.get("hydra:member", []) or data.get("data", [])
+                
+                for item in items:
+                    date_str = item.get("date")
+                    norm_date = self.normalize_syntage_date(date_str)
+
+                    if not norm_date: continue
+                    
+                    if norm_date not in result_map:
+                        result_map[norm_date] = {"PUE": 0.0, "PPD": 0.0}
+                    
+                    # Syntage suele regresar el tipo en un campo "paymentType" o "type"
+                    p_type = str(item.get("groupName") or item.get("paymentType") or item.get("type", "")).upper()
+                    val = float(item.get("mxnAmount") or item.get("amount") or 0.0)
+
+                    # logger.info(f"DEBUG Item PUE/PPD -> date_raw: {date_str}, norm_date: {norm_date}, p_type: {p_type}, val: {val}")
+                    
+                    if "PUE" in p_type:
+                        result_map[norm_date]["PUE"] += val
+                    elif "PPD" in p_type:
+                        result_map[norm_date]["PPD"] += val
+
+        except Exception as e:
+            logger.error(f"Error fetching PUE/PPD: {repr(e)}")
+            
+        return result_map
+    
+    async def get_accounts_receivable_payable(self, client: httpx.AsyncClient, entity_id: str) -> Dict[str, Any]:
+        """Obtiene Cuentas por Cobrar y por Pagar de forma secuencial."""
+        # Podemos pedir los últimos 2 años para tener buen historial
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=730)
+        params = {
+            "options[from]": start_date.strftime("%Y-%m-%dT00:00:00.000Z"),
+            "options[to]": end_date.strftime("%Y-%m-%dT00:00:00.000Z")
+        }
+        
+        result = {"receivable": {}, "payable": {}}
+        try:
+            # 1. Petición de Cuentas por Cobrar
+            r_rec = await client.get(f"{self.base_url}/entities/{entity_id}/insights/accounts-receivable", params=params, headers=self.headers)
+            if r_rec.status_code == 200:
+                result["receivable"] = r_rec.json().get("data", {})
+                
+            # 2. Petición de Cuentas por Pagar
+            r_pay = await client.get(f"{self.base_url}/entities/{entity_id}/insights/accounts-payable", params=params, headers=self.headers)
+            if r_pay.status_code == 200:
+                result["payable"] = r_pay.json().get("data", {})
+                
+        except Exception as e:
+            logger.error(f"Error fetching Accounts Receivable/Payable: {repr(e)}")
+            
+        return result
+
+    async def get_financial_institutions(self, client: httpx.AsyncClient, entity_id: str) -> List[Dict]:
+        """Obtiene las instituciones financieras con las que opera, buscando 3 años atrás."""
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=1095) # 3 años
+        
+        params = {
+            "options[from]": start_date.strftime("%Y-%m-%dT00:00:00.000Z"),
+            "options[to]": end_date.strftime("%Y-%m-%dT00:00:00.000Z")
+        }
+        
+        try:
+            url = f"{self.base_url}/entities/{entity_id}/insights/financial-institutions"
+            resp = await client.get(url, params=params, headers=self.headers)
+            
+            if resp.status_code == 200:
+                data = resp.json()
+                # Retorna la lista que viene dentro de "data"
+                return data.get("data", [])
+            else:
+                logger.warning(f"Error HTTP {resp.status_code} al obtener Instituciones Financieras.")
+                
+        except Exception as e:
+            logger.error(f"Error fetching Financial Institutions: {repr(e)}")
+            
+        return []
 
     # --- HELPERS DE PARSING ---
     @staticmethod

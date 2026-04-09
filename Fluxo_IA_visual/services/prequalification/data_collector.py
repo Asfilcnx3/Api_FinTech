@@ -85,7 +85,10 @@ class DataCollectorService:
                     raw_blacklist,
                     raw_rpc,
                     raw_rug,
-                    raw_compliance_pdf
+                    raw_compliance_pdf,
+                    raw_sales_pue_ppd,
+                    raw_accounts_rp,
+                    raw_financial_institutions
                 ) = await asyncio.gather(
                     self.client_repo.get_buro_report_status(client, entity_id, rfc),
                     self.client_repo.get_network_data(client, entity_id, "customer-network"),
@@ -96,7 +99,10 @@ class DataCollectorService:
                     self.client_repo.get_invoicing_blacklist(client, entity_id),
                     self.client_repo.get_rpc_records(client, entity_id),
                     self.client_repo.get_rug_records(client, entity_id),
-                    fetch_pdf()
+                    fetch_pdf(),
+                    self.client_repo.get_sales_pue_ppd(client, entity_id),
+                    self.client_repo.get_accounts_receivable_payable(client, entity_id),
+                    self.client_repo.get_financial_institutions(client, entity_id)
                 )
                 
                 raw_data["buro_data"] = buro_data
@@ -109,6 +115,9 @@ class DataCollectorService:
                 raw_data["raw_rpc"] = raw_rpc
                 raw_data["raw_rug"] = raw_rug
                 raw_data["raw_compliance_pdf"] = raw_compliance_pdf
+                raw_data["raw_sales_pue_ppd"] = raw_sales_pue_ppd
+                raw_data["raw_accounts_rp"] = raw_accounts_rp
+                raw_data["raw_financial_institutions"] = raw_financial_institutions
             
                 # --- OLA 3: Enriquecer Lista Negra con Montos de Facturas ---
                 if raw_blacklist:
@@ -154,5 +163,8 @@ class DataCollectorService:
                 raw_data["raw_rpc"] = []
                 raw_data["raw_rug"] = []
                 raw_data["raw_compliance_pdf"] = b""
+                raw_data["raw_sales_pue_ppd"] = {}
+                raw_data["raw_accounts_rp"] = {}
+                raw_data["raw_financial_institutions"] = []
 
         return raw_data

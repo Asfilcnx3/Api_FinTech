@@ -1,4 +1,4 @@
-# Concentración, Redes de Clientes/Proveedores# Fluxo_IA_visual/services/prequalification/processors/network_processor.py
+# Fluxo_IA_visual/services/prequalification/processors/network_processor.py
 from typing import Dict, Any, List
 import logging
 from datetime import datetime
@@ -25,6 +25,10 @@ class NetworkProcessor:
         # 2. Redes Completas (Networks)
         raw_customer_net = raw_data.get("raw_customer_net", [])
         raw_vendor_net = raw_data.get("raw_vendor_net", [])
+
+        # 3. Instituciones Financieras
+        raw_institutions = raw_data.get("raw_financial_institutions", [])
+        fin_institutions = self._process_financial_institutions(raw_institutions)
         
         networks = PrequalificationResponse.NetworksData(
             customers=self._map_nodes(
@@ -45,7 +49,8 @@ class NetworkProcessor:
         
         return {
             "concentration_last_12m": concentration,
-            "networks_data": networks
+            "networks_data": networks,
+            "financial_institutions": fin_institutions 
         }
 
     def _to_concentration_item(self, item: Dict) -> PrequalificationResponse.ConcentrationItem:
@@ -131,3 +136,43 @@ class NetworkProcessor:
                 days_outstanding=safe_float(item.get(days_key))
             ))
         return nodes
+
+    def _process_financial_institutions(self, raw_list: Any) -> List[PrequalificationResponse.FinancialInstitution]:
+        institutions = []
+        if not isinstance(raw_list, list): 
+            return institutions
+            
+        for item in raw_list:
+            if not isinstance(item, dict): continue
+            
+            # Extraer transacciones
+            raw_tx = item.get("transactions", [])
+            
+            # 1. Filtrar transacciones reales (donde el total sea mayor a 0)
+            valid_tx = [
+                t for t in raw_tx 
+                if isinstance(t, dict) and float(t.get("total", 0.0)) > 0
+            ]
+            
+            # 2. Ordenar cronológicamente por fecha (ej. "2024-01")
+            valid_tx.sort(key=lambda x: str(x.get("date", "")))
+            
+            # 3. Extraer primera y última
+            first_date = valid_tx[0].get("date") if valid_tx else "N/A"
+            last_date = valid_tx[-1].get("date") if valid_tx else "N/A"
+            
+            institutions.append(PrequalificationResponse.FinancialInstitution(
+                rfc=str(item.get("rfc", "N/A")),
+                legal_name=str(item.get("legalName", "N/A")),
+                trade_name=str(item.get("tradeName", "N/A")),
+                website=str(item.get("website", "N/A")),
+                sector=str(item.get("sector", "N/A")),
+                total_amount=float(item.get("total", 0.0)),
+                first_transaction_date=str(first_date),
+                last_transaction_date=str(last_date),
+                transaction_count=len(valid_tx)
+            ))
+            
+        # Ordenar la lista final por monto total (de mayor a menor)
+        institutions.sort(key=lambda x: x.total_amount, reverse=True)
+        return institutions
