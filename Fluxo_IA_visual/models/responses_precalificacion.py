@@ -283,6 +283,8 @@ class PrequalificationResponse(BaseModel):
         """Modelo para la nueva hoja de Raw Data"""
         date: str  # YYYY-MM-DD
         revenue: float = 0.0
+        revenue_pue: float = 0.0
+        revenue_ppd: float = 0.0
         expenses: float = 0.0
         inflows_amount: float = 0.0
         outflows_amount: float = 0.0
@@ -372,6 +374,32 @@ class PrequalificationResponse(BaseModel):
         """Contenedor para la nueva hoja de Legal / Registros"""
         rpc_records: List["PrequalificationResponse.RpcRecord"] = []
         rug_records: List["PrequalificationResponse.RugRecord"] = []
+    
+    class AccountRecord(BaseModel):
+        start_date: str
+        metric: float
+        label: str
+
+    class AccountsData(BaseModel):
+        non_cumulative: List["PrequalificationResponse.AccountRecord"] = []
+        cumulative: List["PrequalificationResponse.AccountRecord"] = []
+
+    class AccountsReceivablePayable(BaseModel):
+        receivable: "PrequalificationResponse.AccountsData"
+        payable: "PrequalificationResponse.AccountsData"
+
+    class FinancialInstitution(BaseModel):
+        rfc: str
+        legal_name: str
+        trade_name: str
+        website: str
+        sector: str
+        total_amount: float
+        
+        # Campos para calculos
+        first_transaction_date: str = "N/A"
+        last_transaction_date: str = "N/A"
+        transaction_count: int = 0
 
     class PrequalificationFinalResponse(BaseModel):
         rfc: str
@@ -414,3 +442,9 @@ class PrequalificationResponse(BaseModel):
 
         # Hoja de Registros
         registry_data: Optional["PrequalificationResponse.RegistryData"] = None
+
+        # Hoja de Cuentas por Cobrar y Pagar
+        accounts_receivable_payable: Optional["PrequalificationResponse.AccountsReceivablePayable"] = None
+
+        # Hoja de Instituciones Financieras
+        financial_institutions: List["PrequalificationResponse.FinancialInstitution"] = []

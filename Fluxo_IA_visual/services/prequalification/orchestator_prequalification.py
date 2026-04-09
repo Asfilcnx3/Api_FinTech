@@ -80,6 +80,7 @@ class PrequalificationOrchestrator:
             financial_ratios_history=financial_payload["financial_ratios_history"],
             financial_statements_tree=financial_payload["financial_statements_tree"],
             raw_data_history=financial_payload["raw_data_history"],
+            accounts_receivable_payable=financial_payload["accounts_receivable_payable"],
             
             financial_predictions=forecast
         )

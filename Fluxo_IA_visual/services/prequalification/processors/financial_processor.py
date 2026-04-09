@@ -20,7 +20,9 @@ class FinancialProcessor:
         logger.info(f"[{raw_data.get('rfc')}] Procesando Finanzas y Series de Tiempo...")
         
         raw_cashflow = raw_data.get("raw_cashflow", {})
+        raw_accounts_rp = raw_data.get("raw_accounts_rp", {})
         raw_sales = raw_data.get("raw_sales", {})
+        raw_sales_pue_ppd = raw_data.get("raw_sales_pue_ppd", {})
         raw_expenditures = raw_data.get("raw_expenditures", {})
         financial_tree = raw_data.get("financial_tree", {})
         
@@ -32,8 +34,11 @@ class FinancialProcessor:
         
         # 3. Preparación Histórica para Forecaster y Excel (Raw Data)
         raw_history_list, simple_sales, simple_exp, simple_in, simple_out = self._prepare_time_series(
-            raw_cashflow, raw_sales, raw_expenditures
+            raw_cashflow, raw_sales, raw_expenditures, raw_sales_pue_ppd 
         )
+
+        # 4. Mapear Cuentas por Cobrar y Pagar
+        accounts_rp_data = self._process_accounts_rp(raw_accounts_rp)
         
         return {
             "stats_last_months": stats_windows,
@@ -45,16 +50,18 @@ class FinancialProcessor:
             "simple_sales": simple_sales,
             "simple_exp": simple_exp,
             "simple_in": simple_in,
-            "simple_out": simple_out
+            "simple_out": simple_out,
+            "accounts_receivable_payable": accounts_rp_data
         }
 
     # =========================================================
     # LÓGICAS INTERNAS (Copiadas tal cual de tu versión anterior)
     # =========================================================
     
-    def _prepare_time_series(self, raw_cashflow, raw_sales, raw_expenditures):
+    def _prepare_time_series(self, raw_cashflow, raw_sales, raw_expenditures, raw_sales_pue_ppd):
         """Aplana la serie de tiempo para el excel y para el forecaster."""
-        all_dates = set(raw_cashflow.keys()) | set(raw_sales.keys()) | set(raw_expenditures.keys())
+        # A la hora de unir fechas, puedes incluir las del nuevo mapa por seguridad:
+        all_dates = set(raw_cashflow.keys()) | set(raw_sales.keys()) | set(raw_expenditures.keys()) | set(raw_sales_pue_ppd.keys())
         sorted_dates = sorted(list(all_dates))
         
         raw_history_list = []
@@ -76,11 +83,21 @@ class FinancialProcessor:
             
             inf_cnt = int(cf_obj["in"].get("count", 0))
             out_cnt = int(cf_obj["out"].get("count", 0))
+
+            pue_ppd_obj = raw_sales_pue_ppd.get(d, {"PUE": 0.0, "PPD": 0.0})
+            rev_pue = float(pue_ppd_obj.get("PUE", 0.0))
+            rev_ppd = float(pue_ppd_obj.get("PPD", 0.0))
             
             raw_history_list.append(PrequalificationResponse.RawDataPoint(
-                date=d, revenue=rev, expenses=exp,
-                inflows_amount=inf_amt, outflows_amount=out_amt, nfcf=nfcf,
-                inflows_count=inf_cnt, outflows_count=out_cnt
+                date=d, revenue=rev, 
+                revenue_pue=rev_pue,
+                revenue_ppd=rev_ppd,
+                expenses=exp,
+                inflows_amount=inf_amt, 
+                outflows_amount=out_amt, 
+                nfcf=nfcf,
+                inflows_count=inf_cnt, 
+                outflows_count=out_cnt
             ))
 
             simple_sales[d] = rev
@@ -270,4 +287,27 @@ class FinancialProcessor:
             last_9_months=calc_group(9),
             last_6_months=calc_group(6),
             last_3_months=calc_group(3)
+        )
+
+    def _process_accounts_rp(self, raw_accounts: Dict[str, Any]) -> PrequalificationResponse.AccountsReceivablePayable:
+        def map_data(node: Dict):
+            if not isinstance(node, dict): return PrequalificationResponse.AccountsData()
+            
+            non_cum = [PrequalificationResponse.AccountRecord(
+                start_date=str(i.get("startDate", ""))[:10], # Cortar a YYYY-MM-DD
+                metric=float(i.get("metric", 0.0)), 
+                label=str(i.get("label", ""))
+            ) for i in node.get("nonCumulative", []) if isinstance(i, dict)]
+            
+            cum = [PrequalificationResponse.AccountRecord(
+                start_date=str(i.get("startDate", ""))[:10], 
+                metric=float(i.get("metric", 0.0)), 
+                label=str(i.get("label", ""))
+            ) for i in node.get("cumulative", []) if isinstance(i, dict)]
+            
+            return PrequalificationResponse.AccountsData(non_cumulative=non_cum, cumulative=cum)
+
+        return PrequalificationResponse.AccountsReceivablePayable(
+            receivable=map_data(raw_accounts.get("receivable", {})),
+            payable=map_data(raw_accounts.get("payable", {}))
         )

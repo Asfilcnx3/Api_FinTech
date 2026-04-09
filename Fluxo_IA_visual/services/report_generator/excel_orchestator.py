@@ -14,6 +14,8 @@ from .sheets import s08_products_services
 from .sheets import s09_rpc_rug
 from .sheets import s10_compliance
 from .sheets import s11_concentration_history
+from .sheets import s12_accounts_rec_pay
+from .sheets import s13_financial_institutions
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +45,8 @@ class ExcelReportBuilder:
         ws9 = self.wb.create_sheet("Registros Públicos")
         ws10 = self.wb.create_sheet("Opinión Cumplimiento 32-D")
         ws11 = self.wb.create_sheet("Concentración Comercial")
+        ws12 = self.wb.create_sheet("CxC y CxP")
+        ws13 = self.wb.create_sheet("Instituciones Financieras")
 
         # 2. Ejecutar los builders de cada hoja pasándoles su Worksheet y la Data
         # Descomentaremos estas líneas en las siguientes fases
@@ -58,6 +62,8 @@ class ExcelReportBuilder:
         s09_rpc_rug.build(ws9, self.data)
         s10_compliance.build(ws10, self.data)
         s11_concentration_history.build(ws11, self.data)
+        s12_accounts_rec_pay.build(ws12, self.data)
+        s13_financial_institutions.build(ws13, self.data)
 
         # 3. Guardar en memoria y retornar bytes
         output = io.BytesIO()
