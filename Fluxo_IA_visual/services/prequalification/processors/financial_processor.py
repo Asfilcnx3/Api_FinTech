@@ -30,7 +30,7 @@ class FinancialProcessor:
         stats_windows = self._calculate_advanced_stats(raw_cashflow, raw_sales, raw_expenditures)
         
         # 2. Árbol Financiero y Ratios
-        financial_ratios = self._process_financial_statements(financial_tree)
+        financial_ratios = self._process_financial_statements(financial_tree, raw_cashflow)
         
         # 3. Preparación Histórica para Forecaster y Excel (Raw Data)
         raw_history_list, simple_sales, simple_exp, simple_in, simple_out = self._prepare_time_series(
@@ -107,16 +107,15 @@ class FinancialProcessor:
             
         return raw_history_list, simple_sales, simple_exp, simple_in, simple_out
 
-    def _process_financial_statements(self, tree: Dict[str, Any]) -> List[PrequalificationResponse.FinancialRatioYear]:
-        """Extrae el árbol usando métodos del cliente y lo pasa a la calculadora."""
+    def _process_financial_statements(self, tree: Dict[str, Any], raw_cashflow: Dict[str, Any]) -> List[PrequalificationResponse.FinancialRatioYear]:
         bs_tree = tree.get("balance_sheet", {})
         is_tree = tree.get("income_statement", {})
 
+        # --- 1. EXTRACCIÓN DEL ÁRBOL ---
         assets = SyntageClient.parse_values_from_tree(bs_tree, ["Activo", "Total Activo"])
         liabilities = SyntageClient.parse_values_from_tree(bs_tree, ["Pasivo", "Total Pasivo"])
-        equity = SyntageClient.parse_values_from_tree(bs_tree, ["capital contable", "total capital", "capital"])
+        equity = SyntageClient.parse_values_from_tree(bs_tree, ["Capital contable", "Total capital", "Capital"])
         
-        # --- EXTRACCIÓN DEL DESGLOSE ---
         assets_st = SyntageClient.parse_values_from_tree(bs_tree, ["Activo a corto plazo"])
         assets_lt = SyntageClient.parse_values_from_tree(bs_tree, ["Activo a largo plazo"])
         liabilities_st = SyntageClient.parse_values_from_tree(bs_tree, ["Pasivo a corto plazo"])
@@ -133,6 +132,16 @@ class FinancialProcessor:
         ebit_loss = SyntageClient.parse_values_from_tree(is_tree, ["Pérdida de operación"])
         ebt_profit = SyntageClient.parse_values_from_tree(is_tree, ["Utilidad antes de Impuestos a la utilidad", "Utilidad antes de impuestos", "EBT"])
         ebt_loss = SyntageClient.parse_values_from_tree(is_tree, ["Pérdida antes de Impuestos a la utilidad", "Pérdida antes de impuestos"])
+
+        # CUENTAS CONTABLES PARA RATIOS
+        cash_eq = SyntageClient.parse_values_from_tree(bs_tree, ["Efectivo y equivalentes de efectivo"])
+        inventory = SyntageClient.parse_values_from_tree(bs_tree, ["Inventarios"])
+        accounts_rec = SyntageClient.parse_values_from_tree(bs_tree, ["Cuentas y documentos por cobrar", "Clientes"])
+        accounts_pay = SyntageClient.parse_values_from_tree(bs_tree, ["Cuentas y documentos por pagar", "Proveedores"])
+        fixed_assets = SyntageClient.parse_values_from_tree(bs_tree, ["Propiedades, plantas y equipo", "Propiedades, planta y equipo"])
+        retained_earnings = SyntageClient.parse_values_from_tree(bs_tree, ["Utilidades acumuladas"])
+        cogs = SyntageClient.parse_values_from_tree(is_tree, ["Costo de ventas"])
+        interest_exp = SyntageClient.parse_values_from_tree(is_tree, ["Gastos por intereses", "Gastos Financieros"])
 
         valid_years = set()
         candidates = set(assets.keys()) | set(revenue.keys()) | set(ebit_profit.keys())
@@ -151,8 +160,15 @@ class FinancialProcessor:
             raw_ebt_p = ebt_profit.get(year, 0.0)
             raw_ebt_l = ebt_loss.get(year, 0.0)
             ebt = raw_ebt_p - raw_ebt_l
-            
             calculated_taxes = round(ebt - net_income, 2)
+
+            # --- CÁLCULO DEL FLUJO OPERATIVO DE CAJA ANUAL ---
+            ocf_year = 0.0
+            for d_key, d_val in raw_cashflow.items():
+                if str(d_key).startswith(year): # Suma todos los meses que empiecen con "2023", etc.
+                    inf = float(d_val.get("in", {}).get("amount", 0.0))
+                    outf = float(d_val.get("out", {}).get("amount", 0.0))
+                    ocf_year += (inf - outf)
 
             year_input = PrequalificationResponse.FinancialYearInput(
                 year=year,
@@ -168,11 +184,24 @@ class FinancialProcessor:
                 ebit_profit=ebit_profit.get(year, 0.0),
                 ebit_loss=ebit_loss.get(year, 0.0),
                 ebt_profit=raw_ebt_p,
-                ebt_loss=raw_ebt_l
+                ebt_loss=raw_ebt_l,
+                
+                # Cuentas circulantes y para ratios
+                current_assets=assets_st.get(year, 0.0),
+                current_liabilities=liabilities_st.get(year, 0.0),
+                cash_and_equivalents=cash_eq.get(year, 0.0),
+                inventory=inventory.get(year, 0.0),
+                accounts_receivable=accounts_rec.get(year, 0.0),
+                accounts_payable=accounts_pay.get(year, 0.0),
+                fixed_assets=fixed_assets.get(year, 0.0),
+                retained_earnings=retained_earnings.get(year, 0.0),
+                cogs=cogs.get(year, 0.0),
+                interest_expense=interest_exp.get(year, 0.0),
+                operating_cash_flow=ocf_year
             )
             ratios = self.calculator.calculate_ratios_for_year(year_input)
             
-            # --- INYECCIÓN DEL DESGLOSE ---
+            # --- INYECCIÓN DE DATOS EXTRA AL RESULTADO FINAL ---
             ratios.input_assets_short_term = assets_st.get(year, 0.0)
             ratios.input_assets_long_term = assets_lt.get(year, 0.0)
             ratios.input_liabilities_short_term = liabilities_st.get(year, 0.0)
@@ -227,12 +256,15 @@ class FinancialProcessor:
                 mean_val = statistics.mean(vals_curr) if vals_curr else 0.0
                 median_val = statistics.median(vals_curr) if vals_curr else 0.0
                 
-                sum_curr = sum(vals_curr)
-                sum_prev = sum(vals_prev) if prev_window else 0.0
+                sum_curr = sum(vals_curr) # Suma total del periodo actual
+                sum_prev = sum(vals_prev) if prev_window else 0.0 # Suma total del periodo anterior equivalente
                 
+                # Cálculo de crecimiento porcentual del periodo actual vs anterior
+                # Se compara la suma total del periodo actual con la suma total del periodo anterior equivalente (ej: últimos 6 meses vs 6 meses anteriores)
                 period_growth = None 
                 if prev_window:
                     if sum_prev != 0:
+                        # (Actual - Anterior) / Anterior
                         period_growth = (sum_curr - sum_prev) / abs(sum_prev)
                     else:
                         period_growth = 1.0 if sum_curr > 0 else 0.0

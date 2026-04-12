@@ -146,10 +146,11 @@ class DataCollectorService:
                         
                         # Disparamos todas las sumas al mismo tiempo
                         if tasks:
-                            resultados_montos = await asyncio.gather(*tasks)
+                            resultados_facturas = await asyncio.gather(*tasks)
                             # Inyectamos el resultado directamente en el diccionario crudo original
-                            for meta_item, monto_total in zip(task_meta, resultados_montos):
+                            for meta_item, (monto_total, ultima_fecha) in zip(task_meta, resultados_facturas):
                                 meta_item["monto_acumulado"] = monto_total
+                                meta_item["ultima_factura_fecha"] = ultima_fecha
 
             else:
                 logger.warning(f"[{rfc}] Omitiendo OLA 2: No se encontró Entity ID.")

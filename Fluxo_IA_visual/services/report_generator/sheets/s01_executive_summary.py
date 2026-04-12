@@ -75,11 +75,11 @@ def build(ws, data: dict):
         ws.append([])
         ws.append(["CONTRAPARTES EN LISTA NEGRA (69-B SAT)"])
         fila_bl = ws.max_row
-        ws.merge_cells(f'A{fila_bl}:E{fila_bl}')
-        aplicar_estilo_header(ws, fila_bl, 1, 5)
+        ws.merge_cells(f'A{fila_bl}:F{fila_bl}')
+        aplicar_estilo_header(ws, fila_bl, 1, 6)
         
-        ws.append(["RFC", "Razón Social", "Estatus SAT", "Facturas (Emit. / Recib.)", "Monto Total Involucrado"])
-        aplicar_estilo_header(ws, ws.max_row, 1, 5)
+        ws.append(["RFC", "Razón Social", "Estatus SAT", "Última Factura", "Facturas (Emit. / Recib.)", "Monto Total Involucrado"])
+        aplicar_estilo_header(ws, ws.max_row, 1, 6)
         
         # Traductor de estatus para que el analista lo lea en español
         status_map = {
@@ -102,30 +102,41 @@ def build(ws, data: dict):
             # Sumamos lo que le compramos y lo que le vendimos para ver el riesgo total
             monto_total = float(b.get("issued_amount", 0.0)) + float(b.get("received_amount", 0.0))
             
-            ws.append([b_rfc, b_name, b_status_es, apariciones, monto_total])
+            ultima_fecha = b.get("last_invoice_date", "N/A")
             
-            # Formato de Moneda
-            ws.cell(row=ws.max_row, column=5).number_format = CURRENCY_FORMAT
+            # Intentar acceder como objeto primero, luego como dict
+            try: ultima_fecha = b.last_invoice_date
+            except: ultima_fecha = b.get("last_invoice_date", "N/A")
+
+            ws.append([b_rfc, b_name, b_status_es, ultima_fecha, apariciones, monto_total])
+            
+            # Formato de Moneda (ahora en la columna 6)
+            ws.cell(row=ws.max_row, column=6).number_format = CURRENCY_FORMAT
             
             # Alerta visual en rojo
             if b_status_raw in ["definitive", "presumed"]:
                 ws.cell(row=ws.max_row, column=3).fill = ALERT_FILL
                 
-        # Aseguramos que la columna nueva tenga buen ancho
-        ws.column_dimensions['E'].width = 25
+        # Aseguramos anchos
+        ws.column_dimensions['B'].width = 30
+        ws.column_dimensions['D'].width = 15 # Última factura
+        ws.column_dimensions['F'].width = 25 # Monto total
 
     # 4. ACTIVIDADES ECONÓMICAS
     ws.append([])
     ws.append(["ACTIVIDADES ECONÓMICAS"])
     ws.merge_cells(f'A{ws.max_row}:D{ws.max_row}')
     aplicar_estilo_header(ws, ws.max_row, 1, 4)
-    ws.append(["Actividad", "Porcentaje", "Fecha Inicio", ""])
+    
+    ws.append(["Actividad", "Porcentaje", "Fecha Inicio", "Antigüedad (Años)"])
+    aplicar_estilo_subheader(ws, ws.max_row, 1, 4) # Le ponemos estilo al subheader
     
     acts = data.get("economic_activities", [])
     
     # Regex para detectar caracteres de control ilegales en XML/Excel
     ILLEGAL_CHARACTERS_RE = re.compile(r'[\000-\010]|[\013-\014]|[\016-\037]')
 
+    start_row = ws.max_row + 1    
     for act in acts:
         pct_str = f"{act.get('percentage', 0)}%"
         
@@ -138,36 +149,29 @@ def build(ws, data: dict):
         # 3. Quitamos saltos de línea y espacios múltiples para que se vea limpio
         clean_name = " ".join(clean_name.split())
         
-        ws.append([clean_name, pct_str, act.get("start_date"), ""])# 4. ACTIVIDADES ECONÓMICAS
+        # 4. Extraemos seniority_years y lo ponemos en la 4ta columna
+        antiguedad = act.get("seniority_years", 0)
+        
+        ws.append([clean_name, pct_str, act.get("start_date"), antiguedad])
+    
+    end_row = ws.max_row
+    
     ws.append([])
-    ws.append(["ACTIVIDADES ECONÓMICAS"])
-    ws.merge_cells(f'A{ws.max_row}:D{ws.max_row}')
-    aplicar_estilo_header(ws, ws.max_row, 1, 4)
-    ws.append(["Actividad", "Porcentaje", "Fecha Inicio", ""])
-    
-    acts = data.get("economic_activities", [])
-    
-    # Regex para detectar caracteres de control ilegales en XML/Excel
-    ILLEGAL_CHARACTERS_RE = re.compile(r'[\000-\010]|[\013-\014]|[\016-\037]')
 
-    for act in acts:
-        pct_str = f"{act.get('percentage', 0)}%"
-        
-        # 1. Obtenemos el texto crudo
-        raw_name = str(act.get("name", "N/A"))
-        
-        # 2. Eliminamos caracteres ilegales
-        clean_name = ILLEGAL_CHARACTERS_RE.sub("", raw_name)
-        
-        # 3. Quitamos saltos de línea y espacios múltiples para que se vea limpio
-        clean_name = " ".join(clean_name.split())
-        
-        ws.append([clean_name, pct_str, act.get("start_date"), ""])
-
-    ws.column_dimensions['A'].width = 30
-    ws.column_dimensions['B'].width = 20
-    ws.column_dimensions['C'].width = 20
-    ws.column_dimensions['D'].width = 20
+    ws.column_dimensions['A'].width = 40
+    ws.column_dimensions['B'].width = 15
+    ws.column_dimensions['C'].width = 15
+    ws.column_dimensions['D'].width = 20 # Espacio para "Antigüedad (Años)"
+    
+    # Centramos los datos de Porcentaje, Fecha y Antigüedad para que se vea más profesional
+    for row in ws.iter_rows(
+        min_row=start_row,
+        max_row=end_row,
+        min_col=2,
+        max_col=4
+    ):
+        for cell in row:
+            cell.alignment = Alignment(horizontal='center')
 
     # 4.5 EVOLUCIÓN DE EMPLEADOS (NUEVO RECUADRO)
     ws.append([])
@@ -316,3 +320,32 @@ def build(ws, data: dict):
         print_fin_row("Utilidad (Pérdida) antes de Impuestos", "ebt")
         print_fin_row("Impuestos a la Utilidad", "input_taxes")
         print_fin_row("Utilidad (Pérdida) Neta", "input_net_income", is_bold=True)
+    
+    # 7. RESUMEN DE INSTITUCIONES FINANCIERAS
+
+    institutions = data.get("financial_institutions", [])
+    if institutions:
+        ws.append([])
+        ws.append(["RESUMEN DE INSTITUCIONES FINANCIERAS (TOP 10)"])
+        ws.merge_cells(f'A{ws.max_row}:B{ws.max_row}')
+        aplicar_estilo_header(ws, ws.max_row, 1, 2)
+        
+        ws.append(["Institución Financiera", "Última Transacción"])
+        aplicar_estilo_subheader(ws, ws.max_row, 1, 2)
+        
+        # Mostramos solo las 10 principales para no saturar la carátula
+        for inst in institutions[:10]:
+            try:
+                # Preferimos el nombre comercial si existe y no es "N/A"
+                nombre = inst.trade_name if inst.trade_name and inst.trade_name != "N/A" else inst.legal_name
+                ultima_fecha = inst.last_transaction_date
+            except AttributeError:
+                # Fallback por si llega como diccionario
+                t_name = inst.get("trade_name")
+                nombre = t_name if t_name and t_name != "N/A" else inst.get("legal_name")
+                ultima_fecha = inst.get("last_transaction_date")
+                
+            ws.append([nombre, ultima_fecha, "", ""])
+            
+            # Centramos la fecha para que se vea ordenado
+            ws.cell(row=ws.max_row, column=2).alignment = Alignment(horizontal='center')

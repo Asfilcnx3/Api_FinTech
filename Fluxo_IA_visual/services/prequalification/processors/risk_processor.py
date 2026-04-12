@@ -2,6 +2,7 @@
 from typing import Dict, Any, List
 import logging
 import json
+from datetime import datetime
 from ....models.responses_precalificacion import PrequalificationResponse
 from ...ia_extractor import analizar_gpt_fluxo
 from ....utils.helpers_texto_precalificación import prompt_32d
@@ -58,6 +59,7 @@ class RiskProcessor:
                 # Extraemos las facturas y el monto que la OLA 3 nos inyectó
                 count = int(item.get("invoices", 0))
                 monto = float(item.get("monto_acumulado", 0.0))
+                fecha_factura = item.get("ultima_factura_fecha", "N/A") 
                 
                 # Sumamos a la cubeta correspondiente
                 if category == "issued":
@@ -66,6 +68,11 @@ class RiskProcessor:
                 else:
                     dict_counterparties[rfc_val]["received_count"] += count
                     dict_counterparties[rfc_val]["received_amount"] += monto
+                    
+                # Guardar la fecha (si no existía una o si la nueva es mayor cronológicamente)
+                fecha_actual = dict_counterparties[rfc_val].get("last_invoice_date", "N/A")
+                if fecha_actual == "N/A" or (fecha_factura != "N/A" and fecha_factura > fecha_actual):
+                    dict_counterparties[rfc_val]["last_invoice_date"] = fecha_factura
 
         # Convertimos el diccionario agrupado al modelo Pydantic
         blacklisted_counterparties = [
@@ -113,10 +120,32 @@ class RiskProcessor:
             ]
         )
 
+        # CÁLCULO DE ANTIGÜEDAD DE ACTIVIDADES
+        processed_activities = []
+        ahora = datetime.now()
+        
+        for act in activities:
+            start_date_str = act.get("start_date")
+            antiguedad = 0
+            
+            if start_date_str:
+                try:
+                    # Parsear la fecha (cortamos a 10 chars por si trae horas YYYY-MM-DD)
+                    dt_start = datetime.strptime(str(start_date_str)[:10], "%Y-%m-%d")
+                    # Calculamos los años exactos (restando 1 si aún no pasa su mes/día de aniversario este año)
+                    antiguedad = ahora.year - dt_start.year - ((ahora.month, ahora.day) < (dt_start.month, dt_start.day))
+                except Exception as e:
+                    logger.warning(f"Error parseando fecha de actividad '{start_date_str}': {e}")
+                    
+            processed_activities.append(PrequalificationResponse.EconomicActivity(
+                name=act.get("name", "N/A"),
+                percentage=float(act.get("percentage", 0.0)),
+                start_date=start_date_str,
+                seniority_years=antiguedad
+            ))
+
         return {
-            "economic_activities": [
-                PrequalificationResponse.EconomicActivity(**act) for act in activities
-            ],
+            "economic_activities": processed_activities,
             "risk_indicators": raw_data.get("risks", []),
             "employee_metrics": self._process_employees(raw_employees),
             "blacklisted_counterparties": blacklisted_counterparties,

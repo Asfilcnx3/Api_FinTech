@@ -22,7 +22,7 @@ def build(ws, data: dict):
     conceptos_financieros = [
         ("--- DATOS CONSOLIDADOS ---", None),
         ("Activos Totales", "input_assets"),
-        ("Pasivo Total", "input_liabilities"),           
+        ("Pasivo Total", "input_liabilities"),            
         ("Capital Contable (Equity)", "input_equity"),
         ("Ingresos Netos (Revenue)", "input_revenue"),
         ("Utilidad (Pérdida) Bruta", "input_gross_profit"), 
@@ -33,19 +33,55 @@ def build(ws, data: dict):
         ("NOPAT", "nopat"),
         
         ("", None), 
+        ("--- LIQUIDEZ ---", None),
+        ("Razón Actual (Circulante)", "current_ratio"),
+        ("Prueba del Ácido", "quick_ratio"),
+        ("Liquidez Inmediata", "cash_ratio"),
+
+        ("", None), 
+        ("--- RENDIMIENTO SOBRE LA INVERSIÓN (ROI) ---", None),
+        ("Rendimiento del Capital (ROE)", "roe"),
+        ("Rendimiento de los Activos (ROA)", "roa"),
+        ("Rendimiento Activos (Estrategia Fiscal)", "roa_tax_strategy"),
+        ("Margen de Utilidad Neta (%)", "net_profit_margin_percent"),
+
+        ("", None), 
+        ("--- ESTRUCTURA DE CAPITAL Y SOLVENCIA ---", None),
+        ("Apalancamiento", "leverage"),
+        ("Endeudamiento", "debt_ratio"),
+        ("Cobertura de Intereses", "interest_coverage"),
+
+        ("", None), 
+        ("--- FLUJO DE FONDOS ---", None),
+        ("Flujo Operativo de Caja", "operating_cash_flow"),
+        ("Cobertura de Flujo", "cash_flow_coverage"),
+        ("Capital de Trabajo", "working_capital"),
+
+        ("", None), 
+        ("--- DESEMPEÑO DE LA OPERACIÓN ---", None),
+        ("Rotación de Inventario (Días - DIO)", "dio"),
+        ("Rotación de CxC (Días - DSO)", "dso"),
+        ("Rotación de CxP (Días - DPO)", "dpo"),
+        ("Rotación de Activo Fijo", "fixed_asset_turnover"),
+        ("Rotación de Activo Total", "total_asset_turnover"),
+        ("Indicador de Altman (Z-Score)", "altman_z_score"),
+
+        ("", None), 
         ("--- DATOS CRUDOS EXTRAÍDOS ---", None),
         ("Utilidad Neta (Crudo)", "raw_net_profit"),
         ("Pérdida Neta (Crudo)", "raw_net_loss"),
         ("Utilidad Operativa (Crudo)", "raw_ebit_profit"),
         ("Pérdida Operativa (Crudo)", "raw_ebit_loss"),
         ("Utilidad antes de Imp. (Crudo)", "raw_ebt_profit"),
-        ("Pérdida antes de Imp. (Crudo)", "raw_ebt_loss"),
-        
-        ("", None), 
-        ("--- RAZONES FINANCIERAS ---", None),
-        ("ROA", "roa"),
-        ("ROE", "roe"),
-        ("Margen Neto (%)", "net_profit_margin_percent")
+        ("Pérdida antes de Imp. (Crudo)", "raw_ebt_loss")
+    ]
+    
+    # Lista de llaves que son índices, múltiplos o días (formato decimal simple)
+    llaves_decimales = [
+        "roa", "roe", "roa_tax_strategy", "current_ratio", "quick_ratio", 
+        "cash_ratio", "leverage", "debt_ratio", "interest_coverage", 
+        "cash_flow_coverage", "dio", "dso", "dpo", "fixed_asset_turnover", 
+        "total_asset_turnover", "altman_z_score"
     ]
     
     for label, key in conceptos_financieros:
@@ -64,11 +100,18 @@ def build(ws, data: dict):
         curr_row = ws.max_row
         for col_idx in range(2, len(years) + 2):
             cell = ws.cell(row=curr_row, column=col_idx)
-            if key in ["roa", "roe", "net_profit_margin_percent"]:
+            
+            # --- LÓGICA DE FORMATOS INTELIGENTE ---
+            if key == "net_profit_margin_percent":
+                # Porcentajes puros
                 cell.number_format = PERCENT_FORMAT
-                if key != "net_profit_margin_percent" and cell.value: 
-                    cell.value = cell.value / 100 
+                if cell.value:
+                    cell.value = cell.value / 100
+            elif key in llaves_decimales:
+                # Índices, días y veces (sin símbolo de pesos)
+                cell.number_format = '0.00'
             else:
+                # Flujo operativo, Capital de trabajo y Cuentas base son Dinero
                 cell.number_format = CURRENCY_FORMAT
 
     ws.column_dimensions['A'].width = 40

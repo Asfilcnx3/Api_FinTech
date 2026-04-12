@@ -73,7 +73,11 @@ class NetworkProcessor:
             
             # 2. Excluir el mes actual SOLO para la matemática de la pendiente
             current_month = datetime.now().strftime("%Y-%m")
-            transactions_clean = [t for t in transactions_sorted if t.get("date") != current_month]
+            # Usamos startswith para interceptar "2026-04-01" o "2026-04" sin importar el día
+            transactions_clean = [
+                t for t in transactions_sorted 
+                if not str(t.get("date", "")).startswith(current_month)
+            ]
             
             vals = [float(t.get("total", 0.0)) for t in transactions_clean]
             
