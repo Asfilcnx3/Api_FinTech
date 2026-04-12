@@ -18,7 +18,7 @@ class FinancialCalculatorService:
         year = inputs.year
         logger.debug(f"--- Calculando Ratios para el Año {year} ---")
 
-        # 1. RESOLUCIÓN DE SIGNOS (Profit vs Loss)
+        # 1. RESOLUCIÓN DE SIGNOS
         gross_income = self._resolve_sign(inputs.gross_profit, inputs.gross_loss, "Gross Profit")
         net_income = self._resolve_sign(inputs.net_profit, inputs.net_loss, "Net Income")
         ebit = self._resolve_sign(inputs.ebit_profit, inputs.ebit_loss, "EBIT")
@@ -36,37 +36,89 @@ class FinancialCalculatorService:
             ebt = net_income + inputs.taxes
 
         # 3. CÁLCULO DE RAZONES
+        # Aseguramos que COGS e Intereses sean absolutos para no alterar el sentido de las fórmulas
+        cogs_abs = abs(inputs.cogs)
+        interest_exp_abs = abs(inputs.interest_expense)
+
+        # A) Liquidez
+        current_ratio = self._safe_division(inputs.current_assets, inputs.current_liabilities)
+        quick_ratio = self._safe_division(inputs.current_assets - inputs.inventory, inputs.current_liabilities)
+        cash_ratio = self._safe_division(inputs.cash_and_equivalents, inputs.current_liabilities)
+
+        # B) Rendimiento sobre la Inversión (ROI)
         roa = self._safe_division(net_income, inputs.assets)
         roe = self._safe_division(net_income, inputs.equity)
         margin_percent = self._safe_division(net_income, inputs.revenue) * 100
+        # Formula Genérica: EBT / Activos. (Se cambiará después)
+        roa_tax_strategy = self._safe_division(ebt, inputs.assets) 
 
-        # Logs finales de los valores calculados
-        logger.debug(
-            f"RESULTADOS {year}: "
-            f"NetIncome={net_income:.2f} | EBIT={ebit:.2f} | NOPAT={nopat:.2f} | "
-            f"ROA={roa:.4f} | ROE={roe:.4f} | Margin={margin_percent:.2f}%"
-        )
+        # C) Estructura de Capital y Solvencia
+        leverage = self._safe_division(inputs.liabilities, inputs.equity)
+        debt_ratio = self._safe_division(inputs.liabilities, inputs.assets)
+        interest_coverage = self._safe_division(ebit, interest_exp_abs)
+
+        # D) Flujo de Fondos
+        ocf = inputs.operating_cash_flow
+        cash_flow_coverage = self._safe_division(ocf, inputs.liabilities)
+        working_capital = inputs.current_assets - inputs.current_liabilities
+
+        # E) Desempeño Operativo
+        dio = self._safe_division(inputs.inventory, cogs_abs) * 365
+        dso = self._safe_division(inputs.accounts_receivable, inputs.revenue) * 365
+        dpo = self._safe_division(inputs.accounts_payable, cogs_abs) * 365
+        fixed_asset_turnover = self._safe_division(inputs.revenue, inputs.fixed_assets)
+        total_asset_turnover = self._safe_division(inputs.revenue, inputs.assets)
+
+        # F) Indicador de Altman (Z-Score para empresas privadas)
+        t1 = self._safe_division(working_capital, inputs.assets)
+        t2 = self._safe_division(inputs.retained_earnings, inputs.assets)
+        t3 = self._safe_division(ebit, inputs.assets)
+        t4 = self._safe_division(inputs.equity, inputs.liabilities)
+        t5 = self._safe_division(inputs.revenue, inputs.assets)
+        altman_z = (1.2 * t1) + (1.4 * t2) + (3.3 * t3) + (0.6 * t4) + (1.0 * t5)
 
         return PrequalificationResponse.FinancialRatioYear(
-            # Ratios Calculados
             year=year,
+            
+            # --- Ratios Originales y ROI ---
             roa=round(roa, 4),
             roe=round(roe, 4),
             net_profit_margin_percent=round(margin_percent, 2),
+            roa_tax_strategy=round(roa_tax_strategy, 4),
+            
+            # --- Ratios Nuevos ---
+            current_ratio=round(current_ratio, 2),
+            quick_ratio=round(quick_ratio, 2),
+            cash_ratio=round(cash_ratio, 2),
+            
+            leverage=round(leverage, 2),
+            debt_ratio=round(debt_ratio, 4),
+            interest_coverage=round(interest_coverage, 2),
+            
+            operating_cash_flow=round(ocf, 2),
+            cash_flow_coverage=round(cash_flow_coverage, 2),
+            working_capital=round(working_capital, 2),
+            
+            dio=round(dio, 1),
+            dso=round(dso, 1),
+            dpo=round(dpo, 1),
+            fixed_asset_turnover=round(fixed_asset_turnover, 2),
+            total_asset_turnover=round(total_asset_turnover, 2),
+            altman_z_score=round(altman_z, 2),
+
+            # --- Base e Inputs crudos ---
             ebit=round(ebit, 2),
             ebt=round(ebt, 2),
             nopat=round(nopat, 2),
 
-            # Datos Consolidados (Evidencia)
             input_assets=round(inputs.assets, 2),
             input_liabilities=round(inputs.liabilities, 2),   
             input_equity=round(inputs.equity, 2),
             input_revenue=round(inputs.revenue, 2),
-            input_gross_profit=round(gross_income, 2),       
+            input_gross_profit=round(gross_income, 2),        
             input_net_income=round(net_income, 2),
             input_taxes=round(inputs.taxes, 2),
 
-            # Datos crudos absolutos para auditoría y transparencia (sin procesar, con signo original)
             raw_net_profit=round(inputs.net_profit, 2),
             raw_net_loss=round(inputs.net_loss, 2),
             raw_ebit_profit=round(inputs.ebit_profit, 2),

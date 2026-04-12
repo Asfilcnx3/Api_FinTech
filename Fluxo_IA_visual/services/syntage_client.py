@@ -1197,7 +1197,7 @@ class SyntageClient:
             logger.error(f"Error fetching RUG records: {e}")
         return []
     
-    async def get_invoice_totals_by_rfc(self, client: httpx.AsyncClient, entity_id: str, rfc_contraparte: str, as_receiver: bool) -> float:
+    async def get_invoice_totals_by_rfc(self, client: httpx.AsyncClient, entity_id: str, rfc_contraparte: str, as_receiver: bool) -> tuple[float, str]:
         """
         as_receiver=True -> Facturas donde la contraparte es RECEPTOR (Facturas Emitidas por nosotros).
         as_receiver=False -> Facturas donde la contraparte es EMISOR (Facturas Recibidas por nosotros).
@@ -1209,25 +1209,36 @@ class SyntageClient:
             # Usamos property filtering para que la API no nos mande los XML completos, solo el total
             params = {
                 param_key: rfc_contraparte,
-                "properties[]": "total",
-                "itemsPerPage": 500  # Un número alto para traer todo rápido
+                "properties[]": ["total", "issuedAt"],
+                "order[issuedAt]": "desc",
+                "itemsPerPage": 500  
             }
             url = f"{self.base_url}/entities/{entity_id}/invoices"
             resp = await client.get(url, params=params, headers=self.headers)
             
             if resp.status_code == 200:
+                logger.debug(f"Debug de respuesta: {resp.text[:800]}")  # Logueamos los primeros 800 caracteres para ver qué estructura nos dio Syntage
                 data = resp.json()
                 items = data if isinstance(data, list) else data.get("hydra:member", [])
                 
-                # Sumamos el campo 'total' de todas las facturas encontradas
-                return sum(float(i.get("total", 0.0)) for i in items if isinstance(i, dict))
+                if not items:
+                    return 0.0, "N/A"
+
+                # Como ordenamos por 'issuedAt' desc, el primer elemento es la factura más reciente
+                monto_total = sum(float(i.get("total", 0.0)) for i in items if isinstance(i, dict))
+                
+                # Extraer la fecha (solo los primeros 10 caracteres YYYY-MM-DD)
+                ultima_fecha_cruda = str(items[0].get("issuedAt", "N/A"))
+                ultima_fecha = ultima_fecha_cruda[:10] if ultima_fecha_cruda != "N/A" else "N/A"
+                
+                return monto_total, ultima_fecha
             else:
                 logger.warning(f"Error HTTP {resp.status_code} al obtener facturas de {rfc_contraparte}.")
                 
         except Exception as e:
-            logger.error(f"Error sumando facturas para 69-B ({rfc_contraparte}): {e}")
+            logger.error(f"Error procesando facturas para 69-B ({rfc_contraparte}): {e}")
             
-        return 0.0
+        return 0.0, "N/A"
 
     async def download_file_content(self, client: httpx.AsyncClient, file_id: str) -> bytes:
         """

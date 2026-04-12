@@ -123,6 +123,7 @@ class PrequalificationResponse(BaseModel):
         name: str
         percentage: float
         start_date: Optional[str] = None # "YYYY-MM-DD"
+        seniority_years: Optional[int] = 0 # Años desde el inicio de esta actividad económica
     
     class Stats(BaseModel):
         mean: float
@@ -167,6 +168,8 @@ class PrequalificationResponse(BaseModel):
         issued_amount: float = 0.0
         received_count: int = 0
         received_amount: float = 0.0
+
+        last_invoice_date: str = "N/A"
 
     class AdvancedPeriodMetrics(BaseModel):
         """
@@ -237,7 +240,6 @@ class PrequalificationResponse(BaseModel):
         gross_profit: float = 0.0 # Utilidad Bruta
         gross_loss: float = 0.0   # Pérdida Bruta
         
-        # Dual fields (Syntage separa Profit de Loss)
         net_profit: float = 0.0
         net_loss: float = 0.0
         
@@ -246,32 +248,73 @@ class PrequalificationResponse(BaseModel):
         
         ebt_profit: float = 0.0
         ebt_loss: float = 0.0
+        
+        # CAMPOS CRUDOS PARA RAZONES FINANCIERAS
+        current_assets: float = 0.0        # Activo circulante / a corto plazo
+        current_liabilities: float = 0.0   # Pasivo circulante / a corto plazo
+        cash_and_equivalents: float = 0.0  # Efectivo y equivalentes
+        inventory: float = 0.0             # Inventarios
+        accounts_receivable: float = 0.0   # Cuentas por cobrar
+        accounts_payable: float = 0.0      # Cuentas por pagar
+        fixed_assets: float = 0.0          # Activo fijo (Propiedades, planta y eq)
+        retained_earnings: float = 0.0     # Utilidades retenidas / acumuladas
+        cogs: float = 0.0                  # Costo de ventas
+        interest_expense: float = 0.0      # Gastos financieros / Intereses
+        operating_cash_flow: float = 0.0   # Flujo operativo de caja (si viene en el árbol)
 
     class FinancialRatioYear(BaseModel): # --- OUTPUT DE CALCULADORA ---
         year: str
-        roa: float
-        roe: float
-        net_profit_margin_percent: float # Margen neto de utilidad (%)
-        ebit: float
-        ebt: float
-        nopat: float
-
-        # -- Datos Consolidados --
+        
+        # Datos Consolidados
         input_assets: float
-        input_liabilities: float     # Pasivo
+        input_liabilities: float
         input_equity: float
         input_revenue: float
-        input_gross_profit: float    # Bruta consolidada (Profit - Loss)
+        input_gross_profit: float
         input_net_income: float
         input_taxes: float
-
         input_assets_short_term: float = 0.0
         input_assets_long_term: float = 0.0
         input_liabilities_short_term: float = 0.0
         input_liabilities_long_term: float = 0.0
         input_equity_social: float = 0.0
         
-        # --- Datos Crudos  ---
+        # RATIOS CALCULADOS
+        # ROI
+        roa: float
+        roe: float
+        net_profit_margin_percent: float
+        roa_tax_strategy: float = 0.0  # Rendimiento activos con estrategia fiscal
+        
+        # Liquidez
+        current_ratio: float = 0.0     # Razón actual / circulante
+        quick_ratio: float = 0.0       # Prueba del ácido
+        cash_ratio: float = 0.0        # Liquidez inmediata
+        
+        # Estructura de Capital y Solvencia
+        leverage: float = 0.0          # Apalancamiento
+        debt_ratio: float = 0.0        # Endeudamiento
+        interest_coverage: float = 0.0 # Cobertura de intereses
+        
+        # Flujo de Fondos
+        operating_cash_flow: float = 0.0
+        cash_flow_coverage: float = 0.0
+        working_capital: float = 0.0   # Capital de trabajo
+        
+        # Desempeño Operativo
+        dio: float = 0.0               # Días de inventario
+        dso: float = 0.0               # Días CxC
+        dpo: float = 0.0               # Días CxP
+        fixed_asset_turnover: float = 0.0 # Rotación activo fijo
+        total_asset_turnover: float = 0.0 # Rotación activo total
+        altman_z_score: float = 0.0       # Indicador de Altman
+
+        # Variables base
+        ebit: float
+        ebt: float
+        nopat: float
+        
+        # Datos crudos auditoría
         raw_net_profit: float = 0.0
         raw_net_loss: float = 0.0
         raw_ebit_profit: float = 0.0
