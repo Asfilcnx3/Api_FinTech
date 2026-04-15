@@ -437,7 +437,18 @@ class ProcessingService:
                 # 4. Asignación si hubo match
                 if es_propia_global:
                     tx.es_sospechosa = True
-                    tx.categoria = "TRASPASO_ABONO" if es_abono else "TRASPASO_CARGO"
+                    
+                    # PROTEGER CATEGORÍAS FUERTES
+                    cat_previa = str(getattr(tx, "categoria", "GENERAL")).upper().strip()
+                    categorias_protegidas = {
+                        "TPV", "EFECTIVO", "BMRCASH", "FINANCIAMIENTO", 
+                        "PAGO_FINANCIAMIENTO", "COMISION_CR", "COMISION_DB", 
+                        "COMISION_AMEX", "COMISION_TPV_MIXTA"
+                    }
+                    
+                    # Solo sobrescribimos si era GENERAL o un traspaso previo
+                    if cat_previa not in categorias_protegidas:
+                        tx.categoria = "TRASPASO_ABONO" if es_abono else "TRASPASO_CARGO"
 
                 # 5. Sumatorias
                 cat_actual = str(getattr(tx, "categoria", "GENERAL")).upper().strip()

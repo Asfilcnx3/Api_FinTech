@@ -19,7 +19,7 @@ PALABRAS_TPV = [
     "terminales punto de venta", "punto de venta", "tpv", "terminal", "evopay", "clip", "izettle", "netpay", "mp agregador", "mpagregador", "getnet",
     "pocket de latinoameric", "pocket de billpocket", "billpocket", "spei amexco", "data merchant services", "abrexpress company mexicsa",
     "net pay", "netpay", "payclip", "pocket", "kiwi", "kiwi international", "zettle", "gananciasclip", "ganancias clip", "deposito bpu", "depositobpu",
-    "net pay sapi de cv", "srpago", "sr pago", "señor pago", "señorpago", "wuzi", "bn-nts", "vta. cre", "vta. deb"
+    "net pay sapi de cv", "srpago", "sr pago", "señor pago", "señorpago", "wuzi", "bn-nts", "vta. cre", "vta. deb", "netpay", "pay sapi de cv", "first data", "fiserv", "evopay mx", "evopaymx", "evopay", "evopayments"
 ]
 
 PALABRAS_EFECTIVO = [
@@ -302,6 +302,12 @@ CONFIGURACION_BANCOS = {
         "alias": ["grupo financiero ve por más", "grupo financiero ve por mas"],
         "rfc_pattern": [r"r\.f\.c\.\s*([a-zA-ZÑ&]{3,4}\d{6}[a-zA-Z0-9]{2,3})"],
         "comisiones_pattern": [r"r\.f\.c\.\s*([a-zA-ZÑ&]{3,4}\d{6}[a-zA-Z0-9]{2,3})"],
+        "depositos_pattern": [r"dep[oó]sitos\s*([\d,]+\.\d{2})"]
+    },
+    "mercado libre" : {
+        "alias": ["mercado libre", "mercadolibre"],
+        "rfc_pattern": [r"r\.f\.c\.\s*([a-zA-ZÑ&]{3,4}\d{6}[a-zA-Z0-9]{2,3})"],
+        "comisiones_pattern": [r"comisiones\s*([\d,]+\.\d{2})"],
         "depositos_pattern": [r"dep[oó]sitos\s*([\d,]+\.\d{2})"]
     }
 }
@@ -645,7 +651,6 @@ Una transacción multilínea debe marcarse como "tpv" SI Y SOLO SI:
     - t20 spei recibido hsbc
     - t20 spei recibido citi mexico
     - spei recibido banorte
-    - t20 spei recibidostp
     - w02 spei recibidosantander
     - deposito de tercero
     - t20 spei recibido jpmorgan

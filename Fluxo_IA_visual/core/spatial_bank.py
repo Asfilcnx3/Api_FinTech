@@ -144,7 +144,7 @@ class MotorExtraccionEspacial:
         self.REGEX_DIA_AISLADO = re.compile(r'^(\d{1,2})$')
 
         # 4. Validar Montos
-        self.REGEX_MONTO_SIMPLE = re.compile(r'[-+]?\d{1,3}(?:,\d{3})*\.\d{2}') # Cambiamos el r'-?\d...' por r'[-+]?\d...' para aceptar el signo de más
+        self.REGEX_MONTO_SIMPLE = re.compile(r'[-+]?\s*\d{1,3}(?:,\d{3})*\.\d{2}') # Cambiamos el r'-?\d...' por r'[-+]?\d...' para aceptar el signo de más
         
         self.NOISE_DATE_TOKENS = ["SUC", "HORA", "CAJA", "AUT", "REF", "SEC", "MOV"]
         self.KEYWORDS_HEADER_FECHA = ["FECHA", "DIA", "DATE"]
@@ -345,7 +345,7 @@ class MotorExtraccionEspacial:
                 if y_scan_top <= w[1] <= y_scan_bottom
             ]
             
-            # --- STITCHING (Pegamento horizontal para kerning roto) ---
+            # --- STITCHING (Pegamento horizontal conservador) ---
             if header_tokens:
                 # 1. Ordenar PRIMERO por renglón visual (Y) y LUEGO por columna (X)
                 header_tokens.sort(key=lambda w: (round(w[1] / 5) * 5, w[0]))
@@ -354,13 +354,18 @@ class MotorExtraccionEspacial:
                 current = list(header_tokens[0])
                 
                 for w in header_tokens[1:]:
-                    # 2. Validar que estén en el mismo renglón Y muy cerca en X
+                    # 2. Validar que estén en el mismo renglón
                     mismo_renglon = abs(w[1] - current[1]) < 5.0
-                    cerca_horizontal = (w[0] - current[2]) < 6.0 
+                    
+                    # 3. Distancia estricta. Solo unir si están rotos (gap < 4px).
+                    # Evita crear el monstruo 'IDdelaFechaDescripción'
+                    distancia_x = w[0] - current[2] 
+                    cerca_horizontal = -3.0 <= distancia_x <= 4.0 
                     
                     if mismo_renglon and cerca_horizontal:
-                        current[2] = w[2]         # Expandir la caja (x1)
-                        current[4] += w[4]        # Unir el texto ("F" + "EC" = "FEC")
+                        current[0] = min(current[0], w[0])  # Mantener el borde izquierdo real
+                        current[2] = max(current[2], w[2])  # Expandir al borde derecho real
+                        current[4] += w[4]                  # Unir texto sin espacios extra
                     else:
                         stitched.append(tuple(current))
                         current = list(w)
@@ -625,15 +630,18 @@ class MotorExtraccionEspacial:
                 rango_fecha_x = (0, geo.width * 0.14)
                 if "FECHA" in current_columns:
                     col_f = current_columns["FECHA"]
-                    ancho_columna = col_f["x1"] - col_f["x0"]
                     
-                    # --- LIMITADOR DE COLUMNA (AMEX FIX) ---
+                    # Salvaguarda definitiva contra cajas invertidas
+                    x0 = min(col_f["x0"], col_f["x1"])
+                    x1 = max(col_f["x0"], col_f["x1"])
+                    ancho_columna = x1 - x0
+                    
+                    # LIMITADOR DE COLUMNA
                     if ancho_columna > 70:
-                        # Forzamos la zona de fecha a ser pequeña para no comerse la descripción
-                        rango_fecha_x = (max(0, col_f["x0"] - 10), col_f["x0"] + 60)
+                        rango_fecha_x = (max(0, x0 - 10), x0 + 60)
                     else:
-                        rango_fecha_x = (max(0, col_f["x0"] - 40), col_f["x1"] + 10)
-                
+                        rango_fecha_x = (max(0, x0 - 40), x1 + 10)
+
                 x_inicio_desc = rango_fecha_x[1] + 5
 
                 # Extraer
@@ -736,10 +744,13 @@ class MotorExtraccionEspacial:
                 era_importe = tx.pop("es_importe_original", False)
                 tenia_signo = tx.pop("tiene_signo", False)
                 
-                # Tu lógica magistral: Si era IMPORTE y NO tenía signo (Mifel SPEI), 
-                # lo regresamos a IMPORTE. 
-                # Si SÍ tenía signo (Mercado Libre), se queda como CARGO/ABONO.
-                if era_importe and not tenia_signo:
+                # Atrapamos la bandera del escudo antes de borrarla del JSON
+                es_columna_unica = tx.pop("es_columna_unica", False) 
+                
+                # Si viene de un banco de columna única (Mercado Pago), respetamos su 
+                # clasificación matemática (Positivo = ABONO, Negativo = CARGO).
+                # Solo revertimos a "IMPORTE" si NO tiene signo Y NO es columna única (Ej. Mifel SPEI).
+                if era_importe and not tenia_signo and not es_columna_unica:
                     tx["tipo"] = "IMPORTE"
 
         return results
@@ -755,14 +766,13 @@ class MotorExtraccionEspacial:
             limpio = re.sub(r'[^\w\s]', ' ', str(texto).lower())
             return set(p for p in limpio.split() if len(p) > 2 and p not in PALABRAS_IGNORADAS)
 
-        # --- FIX: BYPASS PARA MERCADO LIBRE ---
+        # --- FIX: ESCUDO PARA MERCADO PAGO / COLUMNA ÚNICA ---
         # Las transacciones "normales" son los Cargos/Abonos clásicos, 
-        # O los importes que traen su propio signo (Mercado Libre).
-        normales = [tx for tx in todas_las_transacciones if not tx.get("es_importe_original") or tx.get("tiene_signo")]
+        # los importes con signo, O cualquier transacción que venga de un layout de columna única.
+        normales = [tx for tx in todas_las_transacciones if not tx.get("es_importe_original") or tx.get("tiene_signo") or tx.get("es_columna_unica")]
         
-        # Los "importes" que buscan fusionarse (y que arrojan logs si no encuentran match) 
-        # son SOLO los que no tienen signo explícito (ej. la tabla SPEI de Mifel).
-        importes = [tx for tx in todas_las_transacciones if tx.get("es_importe_original") and not tx.get("tiene_signo")]
+        # Solo intentamos fusionar (SPEI de Mifel) si era importe original, NO tenía signo, y NO era de columna única
+        importes = [tx for tx in todas_las_transacciones if tx.get("es_importe_original") and not tx.get("tiene_signo") and not tx.get("es_columna_unica")]
         
         self._log_debug(self.LOG_EXTRACTION, f"DEDUPLICACIÓN GLOBAL INICIADA: {len(importes)} IMPORTES vs {len(normales)} NORMALES en todo el documento.")
         
@@ -999,30 +1009,50 @@ class MotorExtraccionEspacial:
             # Filtrar palabras dentro del slice
             palabras_slice_raw = [w for w in words if y_techo_slice <= w[1] < y_suelo_slice]
             
-            # PRE-STITCHING DE SIGNOS Y MONTOS 
+            # PRE-STITCHING DE SIGNOS Y MONTOS (Soporte de 3 piezas)
             palabras_slice = []
-            skip_next = False
+            skip_count = 0
             for j, w in enumerate(palabras_slice_raw):
-                if skip_next:
-                    skip_next = False
+                if skip_count > 0:
+                    skip_count -= 1
                     continue
                 
                 texto_limpio = w[4].strip()
-                # Si detectamos un signo de moneda aislado
-                if texto_limpio in ["-$", "+$", "-", "+", "- $", "+ $"]:
+                
+                # Caso 1: Vemos un signo aislado (o un signo con $) -> ["+$", "100.00"]
+                es_signo_aislado = texto_limpio in ["-$", "+$", "-", "+", "- $", "+ $", "$-", "$+", "$ -", "$ +"]
+                if es_signo_aislado:
                     if j + 1 < len(palabras_slice_raw):
                         w_next = palabras_slice_raw[j+1]
-                        # Verificamos que el siguiente token esté en la misma línea y cerca en X
-                        if abs(w[1] - w_next[1]) < 5 and (w_next[0] - w[2]) < 15:
+                        # Ampliamos la tolerancia a 30px para absorber los grandes espacios de ML
+                        if abs(w[1] - w_next[1]) < 5 and (w_next[0] - w[2]) < 30:
                             nuevo_token = list(w_next)
-                            # Extraemos solo el signo (+ o -) y lo pegamos al número
                             signo = "-" if "-" in texto_limpio else "+"
                             nuevo_token[4] = signo + w_next[4] 
                             nuevo_token[0] = w[0] # Expandimos la caja visual (x0)
                             palabras_slice.append(tuple(nuevo_token))
-                            skip_next = True
+                            skip_count = 1
                             continue
+                            
+                # Caso 2: El "$" está totalmente separado del signo -> ["$", "+", "100.00"]
+                elif texto_limpio == "$" and j + 2 < len(palabras_slice_raw):
+                    w_next = palabras_slice_raw[j+1]
+                    w_next_next = palabras_slice_raw[j+2]
+                    
+                    next_txt = w_next[4].strip()
+                    if next_txt in ["+", "-"]:
+                        # Verificamos que los 3 tokens estén en el mismo renglón
+                        if abs(w[1] - w_next[1]) < 5 and abs(w_next[1] - w_next_next[1]) < 5:
+                            # Tolerancia amplia entre el $ y el signo, y entre el signo y el número
+                            if (w_next[0] - w[2]) < 20 and (w_next_next[0] - w_next[2]) < 30:
+                                nuevo_token = list(w_next_next)
+                                nuevo_token[4] = next_txt + w_next_next[4] # Forzamos la unión (ej. "+100.00")
+                                nuevo_token[0] = w[0] # La caja visual inicia desde el $
+                                palabras_slice.append(tuple(nuevo_token))
+                                skip_count = 2
+                                continue
                 
+                # Si no cayó en casos especiales, lo anexamos normal
                 palabras_slice.append(w)
             
             montos_detectados = []
@@ -1032,7 +1062,8 @@ class MotorExtraccionEspacial:
                 x = w[0]
                 if x >= x_muro_saldo: continue
                 
-                clean_txt = w[4].replace("$", "").replace(",", "")
+                # Eliminar espacios internos para que float() sea aprueba de balas
+                clean_txt = w[4].replace("$", "").replace(",", "").replace(" ", "")
                 es_numero = self.REGEX_MONTO_SIMPLE.search(clean_txt)
                 
                 # Clasificación de Monto REAL
@@ -1228,7 +1259,8 @@ class MotorExtraccionEspacial:
                         "score_confianza": 0.95,
                         "coords_box": mejor_monto["box"],
                         "es_importe_original": mejor_monto.get("es_importe_original", False),
-                        "tiene_signo": mejor_monto.get("tiene_signo", False) # <--- HEREDAMOS LA BANDERA
+                        "tiene_signo": mejor_monto.get("tiene_signo", False), # <--- HEREDAMOS LA BANDERA
+                        "es_columna_unica": "CARGO" not in current_columns and "ABONO" not in current_columns # <--- NUEVO ESCUDO
                     }
                     transacciones.append(tx)
 
