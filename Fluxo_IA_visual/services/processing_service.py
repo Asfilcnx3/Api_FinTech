@@ -692,7 +692,7 @@ class ProcessingService:
             return
 
         if isinstance(resultado_doc.DetalleTransacciones, AnalisisTPV.ErrorRespuesta): 
-            logger.warning(f"[TRACKING OCR - 4] {nombre_doc} descartado por ErrorRespuesta: {resultado_doc.DetalleTransacciones.error}")
+            logger.warning(f"[TRACKING OCR - 4] {nombre_doc} descartado por ErrorRespuesta: {resultado_doc.DetalleTransacciones.detalle_error}")
             return
         # ----------------------
 
