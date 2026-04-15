@@ -7,9 +7,12 @@ class AnalisisTPV:
     """Namespace para todos los modelos relacionados con el analisis de cuenta TPV."""
     class ErrorRespuesta(BaseModel):
         """Error específico para el procesamiento de TPV."""
-        nombre_documento: str
-        estatus_documento: str = "fallido"
-        detalle_error: str
+        nombre_documento: str = Field(default="Desconocido")
+        estatus_documento: str = Field(default="fallido")
+        detalle_error: str = Field(alias="error")
+
+        class Config:
+            populate_by_name = True # Permite que Pydantic acepte tanto 'error' como 'detalle_error' al construirlo
 
     class Transaccion(BaseModel):
         """Representa una única transaccion encontrada dentro del documento [3 partes]."""
