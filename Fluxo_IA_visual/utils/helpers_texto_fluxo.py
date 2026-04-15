@@ -1161,7 +1161,6 @@ Una transacción multilínea debe marcarse como "tpv" SI Y SOLO SI:
 
 Y ADEMÁS
 2) AL MENOS UNA de las líneas siguientes de LA MISMA TRANSACCIÓN contiene alguna de estas frases:
-    - de la cuenta
     - recibido de stp
     - deposito spei
     - deposito bpu
