@@ -1,6 +1,7 @@
 # Fluxo_IA_visual/routers/precalificacion.py
 from fastapi import APIRouter, Depends, HTTPException, Request, BackgroundTasks
 from fastapi.responses import Response
+from typing import Literal
 import logging
 
 from ...services.syntage_storage_service import StorageService
@@ -54,7 +55,10 @@ async def iniciar_precalificacion(
     }
 
 @router.get("/download/report/{job_id}")
-async def download_syntage_report(job_id: str):
+async def download_syntage_report(
+    job_id: str, 
+    format: Literal["excel", "json"] = "excel" # Parámetro opcional, Excel por defecto
+):
     data = storage.get_json_result(job_id)
     if not data:
         raise HTTPException(status_code=404, detail="El reporte no existe o ha expirado.")
@@ -63,9 +67,14 @@ async def download_syntage_report(job_id: str):
     if data.get("status") == "processing":
         raise HTTPException(status_code=400, detail="El reporte aún se está procesando. Intente más tarde.")
     if data.get("status") == "error":
-        raise HTTPException(status_code=500, detail="El procesamiento falló, no se puede generar el Excel.")
+        raise HTTPException(status_code=500, detail="El procesamiento falló, no se puede generar el reporte.")
 
-    # Generar Excel al vuelo solo cuando está completado
+    # Retornar JSON si fue solicitado 
+    if format == "json":
+        # FastAPI automáticamente convierte el diccionario 'data' a una respuesta JSON
+        return data
+
+    # En caso contrario, Generar Excel
     builder = ExcelReportBuilder(data)
     excel_bytes = builder.build()
     
