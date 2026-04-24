@@ -231,7 +231,10 @@ class ProcessingService:
         tareas_ocr = []
         
         # Lógica OCR
-        procesar_ocr = es_mayor and documentos_escaneados and len(documentos_escaneados) <= 15
+        # Vamos a permitir OCR solo si el monto es mayor a 250k Y no hay más de 15 documentos escaneados (para evitar sobrecarga y tiempos excesivos)
+        # procesar_ocr = es_mayor and documentos_escaneados and len(documentos_escaneados) <= 15
+        # Para debugueo, puedes forzar el OCR con: procesar_ocr = True
+        procesar_ocr = True
 
         logger.info(f"Ejecutando Workers. Digitales: {len(documentos_digitales)} | OCR: {len(documentos_escaneados)}")
 
@@ -443,7 +446,7 @@ class ProcessingService:
                     categorias_protegidas = {
                         "TPV", "EFECTIVO", "BMRCASH", "FINANCIAMIENTO", 
                         "PAGO_FINANCIAMIENTO", "COMISION_CR", "COMISION_DB", 
-                        "COMISION_AMEX", "COMISION_TPV_MIXTA"
+                        "COMISION_AMEX", "COMISION_TPV_MIXTA", "MORATORIOS", "IVA" 
                     }
                     
                     # Solo sobrescribimos si era GENERAL o un traspaso previo
@@ -714,12 +717,16 @@ class ProcessingService:
             tx_objs = []
             for tx in lista_cruda:
                 if isinstance(tx, dict):
+                    # --- NORMALIZACIÓN FUERTE DE TIPO ---
+                    tipo_raw = str(tx.get("tipo", "")).lower().strip()
+                    tipo_limpio = "abono" if tipo_raw in ["abono", "deposito", "depósito", "credito", "crédito"] else "cargo"
+                    
                     tx_objs.append(AnalisisTPV.Transaccion(
                         fecha=tx.get("fecha", ""),
                         periodo=tx.get("periodo", ""),
                         descripcion=tx.get("descripcion", ""),
                         monto=str(tx.get("monto", "0.0")),
-                        tipo=tx.get("tipo", "DESCONOCIDO"),
+                        tipo=tipo_limpio, 
                         categoria="GENERAL"
                     ))
                 else:

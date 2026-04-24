@@ -330,7 +330,8 @@ def procesar_digital_worker_sync(
         # 1. INSTANCIAR MOTOR V2 (PRODUCCIÓN)
         # CORRECCIÓN IMPORTANTE: En el nuevo motor no existe 'debug_mode'.
         # Pasamos debug_flags=[] para que corra en silencio y rápido (solo logs INFO).
-        engine = MotorExtraccionEspacial(debug_flags=[]) 
+        banco_origen = ia_data_inicial.get("banco", "GENERICO")
+        engine = MotorExtraccionEspacial(debug_flags=[], banco=banco_origen)
 
         # --- INICIO DEL CRONÓMETRO ---
         t_inicio = time.time()

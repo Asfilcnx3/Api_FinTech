@@ -41,9 +41,6 @@ class MotorClasificador:
         """
         resueltas_por_python = []
         pendientes_para_ia = []
-        
-        import unicodedata
-        import re
 
         for idx_real, tx in enumerate(transacciones):
             # --- NORMALIZACIÓN BÁSICA Y PLANA ---
@@ -77,26 +74,36 @@ class MotorClasificador:
                     self._log_debug(2, f"Tx {idx_real} clasificada como PAGO_FINANCIAMIENTO -> {desc_plana[:40]}...")
                     continue
 
-                # B) SEGUNDO: Filtro anti-IVA (Descartamos renglones sueltos de impuestos de comisiones)
-                if re.search(r'\biva\b', desc_plana):
-                    tx.categoria = "GENERAL"
+                # --- NUEVA DEFENSA: Detección anticipada de traspasos ---
+                es_traspaso = any(p in desc_plana for p in self.diccionarios.get('traspaso', []))
+
+                # B) SEGUNDO: Filtro anti-IVA 
+                # Si dice IVA pero TAMBIÉN es un traspaso, lo ignoramos aquí para que la Regla 2 lo procese.
+                if re.search(r'\biva\b', desc_plana) and not es_traspaso:
+                    tx.categoria = "IVA"
                     resueltas_por_python.append((idx_real, tx))
                     self._log_debug(1, f"Tx {idx_real} descartada (Es IVA) -> {desc_plana[:40]}...")
                     continue
 
                 # C) TERCERO: La Atarraya (Atrapar candidatas a comisiones TPV)
-                es_comision = re.search(r'\b(com|comision|comisiones|tasa de descuento|descuento)\b', desc_plana)
-                if es_comision:
+                es_comision = re.search(r'\b(com vtas|comision|comisiones|tasa de descuento|descuento)\b', desc_plana)
+                es_bmrcash = any(p in desc_plana for p in self.diccionarios.get('bmrcash', []))
+                
+                # Misma defensa: que no sea ni bmrcash ni un traspaso
+                if es_comision and not es_bmrcash and not es_traspaso:
                     tx.categoria = "COMISION_PENDIENTE"
                     resueltas_por_python.append((idx_real, tx))
                     self._log_debug(2, f"Tx {idx_real} atrapada como CANDIDATA A COMISIÓN -> {desc_plana[:40]}...")
                     continue
-
-                # D) CUARTO: Si no fue nada de lo anterior, se va a GENERAL
-                tx.categoria = "GENERAL"
-                resueltas_por_python.append((idx_real, tx))
-                self._log_debug(1, f"Tx {idx_real} descartada (Es cargo común) -> {desc_plana[:40]}...")
-                continue
+                
+                # Al no cumplirse A, B o C, el código simplemente sigue su curso hacia la REGLA 2
+                # ------------------------------------------------
+                # # D) CUARTO: Si no fue nada de lo anterior, se va a GENERAL
+                # tx.categoria = "GENERAL"
+                # resueltas_por_python.append((idx_real, tx))
+                # self._log_debug(1, f"Tx {idx_real} descartada (Es cargo común) -> {desc_plana[:40]}...")
+                # continue
+                # ------------------------------------------------
 
             # ==========================================
             # REGLA 2: PALABRAS CLAVE EXACTAS (ABONOS)
@@ -106,17 +113,19 @@ class MotorClasificador:
             if any(p in desc_plana for p in self.diccionarios.get('excluidas', [])):
                 tx.categoria = "GENERAL"
                 clasificado_estatico = True
+            # --- PRIORIDAD ALTA: TRASPASOS Y FINANCIAMIENTO ---
+            elif any(p in desc_plana for p in self.diccionarios.get('traspaso', [])):
+                tx.categoria = "TRASPASO_ABONO" if es_abono else "TRASPASO_CARGO" # <--- SOPORTE DINÁMICO
+                clasificado_estatico = True
+            elif any(p in desc_plana for p in self.diccionarios.get('financiamiento', [])):
+                tx.categoria = "FINANCIAMIENTO" if es_abono else "PAGO_FINANCIAMIENTO" # <--- SOPORTE DINÁMICO
+                clasificado_estatico = True
+            # --- PRIORIDAD MEDIA: TPV Y EFECTIVO (Bajaron un escalón) ---
             elif any(p in desc_plana for p in self.diccionarios.get('tpv', [])):
                 tx.categoria = "TPV"
                 clasificado_estatico = True
             elif any(p in desc_plana for p in self.diccionarios.get('efectivo', [])):
                 tx.categoria = "EFECTIVO"
-                clasificado_estatico = True
-            elif any(p in desc_plana for p in self.diccionarios.get('traspaso', [])):
-                tx.categoria = "TRASPASO_ABONO"
-                clasificado_estatico = True
-            elif any(p in desc_plana for p in self.diccionarios.get('financiamiento', [])):
-                tx.categoria = "FINANCIAMIENTO"
                 clasificado_estatico = True
             elif any(p in desc_plana for p in self.diccionarios.get('bmrcash', [])):
                 tx.categoria = "BMRCASH"
@@ -199,8 +208,20 @@ class MotorClasificador:
             nueva_cat = mapa_ia.get(str_idx)
             
             if nueva_cat:
-                tx.categoria = nueva_cat
-                self._log_debug(3, f"Tx {idx_real} clasificada por IA como -> {nueva_cat}")
+                # --- TRADUCTOR DE IA A SISTEMA ---
+                cat_limpia = nueva_cat.lower().strip()
+                tipo_lower = str(getattr(tx, "tipo", "")).lower().strip()
+                es_abono = tipo_lower in ["abono", "deposito", "depósito", "credito", "crédito"]
+                
+                if cat_limpia == "traspaso entre cuentas":
+                    tx.categoria = "TRASPASO_ABONO" if es_abono else "TRASPASO_CARGO"
+                elif cat_limpia == "financiamiento":
+                    tx.categoria = "FINANCIAMIENTO" if es_abono else "PAGO_FINANCIAMIENTO"
+                else:
+                    # Fallback general para etiquetas estandarizadas (ej. tpv -> TPV)
+                    tx.categoria = cat_limpia.upper()
+
+                self._log_debug(3, f"Tx {idx_real} clasificada por IA como -> {tx.categoria}")
             else:
                 tx.categoria = "GENERAL"
                 self._log_debug(3, f"⚠️ Tx {idx_real} sin etiqueta IA -> GENERAL (Fallback)")
@@ -255,6 +276,9 @@ class MotorClasificador:
 
         resultados_lotes = await asyncio.gather(*tareas_lotes, return_exceptions=True)
 
+        # --- LOG TEMPORAL DE DIAGNÓSTICO ---
+        # logger.info(f"[DEBUG IA RAW] Payload devuelto por gather: {resultados_lotes}")
+
         # Mapeo universal
         mapa_clasificacion_total = {}
         for resultado_ia in resultados_lotes:
@@ -264,9 +288,10 @@ class MotorClasificador:
                 
             if isinstance(resultado_ia, dict):
                 for key, etiqueta in resultado_ia.items():
-                    clean_key = ''.join(filter(str.isdigit, str(key)))
+                    # clean_key = ''.join(filter(str.isdigit, str(key)))  <- ANTERIOR
+                    clean_key = str(key).strip() # <- NUEVO: La IA ya devuelve el ID limpio, pero por si acaso le metemos un strip() para evitar espacios raros. No queremos perder clasificaciones por un espacio de más.
                     if clean_key:
-                        mapa_clasificacion_total[str(clean_key)] = etiqueta
+                        mapa_clasificacion_total[clean_key] = etiqueta
 
         return mapa_clasificacion_total
 
@@ -289,7 +314,7 @@ class MotorClasificador:
             try:
                 monto_str = str(getattr(tx, "monto", "0")).replace("$", "").replace(",", "").strip()
                 monto = float(monto_str)
-            except: 
+            except (ValueError, TypeError, AttributeError): # <- EXCEPT ACOTADO
                 monto = 0.0
             
             tipo_lower = str(getattr(tx, "tipo", "")).lower().strip()
@@ -306,6 +331,8 @@ class MotorClasificador:
             elif cat_actual in totales:
                 totales[cat_actual] += monto
                 conteo_categorias["OTROS"] += 1
+            elif cat_actual == "BASURA_OCR": # Evita que la basura sume a GENERAL
+                pass
             else:
                 conteo_categorias["GENERAL"] += 1
 
