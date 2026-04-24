@@ -37,13 +37,13 @@ class MotorExtraccionEspacial:
     LOG_RAYOS_X = 4     # Dumps masivos de palabras (como tu "Rayos X")
     LOG_SCORES = 5      # Detalles de scoring de líneas para header
     
-    def __init__(self, debug_flags: List[int] = None):
+    def __init__(self, debug_flags: List[int] = None, banco: str = "GENERICO"):
         """
         :param debug_flags: Lista de enteros con las secciones a detallar. 
-                            Ej: [1, 3] ver detalles de Geometría y Extracción.
-                            None o [] = Solo logs INFO generales.
+        :param banco: String con el nombre del banco (ej. "BBVA", "MIFEL", "SANTANDER").
         """
         self.debug_flags = debug_flags if debug_flags else []
+        self.banco = banco.upper()
         
         # ====================================================================
         # A. CONFIGURACIÓN DE GEOMETRÍA (Pasada 1)
@@ -97,6 +97,8 @@ class MotorExtraccionEspacial:
             re.compile(r'detalles\s+del\s+cr[eé]dito', re.IGNORECASE),
             re.compile(r'spei\s+enviados', re.IGNORECASE),
             re.compile(r'comisiones\s+pendientes\s+de\s+pago', re.IGNORECASE),
+            re.compile(r'^\s*fondo[s]?\s+de\s+inversi[oó]n\s*\*?', re.IGNORECASE),
+            re.compile(r'su\s+estado\s+de\s+cuenta\s+ha\s+sido\s+modificado', re.IGNORECASE)
         ]
         
         self.RX_HARD_STOP_TRIGGERS = [
@@ -109,6 +111,7 @@ class MotorExtraccionEspacial:
             re.compile(r'apartados\s+vigentes', re.IGNORECASE),
             re.compile(r'^\[\s*saldo\s+inicial\s+de', re.IGNORECASE),
             re.compile(r'resumen\s*fiscal\s*de\s*cr[eé]dito', re.IGNORECASE),
+            re.compile(r'^\s*fondo[s]?\s+de\s+inversi[oó]n\s*\*?', re.IGNORECASE)
         ]
         
         # Keywords para SCORING de Header
@@ -129,7 +132,7 @@ class MotorExtraccionEspacial:
             "PROMEDIO", "ANTERIOR", "TOTAL", "GRAVABLE", "ISR", "COMISIONES", "GAT", 
             "PERIODO", "TASA", "PENDIENTE", "LIQUIDAR", "SALDO INICIAL", "SPEI",
             "RECUPERACION", "SUMA", "CORTE", "LATINOAMERICA", "NOMINAL", "SEGURIDAD",
-            "IMPUESTOS", "OBJETADOS", "TARJETA", "TERCERO", "VENTAS", "TRASPASOS"
+            "IMPUESTOS", "OBJETADOS", "TARJETA", "TERCERO", "VENTAS", "TRASPASOS", "SALDO ANTERIOR", "(+)"
         ]
 
         # Regex Helpers
@@ -457,21 +460,40 @@ class MotorExtraccionEspacial:
     # =========================================================================
     def pass_3_extract_rows(self, doc: fitz.Document, geometries: List[PageGeometry], layouts: List[ColumnLayout]):
         results = []
-        logger.info("--- INICIANDO PASADA 3: MULTI-PASS (TABLAS MÚLTIPLES) ---")
+        logger.info(f"--- INICIANDO PASADA 3: MULTI-PASS (MODO: {self.banco}) ---")
 
         last_global_date = "INICIO_SIN_FECHA" 
         last_page_columns = {} 
         self.global_stop = False 
+        
+        self.global_spei_mode = None  
 
         for i, layout in enumerate(layouts):
             if self.global_stop:
                 logger.info(f"🚫 Pág {layout.page_num}: Saltada por Global Stop activo.")
                 results.append({"page": layout.page_num, "anclas": [], "headers_map": [], "transacciones": []})
                 continue
-
+            
             geo = geometries[i]
             page = doc[geo.page_num - 1]
             page_bottom = geo.footer_y 
+
+            # =================================================================
+            # 🛡️ RAMA ESPECÍFICA: HEURÍSTICA MIFEL (ZONAS SPEI)
+            # =================================================================
+            self.triggers_spei_pagina = []
+            
+            # Solo buscamos estas palabras si el banco es MIFEL
+            if self.banco == "MIFEL":
+                blocks_preventivos = page.get_text("blocks")
+                for b in blocks_preventivos:
+                    txt_bloque = b[4].upper().replace('\n', ' ').strip()
+                    if "SPEI RECIBIDOS" in txt_bloque or "DETALLE DE MOVIMIENTOS SPEI" in txt_bloque or "SPEI RECIBIDO" in txt_bloque:
+                        self.triggers_spei_pagina.append({"y": b[1], "mode": "RECIBIDOS"})
+                    elif "SPEI ENVIADOS" in txt_bloque or "SPEI ENVIADO" in txt_bloque:
+                        self.triggers_spei_pagina.append({"y": b[1], "mode": "ENVIADOS"})
+                
+                self.triggers_spei_pagina.sort(key=lambda x: x["y"])
 
             # =================================================================
             # ESCANEO PREVENTIVO (Hard Stop Lookahead)
@@ -502,7 +524,13 @@ class MotorExtraccionEspacial:
             # --- DETERMINAR PUNTO DE INICIO ---
             explicit_header_y = geo.header_y if layout.has_explicit_headers else 99999
             
-            if explicit_header_y > 100 and explicit_header_y < 900:
+            # --- FIX DE LA VERSIÓN B: Lectura desde el tope con herencia ---
+            if explicit_header_y > 150 and last_page_columns:
+                cursor_y = 50.0 
+                current_columns = last_page_columns.copy()  # <--- CRUCIAL: El .copy() evita la mutación destructiva
+                start_type = "INHERITED_TOP_BEFORE_EXPLICIT"
+                headers_dinamicos.append({"y": cursor_y, "cols": current_columns.copy(), "tipo": start_type})
+            elif explicit_header_y > 100 and explicit_header_y < 900:
                 cursor_y = explicit_header_y 
                 current_columns = layout.columns
                 start_type = "PRIMARY"
@@ -543,33 +571,38 @@ class MotorExtraccionEspacial:
                                 reason_stop = "FOOTER_FOUND"
                 
                 # 2. Lookahead de Headers
-                lookahead_limit = min(next_stop_y, cursor_y + 600)
-                words_ahead = [w for w in words if (cursor_y + 30) < w[1] < lookahead_limit]
-                
-                lines_map = {}
-                for w in words_ahead:
-                    line_k = int(w[1]/5)*5 
-                    if line_k not in lines_map: lines_map[line_k] = ""
-                    lines_map[line_k] += " " + w[4]
-                
                 found_next_header_y = None
-                for yk in sorted(lines_map.keys()):
-                    txt = lines_map[yk]
-                    if self._calculate_line_score(txt) >= 2:
-                        # Scan hacia arriba (tolerancia hardcodeada mínima necesaria)
-                        y_dry_run_start = max(cursor_y, yk - 15) 
-                        test_cols, _ = self._detectar_layout_en_banda(page, y_dry_run_start, page_bottom)
-                        if test_cols:
-                            found_next_header_y = yk
-                            break
+                
+                # FIX CRÍTICO: Si estamos esperando el header principal, APAGAMOS el escáner ciego 
+                # para no sobrescribir el mapa perfecto de la Pasada 2.
+                if start_type != "INHERITED_TOP_BEFORE_EXPLICIT":
+                    lookahead_limit = min(next_stop_y, cursor_y + 600)
+                    words_ahead = [w for w in words if (cursor_y + 30) < w[1] < lookahead_limit]
+                    
+                    lines_map = {}
+                    for w in words_ahead:
+                        line_k = int(w[1]/5)*5 
+                        if line_k not in lines_map: lines_map[line_k] = ""
+                        lines_map[line_k] += " " + w[4]
+                    
+                    for yk in sorted(lines_map.keys()):
+                        txt = lines_map[yk]
+                        if self._calculate_line_score(txt) >= 2:
+                            # Scan hacia arriba (tolerancia hardcodeada mínima necesaria)
+                            y_dry_run_start = max(cursor_y, yk - 15) 
+                            test_cols, _ = self._detectar_layout_en_banda(page, y_dry_run_start, page_bottom)
+                            if test_cols:
+                                found_next_header_y = yk
+                                break
 
                 if found_next_header_y and found_next_header_y < next_stop_y:
                     next_stop_y = found_next_header_y - 10 
                     reason_stop = "NEXT_HEADER_FOUND"
                 
-                if start_type == "INHERITED_TOP" and cursor_y < explicit_header_y:
+                # AHORA SÍ: Choque seguro con el Header Principal
+                if start_type in ["INHERITED_TOP", "INHERITED_TOP_BEFORE_EXPLICIT"] and cursor_y < explicit_header_y:
                     if explicit_header_y < next_stop_y:
-                        next_stop_y = explicit_header_y
+                        next_stop_y = explicit_header_y - 5
                         reason_stop = "EXPLICIT_HEADER_COLLISION"
 
                 # PROCESAR BLOQUE
@@ -671,7 +704,21 @@ class MotorExtraccionEspacial:
                             current_columns=current_columns,
                             y_techo_bloque_origen=y_techo_bloque
                         )
-                        transacciones_pagina.extend(txs_huerfanas)
+                        
+                        # --- FIX: STITCHING DE TEXTO HUÉRFANO A LA PÁGINA ANTERIOR ---
+                        if txs_huerfanas:
+                            if txs_huerfanas[0].get("es_texto_huerfano"):
+                                texto_extra = txs_huerfanas[0]["descripcion"]
+                                # results[-1] es la página anterior que ya fue procesada y guardada
+                                if results and results[-1]["transacciones"]:
+                                    results[-1]["transacciones"][-1]["descripcion"] += f"\n{texto_extra}"
+                                    self._log_debug(self.LOG_EXTRACTION, f"Stitching huérfano: '{texto_extra[:30]}...'")
+                                
+                                # Ajuste CRÍTICO: Bajamos el techo original para que la 
+                                # siguiente transacción real no vuelva a leer este mismo texto
+                                y_techo_bloque = y_limite_huerfano - 5.0
+                            else:
+                                transacciones_pagina.extend(txs_huerfanas)
 
                 if anclas:
                     todas_anclas_pagina.extend(anclas)
@@ -692,8 +739,23 @@ class MotorExtraccionEspacial:
                 elif reason_stop == "HARD_STOP":
                     self.global_stop = True
                     break 
+                
+                # FIX CRÍTICO: Manejar correctamente la carga del header principal
+                elif reason_stop == "EXPLICIT_HEADER_COLLISION":
+                    # CARGAMOS EL LAYOUT PERFECTO DE LA PASADA 2 (Sin escanear a ciegas)
+                    current_columns = layout.columns
+                    max_header_y = max(c["y1"] for c in current_columns.values()) if current_columns else explicit_header_y + 20
+                    cursor_y = max_header_y
+                    
+                    headers_dinamicos.append({
+                        "y": explicit_header_y,
+                        "cols": current_columns.copy(),
+                        "tipo": "PRIMARY_RESUMED",
+                        "search_rect": [layout.search_area_rect.x0, layout.search_area_rect.y0, layout.search_area_rect.x1, layout.search_area_rect.y1] if layout.search_area_rect else []
+                    })
+                    start_type = "NORMAL"
 
-                elif reason_stop in ["FOOTER_FOUND", "NEXT_HEADER_FOUND", "EXPLICIT_HEADER_COLLISION"]:
+                elif reason_stop in ["FOOTER_FOUND", "NEXT_HEADER_FOUND"]:
                     scan_start_y = cursor_y + 5 
                     new_cols, search_rect = self._detectar_layout_en_banda(page, scan_start_y, page_bottom)
                     
@@ -720,6 +782,10 @@ class MotorExtraccionEspacial:
                 "headers_map": headers_dinamicos,
                 "transacciones": transacciones_pagina
             })
+
+            # --- FIX DE LA VERSIÓN B: Herencia de memoria SPEI para tablas largas ---
+            if hasattr(self, "triggers_spei_pagina") and self.triggers_spei_pagina:
+                self.global_spei_mode = self.triggers_spei_pagina[-1]["mode"]
             
         # =====================================================================
         # POST-PROCESAMIENTO GLOBAL: DEDUPLICACIÓN DE IMPORTES (TABLAS SPEI)
@@ -741,17 +807,18 @@ class MotorExtraccionEspacial:
         # =====================================================================
         for r in results:
             for tx in r["transacciones"]:
-                # Extraemos las banderas y las borramos del diccionario (.pop)
                 era_importe = tx.pop("es_importe_original", False)
                 tenia_signo = tx.pop("tiene_signo", False)
-                
-                # Atrapamos la bandera del escudo antes de borrarla del JSON
                 es_columna_unica = tx.pop("es_columna_unica", False) 
+                spei_mode = tx.pop("spei_mode", None) 
                 
-                # Si viene de un banco de columna única (Mercado Pago), respetamos su 
-                # clasificación matemática (Positivo = ABONO, Negativo = CARGO).
-                # Solo revertimos a "IMPORTE" si NO tiene signo Y NO es columna única (Ej. Mifel SPEI).
-                if era_importe and not tenia_signo and not es_columna_unica:
+                # Regla Mifel: Si trae spei_mode, lo respetamos ciegamente.
+                if spei_mode == "ENVIADOS":
+                    tx["tipo"] = "CARGO"
+                elif spei_mode == "RECIBIDOS":
+                    tx["tipo"] = "ABONO"
+                # Regla General (Versión A)
+                elif era_importe and not tenia_signo and not es_columna_unica:
                     tx["tipo"] = "IMPORTE"
 
         return results
@@ -992,6 +1059,19 @@ class MotorExtraccionEspacial:
         for i, ancla in enumerate(anclas):
             y_actual = ancla["y_anchor"]
             
+            # --- EVALUACIÓN DE MODO SPEI (ACTIVO SOLO SI ES MIFEL) ---
+            # 1. Heredamos la memoria de la página anterior sí o sí.
+            tx_spei_mode = getattr(self, "global_spei_mode", None)
+            
+            # 2. Si estamos en Mifel, revisamos si en ESTA página hay un nuevo trigger
+            if self.banco == "MIFEL":
+                for trig in getattr(self, "triggers_spei_pagina", []):
+                    if y_actual > (trig["y"] - 15):
+                        tx_spei_mode = trig["mode"]
+            
+            # 3. Confirmamos si estamos dentro de una tabla SPEI
+            es_tabla_spei = (tx_spei_mode is not None)
+            
             # --- LÓGICA DE TECHO ---
             if i == 0 and y_techo_bloque_origen is not None:
                 # Ajuste especial para el primer elemento si viene de bloque huérfano
@@ -1091,8 +1171,14 @@ class MotorExtraccionEspacial:
                             # --- DETECTAR SIGNO EXPLÍCITO ---
                             tiene_signo_explicito = "-" in clean_txt or "+" in clean_txt
 
-                            # CLASIFICACIÓN DINÁMICA POR SIGNO
-                            if col_detectada == "IMPORTE":
+                            # CLASIFICACIÓN DINÁMICA
+                            if es_tabla_spei:
+                                # RAMA B: Fuerza bruta para Mifel en zonas SPEI
+                                tipo_real = "IMPORTE"
+                                es_importe_forced = True
+                            elif col_detectada == "IMPORTE":
+                                # RAMA A: Comportamiento normal para columnas unificadas
+                                es_importe_forced = True
                                 if val < 0:
                                     tipo_real = "CARGO"
                                 elif val > 0:
@@ -1100,19 +1186,21 @@ class MotorExtraccionEspacial:
                                 else:
                                     tipo_real = "IMPORTE"
                             else:
+                                # RAMA A: Respetar la columna explícita (BBVA, Santander, etc.)
                                 tipo_real = col_detectada
+                                es_importe_forced = False
                                 
-                            val_limpio = abs(val) # Limpiamos el signo para el JSON final
+                            val_limpio = abs(val)
 
-                            # --- FIX: GUARDAR EL ORIGEN Y EL SIGNO ---
                             montos_detectados.append({
                                 "val": val_limpio, 
                                 "y": w[1], 
                                 "x": w[0], 
                                 "col": tipo_real, 
                                 "box": w[:4],
-                                "es_importe_original": (col_detectada == "IMPORTE"),
-                                "tiene_signo": tiene_signo_explicito  # <--- GUARDAMOS LA BANDERA
+                                "es_importe_original": es_importe_forced,
+                                "tiene_signo": tiene_signo_explicito,
+                                "spei_mode": tx_spei_mode # Se guarda, será None para bancos que no son Mifel
                             })
                             continue
                         except ValueError: pass
@@ -1261,9 +1349,36 @@ class MotorExtraccionEspacial:
                         "coords_box": mejor_monto["box"],
                         "es_importe_original": mejor_monto.get("es_importe_original", False),
                         "tiene_signo": mejor_monto.get("tiene_signo", False), # <--- HEREDAMOS LA BANDERA
-                        "es_columna_unica": "CARGO" not in current_columns and "ABONO" not in current_columns # <--- NUEVO ESCUDO
+                        "es_columna_unica": "CARGO" not in current_columns and "ABONO" not in current_columns
                     }
                     transacciones.append(tx)
+            
+            # NUEVO ELSE
+            else:
+                # FIX: RESCATE DE TEXTO HUÉRFANO SIN MONTO (Stitching entre páginas)
+                if ancla.get("tipo") == "VIRTUAL_HEREDADA" and tokens_texto:
+                    tokens_texto.sort(key=lambda w: (round(w[1], 0), w[0]))
+                    lineas_desc = []
+                    linea_actual = []
+                    y_ref = tokens_texto[0][1]
+                    
+                    for w in tokens_texto:
+                        if abs(w[1] - y_ref) > 5.0:
+                            lineas_desc.append(" ".join(linea_actual))
+                            linea_actual = [w[4]]
+                            y_ref = w[1]
+                        else:
+                            linea_actual.append(w[4])
+                    if linea_actual:
+                        lineas_desc.append(" ".join(linea_actual))
+                        
+                    desc_str = "\n".join(lineas_desc).strip()
+                    if desc_str:
+                        # Retornamos un dict especial solo con el texto
+                        transacciones.append({
+                            "es_texto_huerfano": True,
+                            "descripcion": desc_str
+                        })
 
         return transacciones
 

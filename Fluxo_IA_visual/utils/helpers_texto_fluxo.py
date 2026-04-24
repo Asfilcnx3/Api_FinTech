@@ -7,7 +7,7 @@ PALABRAS_CLAVE_VERIFICACION = re.compile(
 
 # Creamos la lista e palabras excluidas
 PALABRAS_EXCLUIDAS = [
-    "comision", "iva", "com.", "-com x", "cliente stripe", "imss", "spei recibidove por mas", "spei recibidomifel", "kpay", "apiapic", "cf tech"
+    "comision", "com.", "-com x", "cliente stripe", "imss", "spei recibidove por mas", "spei recibidomifel", "kpay", "apiapic", "cf tech"
 ]
 
 # Creamos la lista de palabras clave generales (quitamos mit y american express)
@@ -27,7 +27,7 @@ PALABRAS_EFECTIVO = [
 ]
 
 PALABRAS_TRASPASO_ENTRE_CUENTAS = [
-    "traspaso entre cuentas", "traspaso cuentas propias", "traspaso entre cuentas propias", "transferencia entre cuentas propias", "transferencia entre cuentas", "traspaso entre mis cuentas", "traspaso a cuenta propia", "transferencia a cuenta propia", "traspaso a mis cuentas", "transferencia a mis cuentas", "transferencia cuentas propias"
+    "traspaso entre cuentas", "traspaso cuentas propias", "traspaso entre cuentas propias", "transferencia entre cuentas propias", "transferencia entre cuentas", "traspaso entre mis cuentas", "traspaso a cuenta propia", "transferencia a cuenta propia", "traspaso a mis cuentas", "transferencia a mis cuentas", "transferencia cuentas propias", "traspaso a", "transferencia a", "transferencia entre", "traspaso entre", "traspaso tarjeta", "traspaso a cuenta de terceros"
 ]   
 
 PALABRAS_TRASPASO_FINANCIAMIENTO = [
@@ -527,7 +527,7 @@ FORMATO DE EXTRACCIÓN:
 1. FECHA: Solo el número del día o fecha corta (ej. "05" o "05/12").
 2. DESCRIPCION: Todo el concepto en una sola cadena. Si abarca múltiples líneas visuales, únelas.
 3. MONTO: Solo el número (sin símbolo $, sin comas). Ej: 1540.50
-4. TIPO: Estrictamente "CARGO" (retiros/salidas), "ABONO" (depósitos/entradas) o "IMPORTE" (si proviene de tablas SPEI o monto único).
+4. TIPO: Estrictamente deberá estar el monto dentro de la columna "CARGO" (retiros/salidas), "ABONO" (depósitos/entradas) o "IMPORTE" (si proviene de tablas SPEI o monto único).
 
 FORMATO DE SALIDA ESPERADO:
 <scratchpad>
