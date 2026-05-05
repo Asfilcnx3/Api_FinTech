@@ -269,7 +269,7 @@ class SyntageClient:
         Obtiene la red de clientes o proveedores.
         network_type: 'customer-network' o 'vendor-network'
         """
-        # Según la documentación: /entities/{entityId}/insights/metrics/{network_type}
+    #   Según la documentación: /entities/{entityId}/insights/metrics/{network_type}
         url = f"{self.base_url}/entities/{entity_id}/insights/metrics/{network_type}"
         
         try:

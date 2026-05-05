@@ -68,11 +68,21 @@ async def procesar_caratula_frontend(
                 )
                 respuesta_texto = res.choices[0].message.content
                 
+                # # ==========================================================
+                # # --- PUNTO DE AUDITORÍA 1: ¿Qué contestó exactamente el LLM? ---
+                # logger.info(f"\n[AUDITORÍA 1 - GPT RAW]\n{respuesta_texto}\n-----------------------")
+                # # ==========================================================
+
                 # Pequeño parser manual para TOON de texto
                 for linea in respuesta_texto.split("\n"):
                     if "::" in linea:
                         clave, valor = linea.split("::", 1)
                         datos_extraidos[clave.strip().lower()] = valor.strip()
+                        
+                # # ==========================================================
+                # # --- PUNTO DE AUDITORÍA 2: ¿Qué extrajo el parser TOON? ---
+                # logger.info(f"[AUDITORÍA 2 - PARSER TOON] Datos: {datos_extraidos}")
+                # # ==========================================================
                         
                 if not datos_extraidos:
                     return RespuestaCaratulasFrontend(error_procesamiento="El LLM de texto no devolvió el formato TOON.")
@@ -89,45 +99,104 @@ async def procesar_caratula_frontend(
         # --- CORRECCIÓN ESTRICTA DE CLABE ---
         clabe = None
         if clabe_raw and clabe_raw.lower() != "null":
-            # 1. Eliminamos cualquier basura no numérica (espacios, guiones que la IA haya colado)
             clabe_numeros = ''.join(filter(str.isdigit, clabe_raw))
-            
-            # 2. Rellenamos con ceros a la izquierda hasta garantizar los 18 dígitos
             if clabe_numeros:
-                clabe = clabe_numeros.zfill(18)
+                # NUEVO: Si es American Express, respetamos sus 15 dígitos. Si no, forzamos a 18.
+                if banco and "american" in banco:
+                    clabe = clabe_numeros
+                else:
+                    clabe = clabe_numeros.zfill(18)
 
         # Si el modelo contestó "NULL" textual para los otros campos, lo limpiamos
         if banco == "null": banco = None
         if periodo == "null": periodo = None
 
-        # --- NUEVO: VALIDACIÓN DE RFC Y CLABE ---
-        # A. Extraemos el texto específico del rango que procesamos
+        # ==========================================================
+        # --- EXTRACCIÓN DE IDENTIDAD PRE-VALIDACIÓN ---
+        # ==========================================================
+        # 1. Obtenemos el RFC de la IA (Por si el Regex falla)
+        rfc_ia = str(datos_extraidos.get("rfc", "")).strip().upper() if datos_extraidos.get("rfc") else None
+        if rfc_ia == "NULL": rfc_ia = None
+
+        # 2. Obtenemos el Nombre del Cliente de la IA
+        nombre_cliente = str(datos_extraidos.get("nombre_cliente", "")).strip() if datos_extraidos.get("nombre_cliente") else None
+        if nombre_cliente and nombre_cliente.lower() == "null":
+            nombre_cliente = None
+
+        # --- VALIDACIÓN ESTÁTICA Y CONSOLIDACIÓN ---
         textos_del_rango = [texto_por_pagina.get(p, "") for p in range(inicio_rango, fin_rango + 1)]
         texto_rango_str = "\n".join(textos_del_rango).lower()
 
-        # B. Usamos la extracción estática (Regex) rápida para buscar el RFC
         datos_estaticos = motor_base.identificar_banco_y_datos_estaticos(texto_rango_str)
         rfc_estatico = datos_estaticos.get("rfc")
 
-        # C. Armamos un diccionario temporal para la validación
+        # 3. Consolidamos el RFC (El Regex manda, la IA es el plan B)
+        rfc_final = rfc_estatico if rfc_estatico else rfc_ia
+
+        # 4. Filtro Estricto: Ahora pasamos también el banco y el RFC consolidado
         datos_para_validar = {
-            "rfc": rfc_estatico,
+            "banco": banco,           # <--- Inyectamos para que el validador sepa si es Amex
+            "rfc": rfc_final,         # <--- Usamos el RFC final corregido
             "clabe_interbancaria": clabe
         }
 
-        # D. Pasamos por el filtro estricto
         if not motor_base._es_cuenta_valida(datos_para_validar, texto_rango_str):
             logger.warning(f"La cuenta no pasó el filtro de validación (Falta CLABE válida o el RFC no coincide).")
             return RespuestaCaratulasFrontend(
-                error_procesamiento="El documento parece ser un estado de cuenta, pero no se encontró una CLABE válida o el RFC es incorrecto/pertenece a un banco excluido. (Revisa que el PDF tenga una carátula clara o que la información no esté demasiado borrosa)."
+                error_procesamiento="El documento parece ser un estado de cuenta, pero no se encontró una CLABE válida o el RFC es incorrecto/pertenece a un banco excluido."
             )
-        # ----------------------------------------
 
-        # 5. Si todo es válido, construimos el modelo final
+        # ==========================================================
+        # --- EXTRACCIÓN DE IDENTIDAD PRE-VALIDACIÓN ---
+        # ==========================================================
+        # 1. Obtenemos el RFC de la IA (Por si el Regex falla)
+        rfc_ia = str(datos_extraidos.get("rfc", "")).strip().upper() if datos_extraidos.get("rfc") else None
+        if rfc_ia == "NULL": rfc_ia = None
+
+        # 2. Obtenemos el Nombre del Cliente de la IA
+        nombre_cliente = str(datos_extraidos.get("nombre_cliente", "")).strip() if datos_extraidos.get("nombre_cliente") else None
+        if nombre_cliente and nombre_cliente.lower() == "null":
+            nombre_cliente = None
+
+        # --- VALIDACIÓN ESTÁTICA Y CONSOLIDACIÓN ---
+        textos_del_rango = [texto_por_pagina.get(p, "") for p in range(inicio_rango, fin_rango + 1)]
+        texto_rango_str = "\n".join(textos_del_rango).lower()
+
+        datos_estaticos = motor_base.identificar_banco_y_datos_estaticos(texto_rango_str)
+        rfc_estatico = datos_estaticos.get("rfc")
+
+        # 3. Consolidamos el RFC (El Regex manda, la IA es el plan B)
+        rfc_final = rfc_estatico if rfc_estatico else rfc_ia
+
+        # 4. Filtro Estricto: Ahora evalúa usando el RFC consolidado
+        datos_para_validar = {
+            "rfc": rfc_final,
+            "clabe_interbancaria": clabe
+        }
+
+        if not motor_base._es_cuenta_valida(datos_para_validar, texto_rango_str):
+            logger.warning(f"La cuenta no pasó el filtro de validación (Falta CLABE válida o el RFC no coincide).")
+            return RespuestaCaratulasFrontend(
+                error_procesamiento="El documento parece ser un estado de cuenta, pero no se encontró una CLABE válida o el RFC es incorrecto/pertenece a un banco excluido."
+            )
+
+        # ==========================================================
+        # --- ALERTA DE IDENTIDAD Y MODELO FINAL ---
+        # ==========================================================
+        alerta_doc = None
+        if not rfc_final or not nombre_cliente:
+            faltantes = []
+            if not rfc_final: faltantes.append("RFC")
+            if not nombre_cliente: faltantes.append("Nombre")
+            alerta_doc = f"Extracción de identidad incompleta: No se pudo localizar {' ni '.join(faltantes)}."
+
         caratula_light = DatosCaratulaLight(
             banco=banco,
             clabe=clabe,
-            periodo=periodo
+            periodo=periodo,
+            rfc=rfc_final,
+            nombre_cliente=nombre_cliente,
+            alerta_documento=alerta_doc
         )
 
         return RespuestaCaratulasFrontend(resultados=[caratula_light])
