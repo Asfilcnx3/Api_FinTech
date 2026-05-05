@@ -143,6 +143,8 @@ async def consultar_resultado(
         job_id=job_id,
         estatus=estatus_actual,
         indicador_caratulas_recientes=job_info.get("indicador_caratulas_recientes"),
+        mensaje_periodos=job_info.get("mensaje_periodos"),
+        alerta_identidad=job_info.get("alerta_identidad"), 
         resultados_exitosos=job_info.get("resultados_exitosos", []),
         errores=job_info.get("errores", []),
         detalle_error=job_info.get("detalle_error")

@@ -259,18 +259,53 @@ class CaratulasLightService:
                 elif "exito" in res:
                     exitos.extend(res["exito"])
             
-            # LÓGICA DE INDICADOR ESTRICTO 
+            # ==========================================================
+            # --- IDEA 1: INDICADOR ESTRICTO Y ALERTA DE PERIODOS ---
+            # ==========================================================
             set_a, set_b = self._obtener_sets_de_meses_requeridos()
             
-            # Extraemos todos los periodos que la IA encontró en los PDFs y los hacemos un Set
+            # Extraemos todos los periodos encontrados en los PDFs
             periodos_encontrados = set(caratula.get("periodo") for caratula in exitos if caratula.get("periodo"))
             
-            # El booleano será True SOLO SI el Set A completo o el Set B completo están dentro de lo que subió el usuario
+            # El booleano será True SOLO SI el Set A completo o el Set B completo están
             tiene_caratulas_recientes = set_a.issubset(periodos_encontrados) or set_b.issubset(periodos_encontrados)
+            
+            mensaje_periodos = "Se encontraron los 3 meses requeridos."
+            if not tiene_caratulas_recientes:
+                faltantes_a = sorted(list(set_a - periodos_encontrados))
+                faltantes_b = sorted(list(set_b - periodos_encontrados))
+                # Mensaje explícito de qué meses le faltan para que el gestor sepa qué pedir
+                mensaje_periodos = f"No se completaron los 3 meses requeridos. Falta(n) periodo(s): {', '.join(faltantes_a)} (o alternativamente asumiendo desfase: {', '.join(faltantes_b)})."
                     
+            # ==========================================================
+            # --- IDEA 2: VALIDACIÓN DE CONGRUENCIA (RFC / NOMBRE) ---
+            # ==========================================================
+            alerta_identidad = None
+            if exitos:
+                # Extraemos los RFCs y Nombres (ignorando nulos o vacíos)
+                rfcs_detectados = set(c.get("rfc") for c in exitos if c.get("rfc"))
+                nombres_detectados = set(c.get("nombre_cliente") for c in exitos if c.get("nombre_cliente"))
+                
+                incongruencia_rfc = len(rfcs_detectados) > 1
+                incongruencia_nombre = len(nombres_detectados) > 1
+                
+                if incongruencia_rfc or incongruencia_nombre:
+                    alerta_identidad = "Se detectaron estados de cuenta que podrían pertenecer a distintos titulares. "
+                    detalles = []
+                    if incongruencia_rfc: 
+                        detalles.append(f"Múltiples RFCs: {', '.join(rfcs_detectados)}")
+                    if incongruencia_nombre: 
+                        detalles.append(f"Múltiples Nombres: {' | '.join(nombres_detectados)}")
+                    alerta_identidad += f"[{' y '.join(detalles)}]"
+
+            # ==========================================================
+            # ACTUALIZACIÓN DEL JOB
+            # ==========================================================
             self.storage.update_job(job_id, {
                 "estatus": "completado",
                 "indicador_caratulas_recientes": tiene_caratulas_recientes,
+                "mensaje_periodos": mensaje_periodos, # <--- Se inyecta Idea 1
+                "alerta_identidad": alerta_identidad, # <--- Se inyecta Idea 2
                 "resultados_exitosos": exitos,
                 "errores": errores
             })

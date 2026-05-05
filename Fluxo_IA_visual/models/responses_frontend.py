@@ -10,6 +10,9 @@ class DatosCaratulaLight(BaseModel):
     banco: Optional[str] = Field(None, description="Nombre del banco en minúsculas (ej. bbva, banorte)")
     clabe: Optional[str] = Field(None, description="CLABE interbancaria de 18 dígitos")
     periodo: Optional[str] = Field(None, description="Periodo del estado de cuenta en formato MM-YYYY")
+    rfc: Optional[str] = Field(None, description="RFC extraído del documento")
+    nombre_cliente: Optional[str] = Field(None, description="Nombre del titular de la cuenta")
+    alerta_documento: Optional[str] = Field(None, description="Aviso a nivel pdf (ej. extracción de RFC/Nombre incompleta)")
 
 class RespuestaCaratulasFrontend(BaseModel):
     """Contenedor final para cumplir con la lista de objetos o devolver un error estructurado."""
@@ -35,6 +38,10 @@ class RespuestaEstadoTrabajo(BaseModel):
         None, 
         description="True si existen carátulas de los últimos 3 meses requeridos."
     )
+    
+    mensaje_periodos: Optional[str] = Field(None, description="Explicación del indicador_caratulas_recientes con meses exactos si falla.")
+    alerta_identidad: Optional[str] = Field(None, description="Aviso general si los estados de cuenta no comparten el mismo RFC o Nombre.")
+    
     resultados_exitosos: List[DatosCaratulaLight] = []
     errores: List[ErrorDocumento] = [] 
     detalle_error: Optional[str] = None

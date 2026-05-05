@@ -439,6 +439,7 @@ class MotorCaratulas:
         """
         rfc = str(datos_reconciliados.get("rfc", "")).strip().upper()
         clabe = str(datos_reconciliados.get("clabe_interbancaria", "")).strip()
+        banco = str(datos_reconciliados.get("banco", "")).strip().lower() # <--- Extraemos el banco
         
         # 1. Lista negra estricta de RFCs de Bancos
         rfcs_bancos = ["BBA830831LJ2", "BNM840515VB1", "BBA940707IE1", "BMB930211WA9", "BAI0205236Y8"]
@@ -446,9 +447,11 @@ class MotorCaratulas:
             self._log_debug(5, f"Descartada: RFC {rfc} pertenece al Banco.")
             return False
 
-        # 2. El "Pase VIP": Si tiene una CLABE de 18 dígitos y superó la lista negra, es válida.
+        # 2. El "Pase VIP": CLABE de 18 dígitos, O cuenta de 15 si es American Express
         clabe_limpia = ''.join(filter(str.isdigit, clabe))
-        if len(clabe_limpia) >= 18:
+        es_amex = "american" in banco or "amex" in banco
+        
+        if len(clabe_limpia) >= 18 or (es_amex and len(clabe_limpia) == 15):
             return True
 
         # 3. Reglas estrictas de texto
