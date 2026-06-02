@@ -1,4 +1,4 @@
-# routers/router_fluxo.py
+# api/endpoints/router_fluxo.py
 
 from fastapi import APIRouter, UploadFile, File, Form, BackgroundTasks, HTTPException, Query, Depends
 from fastapi.responses import FileResponse, JSONResponse

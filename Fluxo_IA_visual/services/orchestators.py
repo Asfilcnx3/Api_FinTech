@@ -1,10 +1,12 @@
+# services/orchestators.py
+
 from ..utils.helpers import (
     limpiar_monto, detectar_tipo_contribuyente, crear_objeto_resultado,
     construir_fecha_completa, separar_fecha_y_ruido, calcular_periodo
     
 )
 from .ia_extractor import (
-    _extraer_datos_con_ia, llamar_agente_ocr_vision
+    _extraer_datos_con_ia
 )
 from ..utils.helpers_texto_fluxo import (
     PALABRAS_BMRCASH, PALABRAS_EXCLUIDAS, PALABRAS_EFECTIVO, PALABRAS_TRASPASO_ENTRE_CUENTAS, PALABRAS_TRASPASO_FINANCIAMIENTO, PALABRAS_TRASPASO_MORATORIO
@@ -24,6 +26,9 @@ from ..models.responses_motor_estados import RespuestasMotorEstados
 from ..models.responses_analisisTPV import AnalisisTPV
 from ..models.responses_csf import CSF
 
+from ..core.textract_engine import extraer_documento_completo, extraer_saldo_inicial_poc
+from ..core.extractor_determinista import ExtractorDeterministaOCR
+
 from fastapi import UploadFile
 from ..core.nomiflash_engine import NomiFlashEngine
 from ..models.responses_nomiflash import NomiFlash
@@ -33,7 +38,6 @@ from fastapi import UploadFile
 import logging
 import fitz
 import time
-import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -173,128 +177,85 @@ def clasificar_transacciones_extraidas(
         "error_transacciones": None
     }
 
-async def procesar_documento_escaneado_con_agentes_async(
-    ia_data_inicial: dict, 
-    pdf_bytes: bytes, 
+def procesar_ocr_worker_sync(
+    ia_data: dict, 
+    file_path: str, 
     filename: str
-) -> dict:
+) -> Union[AnalisisTPV.ResultadoExtraccion, Exception]:
     
-    logger.info(f"Iniciando Motor OCR-Visión puro para: {filename}")
-    banco = ia_data_inicial.get("banco", "generico")
-    
+    # --- CLASE ADAPTADORA INTERNA ---
+    class TransaccionAdapterOCR:
+        """Adapta la salida del POC a la estructura que requiere el clasificador."""
+        def __init__(self, data_dict):
+            self.fecha = data_dict.get("fecha", "")
+            self.descripcion = data_dict.get("descripcion", "")
+            
+            # El clasificador de negocio espera 'monto', pero la POC entrega 'importe'
+            self.monto = float(data_dict.get("importe", 0.0))
+            
+            raw_tipo = data_dict.get("tipo", "INDEFINIDO")
+            self.tipo = str(raw_tipo).upper() if raw_tipo else "INDEFINIDO"
+            
+            self.metodo_match = "TEXTRACT_DETERMINISTA" 
+            self.coords_box = None
+            self.id_interno = "OCR_TX"
+            self.score_confianza = 0.95 
+
     try:
-        with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
-            total_paginas = len(doc)
-    except Exception:
-        return {"error": "No se pudo leer el PDF (corrupto)."}
-
-    # --- Wrapper para cronometrar la petición asíncrona ---
-    async def _llamar_agente_con_tiempo(num_pag):
-        inicio = time.time()
-        res_agente = await llamar_agente_ocr_vision(banco, pdf_bytes, [num_pag])
-        tiempo_ms = (time.time() - inicio) * 1000
-        return res_agente, tiempo_ms
-    # -------------------------------------------------------------
-
-    tareas = []
-    for num_pag in range(1, total_paginas + 1):
-        tareas.append(_llamar_agente_con_tiempo(num_pag)) # Usamos el wrapper
-    
-    res_paginas = await asyncio.gather(*tareas, return_exceptions=True)
-
-    todas_las_transacciones = []
-    metricas_ocr = []
-
-    for i, res_tuple in enumerate(res_paginas):
-        pagina_real = i + 1
+        logger.info(f"[TextractWorker] Iniciando POC Determinista para: {filename}")
         
-        # Extraemos el tiempo si no hubo una excepción catastrófica en el gather
-        if isinstance(res_tuple, Exception):
-            res = res_tuple
-            tiempo_ms = 0
-        else:
-            res, tiempo_ms = res_tuple
+        # 1. Extracción concurrente con AWS Textract
+        filas_estructuradas, textos_crudos = extraer_documento_completo(file_path)
         
-        # --- Lógica de registro de errores ---
-        if isinstance(res, Exception) or not res:
-            logger.warning(f"Fallo OCR en {filename} pág {pagina_real}")
-            # En lugar de hacer 'continue', registramos la falla para el reporte QA
+        if not filas_estructuradas:
+            raise ValueError("Textract no devolvió información útil o falló la conversión del PDF.")
             
-            # 1. CASO A: Falla catastrófica del Agente o JSON Ilegible
-        if isinstance(res, Exception) or res is None:
-            logger.warning(f"Fallo OCR en {filename} pág {pagina_real}")
-            metricas_ocr.append({
-                "pagina": pagina_real,
-                "metodo_predominante": "QWEN_VISION_OCR",
-                "transacciones": 0,
-                "tiempo_ms": int(tiempo_ms),
-                "calidad_score": 0.0, 
-                "alertas": f"ERROR: {str(res)}" if isinstance(res, Exception) else "Respuesta nula del Agente"
-            })
-            continue 
-            
-        # 2. CASO B: Página procesada pero sin transacciones (Ej. Términos y Condiciones)
-        if len(res) == 0:
-            metricas_ocr.append({
-                "pagina": pagina_real,
-                "metodo_predominante": "QWEN_VISION_OCR",
-                "transacciones": 0,
-                "tiempo_ms": int(tiempo_ms),
-                "calidad_score": 1.0, 
-                "alertas": "Página sin movimientos"
-            })
-            continue
-
-        # 3. CASO C: Extracción Exitosa -> Evaluación de Calidad (MÉTRICA 5)
-        score_pagina = 1.0
-        alertas_pagina = []
-
-        for trx in res:
-            monto_raw = str(trx.get("monto", ""))
-            tipo_raw = str(trx.get("tipo", "INDEFINIDO")).upper()
-            fecha_raw = str(trx.get("fecha", ""))
-            
-            # Castigo por formato de monto sucio (El prompt exige número limpio)
-            if "$" in monto_raw or "," in monto_raw or not monto_raw:
-                score_pagina = min(score_pagina, 0.85) # Bajamos a 85%
-                if "Montos con símbolos/sucios" not in alertas_pagina: alertas_pagina.append("Montos con símbolos/sucios")
-                
-            # Castigo por tipo de transacción alucinada por el LLM
-            if tipo_raw not in ["CARGO", "ABONO"]:
-                score_pagina = min(score_pagina, 0.70) # Bajamos a 70% (Requiere más limpieza)
-                if "Tipos no estándar" not in alertas_pagina: alertas_pagina.append("Tipos no estándar")
-
-            # Limpieza y guardado final
-            monto_clean = limpiar_monto(monto_raw)
-            
-            # Tratamos de rescatar el tipo si se equivocó
-            tipo_final = "ABONO" if "ABONO" in tipo_raw else "CARGO" if "CARGO" in tipo_raw else "INDEFINIDO"
-
-            todas_las_transacciones.append({
-                "fecha": fecha_raw,
-                "descripcion": str(trx.get("descripcion", "")),
-                "monto": str(monto_clean),         
-                "tipo": tipo_final,
-                "categoria": "GENERAL"             
-            })
-            
-        # Unimos las alertas o ponemos OK si todo fue perfecto
-        str_alertas = " | ".join(alertas_pagina) if alertas_pagina else "OK"
-
-        # Registramos las métricas de esta página evaluada
-        metricas_ocr.append({
-            "pagina": pagina_real,
-            "metodo_predominante": "QWEN_VISION_OCR",
-            "transacciones": len(res),
-            "tiempo_ms": int(tiempo_ms),
-            "calidad_score": round(score_pagina, 2), # Aquí inyectamos el score de la métrica 5
-            "alertas": str_alertas
-        })
-
-    return {
-        "transacciones": todas_las_transacciones,
-        "metricas": metricas_ocr
-    }
+        # 2. Buscar el saldo inicial (Arranque)
+        saldo_arranque = extraer_saldo_inicial_poc(textos_crudos)
+        
+        # 3. Procesamiento y reglas deterministas
+        extractor = ExtractorDeterministaOCR()
+        transacciones_brutas = extractor.procesar_transacciones(filas_estructuradas, saldo_arranque)
+        transacciones_limpias = extractor.deduplicar_transacciones(transacciones_brutas)
+        
+        logger.info(f"[TextractWorker] Transacciones extraídas y deduplicadas: {len(transacciones_limpias)}")
+        
+        # 4. Adaptación al formato del clasificador de negocio
+        transacciones_objetos = [TransaccionAdapterOCR(tx) for tx in transacciones_limpias]
+        
+        # 5. Clasificación de negocio (tu función existente)
+        # Aquí pasamos (1, 999) como dummy, ya que Textract analizó el documento completo
+        rango_paginas_dummy = (1, 999) 
+        resultado_dict = clasificar_transacciones_extraidas(
+            ia_data_cuenta=ia_data, 
+            transacciones_objetos=transacciones_objetos, 
+            filename=filename, 
+            rango_paginas=rango_paginas_dummy
+        )
+        
+        # 6. Inyección de Metadata técnica (Para no romper el modelo Pydantic)
+        resultado_dict["metadata_tecnica"] = [{
+            "pagina": 1,
+            "tiempo_ms": 0,
+            "calidad_score": 1.0,
+            "metodo_predominante": "TEXTRACT_DETERMINISTA",
+            "bloques": len(transacciones_limpias),
+            "transacciones": len(transacciones_limpias),
+            "alertas": "Procesado con motor OCR Determinista AWS"
+        }]
+        
+        # 7. Creación del objeto final
+        obj_res = crear_objeto_resultado(resultado_dict) 
+        
+        # 8. Restauramos campos de trazabilidad
+        obj_res.file_path_origen = file_path
+        obj_res.es_digital = False
+        
+        return obj_res
+        
+    except Exception as e:
+        logger.error(f"Error Worker OCR Textract ({filename}): {e}", exc_info=True)
+        return e
 
 def procesar_digital_worker_sync(
     ia_data_inicial: dict,
@@ -420,78 +381,6 @@ def procesar_digital_worker_sync(
         # Retornamos la excepción para que el orquestador superior decida qué hacer
         return e
 
-def procesar_ocr_worker_sync(
-    ia_data: dict, 
-    file_path: str, 
-    filename: str
-) -> Union[AnalisisTPV.ResultadoExtraccion, Exception]:
-    
-    # --- 1. CLASE ADAPTADORA (Igual que en el Digital Worker) ---
-    class TransaccionAdapterOCR:
-        """Adapta el dict crudo del OCR al objeto que espera el clasificador de negocio."""
-        def __init__(self, data_dict):
-            self.fecha = data_dict.get("fecha", "")
-            self.descripcion = data_dict.get("descripcion", "")
-            
-            # Manejo seguro del monto (el OCR a veces devuelve strings sucios)
-            try:
-                monto_str = str(data_dict.get("monto", "0")).replace("$", "").replace(",", "").strip()
-                self.monto = float(monto_str)
-            except:
-                self.monto = 0.0
-                
-            raw_tipo = data_dict.get("tipo", "INDEFINIDO")
-            self.tipo = str(raw_tipo).upper() if raw_tipo else "INDEFINIDO"
-            
-            # Metadatos técnicos mockeados para que no truene el clasificador
-            self.metodo_match = "OCR_AGENT" 
-            self.coords_box = None
-            self.id_interno = "OCR_TX"
-            self.score_confianza = 0.85 # Confianza arbitraria estándar
-
-    try:
-        # 1. Leer PDF
-        with open(file_path, "rb") as f:
-            pdf_bytes = f.read()
-
-        # 2. Obtener transacciones crudas del agente OCR
-        resultado_crudo = asyncio.run(
-            procesar_documento_escaneado_con_agentes_async(ia_data, pdf_bytes, filename)
-        )
-
-        txs_crudas = resultado_crudo.get("transacciones", [])
-        logger.info(f"[TRACKING OCR - 1] Worker terminó {filename}. Transacciones extraídas: {len(txs_crudas)}")
-
-        # --- 3. ADAPTACIÓN AL FORMATO DEL MOTOR ---
-        transacciones_objetos = [TransaccionAdapterOCR(tx) for tx in txs_crudas]
-
-        # --- 4. CLASIFICACIÓN DE NEGOCIO (EL CEREBRO COMPARTIDO) ---
-        # El OCR procesa todo el documento, simulamos el rango (1 a 999) para el log
-        rango_paginas_dummy = (1, 999)
-        
-        resultado_dict = clasificar_transacciones_extraidas(
-            ia_data_cuenta=ia_data, 
-            transacciones_objetos=transacciones_objetos, 
-            filename=filename, 
-            rango_paginas=rango_paginas_dummy
-        )
-
-        # 5. INYECCIÓN DE METADATA TÉCNICA DEL OCR
-        resultado_dict["metadata_tecnica"] = resultado_crudo.get("metricas", [])
-
-        # 6. CREACIÓN DEL OBJETO RESULTADO FINAL
-        obj_res = crear_objeto_resultado(resultado_dict) 
-        
-        # 7. Restauramos campos de trazabilidad
-        obj_res.file_path_origen = file_path
-        obj_res.es_digital = False
-        
-        return obj_res
-        
-    except Exception as e:
-        logger.error(f"Error Worker OCR ({filename}): {e}", exc_info=True)
-        return e
-    
 def extraer_datos_con_regex(texto: str, tipo_persona: str) -> Optional[Dict]:
     """
     Aplica los patrones de regex compilados, distinguiendo entre campos

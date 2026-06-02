@@ -491,6 +491,8 @@ class MotorExtraccionEspacial:
                         self.triggers_spei_pagina.append({"y": b[1], "mode": "RECIBIDOS"})
                     elif "SPEI ENVIADOS" in txt_bloque or "SPEI ENVIADO" in txt_bloque:
                         self.triggers_spei_pagina.append({"y": b[1], "mode": "ENVIADOS"})
+                    elif "DETALLES DEL CRÉDITO" in txt_bloque or "DETALLE DEL CRÉDITO" in txt_bloque:
+                        self.triggers_spei_pagina.append({"y": b[1], "mode": "DETALLE_CREDITO"})
                 
                 self.triggers_spei_pagina.sort(key=lambda x: x["y"])
 
@@ -835,17 +837,74 @@ class MotorExtraccionEspacial:
 
         # --- FIX: ESCUDO PARA MERCADO PAGO / COLUMNA ÚNICA ---
         # Las transacciones "normales" son los Cargos/Abonos clásicos, 
-        # los importes con signo, O cualquier transacción que venga de un layout de columna única.
-        normales = [tx for tx in todas_las_transacciones if not tx.get("es_importe_original") or tx.get("tiene_signo") or tx.get("es_columna_unica")]
+        # los importes con signo, O cualquier transacción de columna única (A MENOS que sea zona SPEI/Crédito).
+        normales = [
+            tx for tx in todas_las_transacciones 
+            if not tx.get("es_importe_original") 
+            or tx.get("tiene_signo") 
+            or (tx.get("es_columna_unica") and not tx.get("spei_mode"))
+        ]
         
-        # Solo intentamos fusionar (SPEI de Mifel) si era importe original, NO tenía signo, y NO era de columna única
-        importes = [tx for tx in todas_las_transacciones if tx.get("es_importe_original") and not tx.get("tiene_signo") and not tx.get("es_columna_unica")]
+        # Solo intentamos fusionar si era importe original, NO tenía signo, 
+        # y (NO era de columna única O pertenece a una zona SPEI/Crédito).
+        importes = [
+            tx for tx in todas_las_transacciones 
+            if tx.get("es_importe_original") 
+            and not tx.get("tiene_signo") 
+            and (not tx.get("es_columna_unica") or tx.get("spei_mode"))
+        ]
         
         self._log_debug(self.LOG_EXTRACTION, f"DEDUPLICACIÓN GLOBAL INICIADA: {len(importes)} IMPORTES vs {len(normales)} NORMALES en todo el documento.")
         
         ids_importes_fusionados = set()
 
-        for imp in importes:
+        # =================================================================
+        # NUEVO PRE-FILTRO: FUSIÓN MUCHOS-A-UNO (Zonas de Crédito Fragmentadas)
+        # =================================================================
+        importes_credito = [imp for imp in importes if imp.get("spei_mode") == "DETALLE_CREDITO"]
+        if importes_credito:
+            grupos = {}
+            for imp in importes_credito:
+                fecha_str = str(imp.get("fecha", "")).strip()
+                desc = imp.get("descripcion", "")
+                
+                # Extraemos la cuenta/referencia (ej. 03000447031) para no sumar créditos distintos del mismo día
+                match = re.search(r'\d{8,15}', desc.replace('-', '').replace('\n', ''))
+                ref_id = match.group(0) if match else "GENERICO"
+                
+                clave = (fecha_str, ref_id)
+                if clave not in grupos:
+                    grupos[clave] = []
+                grupos[clave].append(imp)
+                
+            for (fecha_str, ref_id), grupo in grupos.items():
+                if len(grupo) > 1: # Solo aplicamos lógica N:1 si hay fragmentos
+                    suma_total = sum(float(imp.get("monto", 0.0)) for imp in grupo if "monto" in imp)
+                    
+                    # Buscar el movimiento "Padre" (ej. RECUPERACION DE CREDITO)
+                    candidatos_padre = [
+                        n for n in normales 
+                        if str(n.get("fecha", "")).strip() == fecha_str 
+                        and abs(float(n.get("monto", 0.0)) - suma_total) < 0.01
+                    ]
+                    
+                    if len(candidatos_padre) == 1:
+                        padre = candidatos_padre[0]
+                        desc_hijos = " | ".join([imp.get("descripcion", "").replace("\n", " ").strip() for imp in grupo])
+                        padre["descripcion"] = f"{padre['descripcion']} | DESGLOSE: {desc_hijos}"
+                        
+                        for imp in grupo:
+                            ids_importes_fusionados.add(id(imp))
+                            
+                        self._log_debug(self.LOG_EXTRACTION, f"   [EXITO] Fusión MÚLTIPLE (Crédito): Suma ${suma_total:.2f} el {fecha_str} -> {len(grupo)} sub-movimientos fusionados.")
+
+        # =================================================================
+        # LOOP CLÁSICO 1:1
+        # =================================================================
+        # Filtramos los que ya se fusionaron en el pre-filtro para que no pasen por aquí
+        importes_restantes = [imp for imp in importes if id(imp) not in ids_importes_fusionados]
+
+        for imp in importes_restantes:
             try:
                 monto_imp = float(imp.get("monto", 0.0))
             except:
@@ -870,8 +929,6 @@ class MotorExtraccionEspacial:
                 continue
 
             # --- 2. FILTRO DE PLATA: Desempate por texto (Heurística clásica) ---
-            # Si hay múltiples candidatos exactos, buscamos solo entre ellos. 
-            # Si no hay ninguno (por errores de OCR en fecha), buscamos en todo el documento.
             lista_busqueda = candidatos_exactos if len(candidatos_exactos) > 1 else normales
 
             for norm in lista_busqueda:
@@ -1347,8 +1404,9 @@ class MotorExtraccionEspacial:
                         "score_confianza": 0.95,
                         "coords_box": mejor_monto["box"],
                         "es_importe_original": mejor_monto.get("es_importe_original", False),
-                        "tiene_signo": mejor_monto.get("tiene_signo", False), # <--- HEREDAMOS LA BANDERA
-                        "es_columna_unica": "CARGO" not in current_columns and "ABONO" not in current_columns
+                        "tiene_signo": mejor_monto.get("tiene_signo", False),
+                        "es_columna_unica": "CARGO" not in current_columns and "ABONO" not in current_columns,
+                        "spei_mode": mejor_monto.get("spei_mode")
                     }
                     transacciones.append(tx)
             

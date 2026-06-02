@@ -19,7 +19,7 @@ PALABRAS_TPV = [
     "terminales punto de venta", "punto de venta", "tpv", "terminal", "evopay", "clip", "izettle", "netpay", "mp agregador", "mpagregador", "getnet",
     "pocket de latinoameric", "pocket de billpocket", "billpocket", "spei amexco", "data merchant services", "abrexpress company mexicsa",
     "net pay", "netpay", "payclip", "pocket", "kiwi", "kiwi international", "zettle", "gananciasclip", "ganancias clip", "deposito bpu", "depositobpu",
-    "net pay sapi de cv", "srpago", "sr pago", "señor pago", "señorpago", "wuzi", "bn-nts", "vta. cre", "vta. deb", "netpay", "pay sapi de cv", "first data", "fiserv", "evopay mx", "evopaymx", "evopay", "evopayments"
+    "net pay sapi de cv", "srpago", "sr pago", "señor pago", "señorpago", "wuzi", "bn-nts", "vta. cre", "vta. deb", "netpay", "pay sapi de cv", "first data", "fiserv", "evopay mx", "evopaymx", "evopay", "evopayments", "bzpay", "bz pay", "bzpayments", "bz payments", "bzpay solutions", "bz pay solutions", "psm payment services mexico sa de cv"
 ]
 
 PALABRAS_EFECTIVO = [
@@ -511,6 +511,7 @@ EJEMPLO DE SALIDA:
 # 05 | comision manejo cuenta | 50.00 | cargo
 # """
 
+### ESTA VARIABLE LA VAMOS A COMENTAR PARA PROBAR OTRO PROMPT.
 PROMPT_FASE_2_ESCRIBA_VISION = """
 TU OBJETIVO:
 Eres un sistema OCR financiero experto en leer tablas de estados de cuenta bancarios. Tu ÚNICA tarea es extraer transacciones de la tabla principal y devolverlas en un formato JSON estrictamente válido. No clasifiques, solo transcribe.

@@ -20,3 +20,6 @@ pandas
 numpy
 statsmodels
 opencv-python-headless
+pdf2image 
+opencv-python 
+boto3
