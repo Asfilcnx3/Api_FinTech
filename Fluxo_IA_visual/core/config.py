@@ -1,6 +1,8 @@
+# core/config.py
+
 import logging
 from enum import Enum
-from typing import List
+from typing import List, Optional
 
 from dotenv import load_dotenv
 from pydantic import field_validator, ValidationError, SecretStr
@@ -50,9 +52,16 @@ class Settings(BaseSettings):
     OPENROUTER_API_KEY: SecretStr
     OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
 
+    # AWS Textract Settings
+    AWS_ACCESS_KEY_ID: SecretStr
+    AWS_SECRET_ACCESS_KEY: SecretStr
+    AWS_REGION_TEXTRACT: str = "us-east-1"
+
     ## Development settings
     DEBUG: bool = False
     LOG_LEVEL: str = "INFO"
+    # Configuración Poppler (Opcional para Windows)
+    POPPLER_PATH: Optional[str] = None 
     
     # File Upload Settings
     MAX_FILE_SIZE_MB: int = 10
@@ -67,6 +76,22 @@ class Settings(BaseSettings):
     def max_file_size_bytes(self) -> int:
         """Calcula los bytes dinámicamente basado en la configuración final en MB."""
         return self.MAX_FILE_SIZE_MB * 1024 * 1024
+
+    @field_validator("AWS_ACCESS_KEY_ID")
+    @classmethod
+    def validate_aws_access_key(cls, secret: SecretStr) -> SecretStr:
+        v = secret.get_secret_value()
+        if not v:
+            raise ValueError("AWS_ACCESS_KEY_ID no puede estar vacía.")
+        return secret
+
+    @field_validator("AWS_SECRET_ACCESS_KEY")
+    @classmethod
+    def validate_aws_secret_key(cls, secret: SecretStr) -> SecretStr:
+        v = secret.get_secret_value()
+        if not v:
+            raise ValueError("AWS_SECRET_ACCESS_KEY no puede estar vacía.")
+        return secret
 
     @field_validator("OPENAI_API_KEY_FLUXO")
     @classmethod

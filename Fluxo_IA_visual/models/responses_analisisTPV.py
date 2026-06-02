@@ -1,3 +1,5 @@
+# models/responses_analisisTPV.py
+
 from .responses_general import ErrorRespuestaBase # Por si en el futuro se rompe, quitamos esto
 from pydantic import BaseModel, Field
 from typing import Any, Dict, List, Optional, Tuple, Union

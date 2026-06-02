@@ -1,3 +1,5 @@
+# services/pdf_processor.py
+
 from ..core.exceptions import PDFCifradoError
 
 from typing import List, Optional

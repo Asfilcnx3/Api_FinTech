@@ -1,3 +1,5 @@
+# services/processing_service.py
+
 import asyncio
 import logging
 import copy
@@ -7,7 +9,6 @@ from concurrent.futures import ProcessPoolExecutor
 
 # Imports del proyecto
 from ..models.responses_analisisTPV import AnalisisTPV
-from ..services.ia_extractor import clasificar_lote_con_ia
 from ..core.exceptions import PDFCifradoError
 from ..core.motor_clasificador import MotorClasificador
 from ..services.storage_service import StorageService
@@ -24,7 +25,7 @@ from ..utils.helpers_texto_fluxo import (
     PATRONES_COMPILADOS, prompt_base_fluxo,
 )
 from ..utils.helpers import extraer_json_del_markdown, sanitizar_datos_ia
-from ..services.ia_extractor import analizar_gpt_fluxo, analizar_con_ocr_fluxo
+from ..services.ia_extractor import clasificar_lote_con_ia, analizar_gpt_fluxo, analizar_con_ocr_fluxo
 
 from ..utils.helpers_texto_fluxo import (
     PALABRAS_EXCLUIDAS,
