@@ -1,3 +1,5 @@
+# core/motor_clasificador.py
+
 import logging
 import math
 import asyncio
@@ -6,6 +8,8 @@ import re
 import difflib
 import unicodedata
 
+from ..utils.tags_y_pesos_fluxo import CategoriaTag, CONFIGURACION_TAGS
+
 logger = logging.getLogger(__name__)
 
 class MotorClasificador:
@@ -13,11 +17,10 @@ class MotorClasificador:
     Motor centralizado para la clasificación de transacciones bancarias.
     Aplica filtros deterministas de primera capa y delega la ambigüedad a modelos LLM.
     """
-    def __init__(self, diccionarios_palabras: dict, debug_flags: list = None):
+    def __init__(self, debug_flags: list = None):
         """
         Inicializa el motor inyectando los diccionarios de palabras clave.
         """
-        self.diccionarios = diccionarios_palabras
         # Banderas de debug:
         # 1 = Filtro de Cargos | 2 = Reglas de Texto | 3 = Payload IA | 4 = Sumatorias Totales
         self.debug_flags = debug_flags if debug_flags is not None else []
@@ -33,115 +36,142 @@ class MotorClasificador:
             }
             prefijo = etiquetas.get(flag, "[DEBUG]  ")
             logger.info(f"  {prefijo} {mensaje}")
+    
+    def _aplicar_matriz_conflictos(self, tags_encontrados: dict, es_abono: bool) -> tuple:
+        """
+        Fase 2 y 3: Evalúa los tags.
+        Retorna: (categoría_final, razón_de_la_clasificación) o (None, None) si va a la IA.
+        """
+        if not tags_encontrados:
+            return None, None
+
+        # --- 1. DEFENSA POR NATURALEZA DEL MOVIMIENTO (Abono vs Cargo) ---
+        if es_abono:
+            # Los abonos NUNCA son comisiones ni IVA (Evita el falso positivo de "terminales punto de venta")
+            tags_encontrados.pop(CategoriaTag.IVA, None)
+            tags_encontrados.pop(CategoriaTag.COMISION_CR, None)
+            tags_encontrados.pop(CategoriaTag.COMISION_DB, None)
+            tags_encontrados.pop(CategoriaTag.COMISION_AMEX, None)
+            tags_encontrados.pop(CategoriaTag.COMISION_MIXTA, None)
+        else:
+            # Los cargos tienen defensas especiales
+            # A) Pago Financiamiento tiene máxima prioridad en salidas (mata IVA y Comisiones)
+            if CategoriaTag.PAGO_FINANCIAMIENTO in tags_encontrados:
+                return CategoriaTag.PAGO_FINANCIAMIENTO.value, "Defensa de cargos: Pago a financiamiento tiene prioridad máxima."
+            
+            # B) Si es un Traspaso o BMRCASH saliente, anulamos falsos positivos de IVA/Comisión
+            es_traspaso = CategoriaTag.TRASPASO in tags_encontrados
+            es_bmrcash = CategoriaTag.BMRCASH in tags_encontrados
+            if es_traspaso or es_bmrcash:
+                tags_encontrados.pop(CategoriaTag.IVA, None)
+                tags_encontrados.pop(CategoriaTag.COMISION_CR, None)
+                tags_encontrados.pop(CategoriaTag.COMISION_DB, None)
+                tags_encontrados.pop(CategoriaTag.COMISION_AMEX, None)
+                tags_encontrados.pop(CategoriaTag.COMISION_MIXTA, None)
+
+        # Validamos si nos quedamos sin tags después de la defensa
+        if not tags_encontrados:
+            return None, None
+
+        # --- 2. SUPREMACÍA DE COMISIONES E IVA ---
+        # Evaluar esto ANTES de las excluidas las vuelve "inmunes" a que la palabra "comision" las mate.
+        if CategoriaTag.IVA in tags_encontrados:
+            return CategoriaTag.IVA.value, "Regla de supremacía: IVA mata cualquier otra categoría."
+            
+        tags_comision = [
+            CategoriaTag.COMISION_CR, CategoriaTag.COMISION_DB, 
+            CategoriaTag.COMISION_AMEX, CategoriaTag.COMISION_MIXTA
+        ]
+        
+        comisiones_presentes = [t for t in tags_comision if t in tags_encontrados]
+        if comisiones_presentes:
+            # Si hay choque de comisiones, gana la de mayor peso (Ej. COMISION_CR > COMISION_MIXTA)
+            comisiones_presentes.sort(key=lambda x: tags_encontrados[x], reverse=True)
+            return comisiones_presentes[0].value, f"Regla de supremacía: Comisión detectada ({comisiones_presentes[0].value})."
+
+        # --- 3. MUERTE SÚBITA: EXCLUSIONES ---
+        # Si no fue IVA ni Comisión, y tiene una palabra prohibida, muere a GENERAL.
+        if CategoriaTag.EXCLUIDA in tags_encontrados:
+            return "GENERAL", "Muerte Súbita: Contiene palabra en lista de exclusiones."
+
+        # --- 4. MATRIZ DE CONFLICTOS ESTÁNDAR ---
+        if CategoriaTag.TPV in tags_encontrados:
+            return CategoriaTag.TPV.value, "Matriz de conflictos: TPV tiene prioridad sobre financiamientos/traspasos."
+
+        # --- 5. FALLBACK HEURÍSTICO (Desempate por Pesos) ---
+        tags_ordenados = sorted(tags_encontrados.items(), key=lambda item: item[1], reverse=True)
+        mejor_tag, mejor_peso = tags_ordenados[0]
+
+        razon_heuristica = f"Resolución heurística: Gana el Tag '{mejor_tag.value}' con peso de {mejor_peso} puntos."
+
+        # Traducción Dinámica
+        if mejor_tag == CategoriaTag.TRASPASO:
+            cat = "TRASPASO_ABONO" if es_abono else "TRASPASO_CARGO"
+            return cat, razon_heuristica
+        elif mejor_tag == CategoriaTag.FINANCIAMIENTO:
+            cat = "FINANCIAMIENTO" if es_abono else "PAGO_FINANCIAMIENTO"
+            return cat, razon_heuristica
+        elif mejor_tag == CategoriaTag.PAGO_FINANCIAMIENTO:
+            return "PAGO_FINANCIAMIENTO", razon_heuristica
+            
+        return mejor_tag.value, razon_heuristica
 
     def _pre_clasificar_transacciones(self, transacciones: List[Any], nombre_cliente: str = "") -> tuple:
         """
-        Actúa como la Capa 1 del embudo. 
-        Separa las transacciones en dos cubetas...
+        Capa 1 Refactorizada: Sistema Multi-Etiqueta + Matriz de Conflictos.
+        Extrae tags en O(N) por transacción y delega la resolución.
         """
         resueltas_por_python = []
         pendientes_para_ia = []
 
         for idx_real, tx in enumerate(transacciones):
-            # --- NORMALIZACIÓN BÁSICA Y PLANA ---
+            # --- NORMALIZACIÓN PLANA ---
             tipo_lower = str(getattr(tx, "tipo", "")).lower().strip()
             desc_raw = str(getattr(tx, "descripcion", "")).lower()
             desc_norm = unicodedata.normalize('NFKD', desc_raw).encode('ASCII', 'ignore').decode('utf-8')
             desc_plana = re.sub(r'\s+', ' ', desc_norm).strip()
 
-            # FILTRO ANTI-BASURA OCR (CFDI / TIMBRES)
-            # Si el tipo dice "importe" (o cualquier otra anomalía detectada), lo matamos aquí.
+            # FILTRO ANTI-BASURA OCR
             if tipo_lower == "importe":
                 tx.categoria = "BASURA_OCR"
+                tx.razon_clasificacion = "Descarte automático: Identificado como Basura OCR / CFDI." # <-- NUEVO
                 resueltas_por_python.append((idx_real, tx))
                 self._log_debug(1, f"Tx {idx_real} descartada (Basura OCR/CFDI) -> {desc_plana[:40]}...")
                 continue
             
             es_abono = tipo_lower in ["abono", "deposito", "depósito", "credito", "crédito"]
 
-            # ==========================================
-            # REGLA 1: RUTEO DE CARGOS (COMISIONES E IVA)
-            # ==========================================
-            if not es_abono:
-                
-                # A) PRIMERO: Atrapar Pagos de Financiamiento (Tienen prioridad máxima, incluso si mencionan IVA)
-                es_pago_fin = any(p in desc_plana for p in self.diccionarios.get('pago_financiamiento', []))
-                es_dru_domi = re.search(r'\bdru\d+\s*domiciliacion\b', desc_plana)
-                
-                if es_pago_fin or es_dru_domi:
-                    tx.categoria = "PAGO_FINANCIAMIENTO"
-                    resueltas_por_python.append((idx_real, tx))
-                    self._log_debug(2, f"Tx {idx_real} clasificada como PAGO_FINANCIAMIENTO -> {desc_plana[:40]}...")
-                    continue
-
-                # --- NUEVA DEFENSA: Detección anticipada de traspasos ---
-                es_traspaso = any(p in desc_plana for p in self.diccionarios.get('traspaso', []))
-
-                # B) SEGUNDO: Filtro anti-IVA 
-                # Si dice IVA pero TAMBIÉN es un traspaso, lo ignoramos aquí para que la Regla 2 lo procese.
-                if re.search(r'\biva\b', desc_plana) and not es_traspaso:
-                    tx.categoria = "IVA"
-                    resueltas_por_python.append((idx_real, tx))
-                    self._log_debug(1, f"Tx {idx_real} descartada (Es IVA) -> {desc_plana[:40]}...")
-                    continue
-
-                # C) TERCERO: La Atarraya (Atrapar candidatas a comisiones TPV)
-                es_comision = re.search(r'\b(com vtas|comision|comisiones|tasa de descuento|descuento)\b', desc_plana)
-                es_bmrcash = any(p in desc_plana for p in self.diccionarios.get('bmrcash', []))
-                
-                # Misma defensa: que no sea ni bmrcash ni un traspaso
-                if es_comision and not es_bmrcash and not es_traspaso:
-                    tx.categoria = "COMISION_PENDIENTE"
-                    resueltas_por_python.append((idx_real, tx))
-                    self._log_debug(2, f"Tx {idx_real} atrapada como CANDIDATA A COMISIÓN -> {desc_plana[:40]}...")
-                    continue
-                
-                # Al no cumplirse A, B o C, el código simplemente sigue su curso hacia la REGLA 2
-                # ------------------------------------------------
-                # # D) CUARTO: Si no fue nada de lo anterior, se va a GENERAL
-                # tx.categoria = "GENERAL"
-                # resueltas_por_python.append((idx_real, tx))
-                # self._log_debug(1, f"Tx {idx_real} descartada (Es cargo común) -> {desc_plana[:40]}...")
-                # continue
-                # ------------------------------------------------
-
-            # ==========================================
-            # REGLA 2: PALABRAS CLAVE EXACTAS (ABONOS)
-            # ==========================================
-            clasificado_estatico = False
+            # FASE 1: MULTI-ETIQUETADO (Scoring)
+            tags_encontrados = {} # Formato: {CategoriaTag.TPV: 80, CategoriaTag.FINANCIAMIENTO: 50}
             
-            if any(p in desc_plana for p in self.diccionarios.get('excluidas', [])):
-                tx.categoria = "GENERAL"
-                clasificado_estatico = True
-            # --- PRIORIDAD ALTA: TRASPASOS Y FINANCIAMIENTO ---
-            elif any(p in desc_plana for p in self.diccionarios.get('traspaso', [])):
-                tx.categoria = "TRASPASO_ABONO" if es_abono else "TRASPASO_CARGO" # <--- SOPORTE DINÁMICO
-                clasificado_estatico = True
-            elif any(p in desc_plana for p in self.diccionarios.get('financiamiento', [])):
-                tx.categoria = "FINANCIAMIENTO" if es_abono else "PAGO_FINANCIAMIENTO" # <--- SOPORTE DINÁMICO
-                clasificado_estatico = True
-            # --- PRIORIDAD MEDIA: TPV Y EFECTIVO (Bajaron un escalón) ---
-            elif any(p in desc_plana for p in self.diccionarios.get('tpv', [])):
-                tx.categoria = "TPV"
-                clasificado_estatico = True
-            elif any(p in desc_plana for p in self.diccionarios.get('efectivo', [])):
-                tx.categoria = "EFECTIVO"
-                clasificado_estatico = True
-            elif any(p in desc_plana for p in self.diccionarios.get('bmrcash', [])):
-                tx.categoria = "BMRCASH"
-                clasificado_estatico = True
-            elif any(p in desc_plana for p in self.diccionarios.get('moratorio', [])):
-                tx.categoria = "MORATORIOS"
-                clasificado_estatico = True
+            for tag, config in CONFIGURACION_TAGS.items():
+                palabras = config["palabras"]
+                peso = config["peso"]
+                
+                # Búsqueda en el diccionario
+                if any(p in desc_plana for p in palabras):
+                    tags_encontrados[tag] = peso
 
-            # --- REPARTO A LAS CUBETAS ---
-            if clasificado_estatico:
+            # Hack de compatibilidad: Conservamos tu regex especial de domiciliación Dru
+            if CategoriaTag.PAGO_FINANCIAMIENTO not in tags_encontrados and re.search(r'\bdru\d+\s*domiciliacion\b', desc_plana):
+                tags_encontrados[CategoriaTag.PAGO_FINANCIAMIENTO] = CONFIGURACION_TAGS[CategoriaTag.PAGO_FINANCIAMIENTO]["peso"]
+
+            # FASE 2 y 3: MATRIZ DE CONFLICTOS
+            categoria_final, razon = self._aplicar_matriz_conflictos(tags_encontrados, es_abono)
+
+            # DISPATCHER
+            if categoria_final:
+                # Si es excluido, la matriz nos devolvió "GENERAL".
+                # Lo mandamos a resueltas_por_python para que no ensucie la cola de la IA.
+                tx.categoria = categoria_final
+                tx.razon_clasificacion = razon
                 resueltas_por_python.append((idx_real, tx))
-                self._log_debug(2, f"Tx {idx_real} clasificada como {tx.categoria} por regla -> {desc_plana[:40]}...")
+                self._log_debug(2, f"Tx {idx_real} clasificada como {tx.categoria} por Matriz/Pesos -> {desc_plana[:40]}...")
             else:
+                # Si no hubo tags, se va a la IA
                 pendientes_para_ia.append((idx_real, tx))
 
-        self._log_debug(2, f"Pre-clasificación lista: {len(resueltas_por_python)} resueltas estáticamente, {len(pendientes_para_ia)} enviadas a IA.")
+        self._log_debug(2, f"Pre-clasificación Híbrida lista: {len(resueltas_por_python)} resueltas estáticamente, {len(pendientes_para_ia)} a IA.")
         return resueltas_por_python, pendientes_para_ia
 
     def _procesar_sub_comisiones(self, transacciones: List[Any]):
@@ -221,9 +251,11 @@ class MotorClasificador:
                     # Fallback general para etiquetas estandarizadas (ej. tpv -> TPV)
                     tx.categoria = cat_limpia.upper()
 
+                tx.razon_clasificacion = "Delegado a IA: Clasificación semántica en lote."
                 self._log_debug(3, f"Tx {idx_real} clasificada por IA como -> {tx.categoria}")
             else:
                 tx.categoria = "GENERAL"
+                tx.razon_clasificacion = "IA Fallback: No se pudo clasificar, asignado a GENERAL."
                 self._log_debug(3, f"⚠️ Tx {idx_real} sin etiqueta IA -> GENERAL (Fallback)")
 
         # --- CAPA 3.5: SUB-MOTOR DE COMISIONES ---

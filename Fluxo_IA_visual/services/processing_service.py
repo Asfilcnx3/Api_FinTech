@@ -16,29 +16,14 @@ from ..utils.xlsx_converter import generar_excel_reporte
 
 from .passport_service import PassportService
 
-from ..utils.helpers import total_depositos_verificacion
-
 from ..core.motor_caratulas import MotorCaratulas
 from ..utils.helpers_texto_fluxo import (
-    PALABRAS_COMISION_CREDITO, TRIGGERS_CONFIG, PALABRAS_CLAVE_VERIFICACION, 
+    TRIGGERS_CONFIG, PALABRAS_CLAVE_VERIFICACION, 
     ALIAS_A_BANCO_MAP, BANCO_DETECTION_REGEX, 
     PATRONES_COMPILADOS, prompt_base_fluxo,
 )
-from ..utils.helpers import extraer_json_del_markdown, sanitizar_datos_ia
+from ..utils.helpers import extraer_json_del_markdown, sanitizar_datos_ia, filtrar_caratulas_duplicadas, total_depositos_verificacion
 from ..services.ia_extractor import clasificar_lote_con_ia, analizar_gpt_fluxo, analizar_con_ocr_fluxo
-
-from ..utils.helpers_texto_fluxo import (
-    PALABRAS_EXCLUIDAS,
-    PALABRAS_EFECTIVO,
-    PALABRAS_TRASPASO_ENTRE_CUENTAS,
-    PALABRAS_TRASPASO_FINANCIAMIENTO,
-    PALABRAS_BMRCASH,
-    PALABRAS_TRASPASO_MORATORIO,
-    PALABRAS_TPV,
-    PALABRAS_COMISION_CREDITO, PALABRAS_COMISION_DEBITO,
-    PALABRAS_COMISION_AMEX, PALABRAS_COMISION_TPV_GENERICA,
-    PALABRAS_PAGO_FINANCIAMIENTO
-)
 
 from ..services.orchestators import (
     procesar_digital_worker_sync, 
@@ -66,24 +51,9 @@ class ProcessingService:
             debug_flags=None
         )
 
-        # --- INSTANCIA DEL MOTOR CLASIFICADOR (NUEVO) ---
-        diccionarios_clasificacion = {
-            'excluidas': PALABRAS_EXCLUIDAS,
-            'efectivo': PALABRAS_EFECTIVO,
-            'traspaso': PALABRAS_TRASPASO_ENTRE_CUENTAS,
-            'financiamiento': PALABRAS_TRASPASO_FINANCIAMIENTO,
-            'bmrcash': PALABRAS_BMRCASH,
-            'moratorio': PALABRAS_TRASPASO_MORATORIO,
-            'tpv': PALABRAS_TPV,
-            'comision_credito': PALABRAS_COMISION_CREDITO,
-            'comision_debito': PALABRAS_COMISION_DEBITO,
-            'comision_amex': PALABRAS_COMISION_AMEX,
-            'comision_tpv_generica': PALABRAS_COMISION_TPV_GENERICA,
-            'pago_financiamiento': PALABRAS_PAGO_FINANCIAMIENTO
-        }
+        # --- INSTANCIA DEL MOTOR CLASIFICADOR (HÍBRIDO V2) ---
         self.motor_clasificador = MotorClasificador(
-            diccionarios_palabras=diccionarios_clasificacion,
-            debug_flags=None # Silencioso para producción
+            debug_flags=[1,2] #None # Se usará [1, 2, 3, 4] para debuguear si es necesario
         )
 
     async def ejecutar_pipeline_background(self, job_id: str, lista_archivos: list):
@@ -139,6 +109,9 @@ class ProcessingService:
         documentos_escaneados = []
         resultados_finales = [None] * len(lista_archivos)
 
+        # Set global en memoria para la deduplicación de todo el Job
+        firmas_vistas_globales = set() 
+
         # Calculamos totales globales para decidir estrategia OCR
         total_depositos, es_mayor = total_depositos_verificacion(resultados_portada)
 
@@ -175,6 +148,29 @@ class ProcessingService:
 
             # Desempaquetado exitoso
             lista_cuentas, es_digital, texto_paginas, movimientos_paginas, texto_por_pagina, rangos = resultado_bruto
+
+            # --- LÓGICA DE DEDUPLICACIÓN ---
+            cantidad_original = len(lista_cuentas)
+            lista_cuentas = filtrar_caratulas_duplicadas(lista_cuentas, firmas_vistas_globales)
+            
+            # Si el documento se vació por completo debido a que era un duplicado exacto
+            if cantidad_original > 0 and len(lista_cuentas) == 0:
+                logger.info(f"♻️ Documento omitido por duplicidad global: {filename}")
+                
+                ia_dummy = AnalisisTPV.ResultadoAnalisisIA(
+                    banco="DUPLICADO",
+                    nombre_archivo_virtual=filename
+                )
+                resultados_finales[i] = AnalisisTPV.ResultadoExtraccion(
+                    nombre_documento=filename,
+                    estatus_documento="exitoso", # Se marca exitoso para no disparar alarmas rojas de fallo técnico
+                    AnalisisIA=ia_dummy, 
+                    DetalleTransacciones=AnalisisTPV.ErrorRespuesta(
+                        nombre_documento=filename,
+                        detalle_error="Omitido: Es un duplicado exacto de otro estado de cuenta en este lote."
+                    )
+                )
+                continue
 
             try:
                 for idx_cuenta, datos_cuenta in enumerate(lista_cuentas):

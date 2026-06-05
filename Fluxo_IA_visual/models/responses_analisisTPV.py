@@ -25,6 +25,7 @@ class AnalisisTPV:
         tipo: str
         categoria: str
         es_sospechosa: bool = False
+        razon_clasificacion: str = ""
     
     class ResultadoTPV(BaseModel):
         """Representa todas las transacciones TPV encontadas dentro del documento."""
