@@ -159,6 +159,57 @@ def extraer_rfc_curp_por_texto(texto: str, tipo_doc: str) -> Tuple[List[str], Li
 
 #     return transacciones
 
+def filtrar_caratulas_duplicadas(lista_cuentas: list, firmas_vistas_globales: set) -> list:
+    """
+    Filtra una lista de carátulas extraídas evaluando su unicidad.
+    Se considera duplicado si coincide exactamente en:
+    Banco, RFC, CLABE, Periodos y Montos (Depósitos y Cargos).
+    
+    Args:
+        lista_cuentas: Lista de diccionarios con los datos de las carátulas.
+        firmas_vistas_globales: Un Set (conjunto) en memoria para rastrear 
+                                lo que ya procesamos en este Job/PDF.
+                                
+    Returns:
+        Una nueva lista solo con las cuentas que pasaron el filtro.
+    """
+    cuentas_unicas = []
+
+    for cuenta in lista_cuentas:
+        # 1. Normalización de campos de texto
+        banco = str(cuenta.get("banco", "")).strip().lower()
+        rfc = str(cuenta.get("rfc", "")).strip().upper()
+        
+        # Nos quedamos solo con los números de la CLABE o Cuenta
+        clabe_raw = str(cuenta.get("clabe_interbancaria", ""))
+        clabe = ''.join(filter(str.isdigit, clabe_raw))
+        
+        p_inicio = str(cuenta.get("periodo_inicio", "")).strip().lower()
+        p_fin = str(cuenta.get("periodo_fin", "")).strip().lower()
+
+        # 2. Normalización de campos numéricos (seguros contra Nones y comas)
+        try:
+            depositos = round(float(str(cuenta.get("depositos", 0.0)).replace(",", "")), 2)
+        except (ValueError, TypeError):
+            depositos = 0.0
+
+        try:
+            cargos = round(float(str(cuenta.get("cargos", 0.0)).replace(",", "")), 2)
+        except (ValueError, TypeError):
+            cargos = 0.0
+
+        # 3. Creación de la Firma Única (Tuple hash)
+        firma_cuenta = (banco, rfc, clabe, p_inicio, p_fin, depositos, cargos)
+
+        # 4. Evaluación
+        if firma_cuenta not in firmas_vistas_globales:
+            firmas_vistas_globales.add(firma_cuenta)
+            cuentas_unicas.append(cuenta)
+        else:
+            logger.info(f"🚫 [Filtro Duplicados] Se omitió un estado de cuenta duplicado: {banco.upper()} | RFC: {rfc} | Periodo: {p_fin}")
+
+    return cuentas_unicas
+
 def parsear_respuesta_json_ocr(texto_llm: str) -> List[Dict[str, Any]]:
     """
     Extrae y parsea el arreglo JSON devuelto por el agente OCR de Visión.

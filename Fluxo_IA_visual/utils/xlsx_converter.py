@@ -73,7 +73,12 @@ def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
         # print("[DEBUG TPV] -> Resultado Final: NO DEFINIDA")
         return "NO DEFINIDA"
 
-    resultados = data_json.get("resultados_individuales", [])
+    # --- FILTRO: Excluir duplicados de las hojas de detalles ---
+    resultados_brutos = data_json.get("resultados_individuales", [])
+    resultados = [
+        res for res in resultados_brutos 
+        if str(res.get("AnalisisIA", {}).get("banco", "")).upper() != "DUPLICADO"
+    ]
 
     # ==========================================
     # 1. RESUMEN POR CUENTA
@@ -149,7 +154,12 @@ def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
         "Total Páginas", "Páginas Fallidas"
     ])
     
-    res_generales = data_json.get("resultados_generales", [])
+    # --- FILTRO: Excluir duplicados de la hoja de carátulas ---
+    generales_brutos = data_json.get("resultados_generales", [])
+    res_generales = [
+        ia for ia in generales_brutos 
+        if str(ia.get("banco", "")).upper() != "DUPLICADO"
+    ]
     
     for ia in res_generales:
         if not ia: continue
@@ -308,7 +318,7 @@ def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
     crear_hoja_detalle("Traspasos (Cargos)", "TRASPASO_CARGO")
 
     # 8. BMRCASH y MP AGREGADOR
-    crear_hoja_detalle("BMRCASH", "BMR/MP")
+    crear_hoja_detalle("BMRCASH", "BMRCASH")
 
     # 9. MORATORIOS
     crear_hoja_detalle("Moratorios", "MORATORIOS")
@@ -413,6 +423,64 @@ def generar_excel_reporte(data_json: Dict[str, Any]) -> bytes:
         for cell in row: 
             cell.number_format = '0%'
 
+    # ==========================================
+    # 12. AUDITORÍA DE CLASIFICACIÓN
+    # ==========================================
+    ws_auditoria = wb.create_sheet("Auditoría de Clasificación")
+    
+    headers_auditoria = [
+        "Banco", "Periodo", "Fecha", "Descripción", 
+        "Monto", "Tipo", "Categoría Final", "Razón de Clasificación"
+    ]
+    ws_auditoria.append(headers_auditoria)
+    
+    for res in resultados:
+        ia = res.get("AnalisisIA") or {}
+        banco_actual_doc = ia.get("banco", "Desconocido")
+        detalle = res.get("DetalleTransacciones", {})
+        transacciones = detalle.get("transacciones", [])
+        
+        if isinstance(transacciones, list):
+            for tx in transacciones:
+                cat_tx = str(tx.get("categoria", "GENERAL")).upper()
+                tipo_tx_lower = str(tx.get("tipo", "")).lower().strip()
+                
+                # Omitimos la basura del excel para mantener la auditoría limpia
+                if cat_tx == "BASURA_OCR" or tipo_tx_lower == "importe":
+                    continue
+
+                try:
+                    monto_val = float(str(tx.get("monto", "0")).replace(",", ""))
+                except: 
+                    monto_val = 0.0
+
+                # Inyectamos el nuevo campo
+                razon = tx.get("razon_clasificacion", "Sin justificación (Legacy)")
+
+                fila_audit = [
+                    banco_actual_doc,
+                    tx.get("periodo", ""),
+                    tx.get("fecha", ""),
+                    tx.get("descripcion", ""),
+                    monto_val,
+                    tx.get("tipo", ""),
+                    cat_tx,
+                    razon
+                ]
+                ws_auditoria.append(fila_audit)
+
+    aplicar_estilo_header(ws_auditoria)
+    
+    # Ajuste visual: Hacemos la descripción y la razón mucho más anchas
+    ws_auditoria.column_dimensions['D'].width = 50  
+    ws_auditoria.column_dimensions['H'].width = 70  
+    
+    # Formato moneda para la columna 'E' (Monto)
+    for row in ws_auditoria.iter_rows(min_row=2, min_col=5, max_col=5):
+        for cell in row: 
+            cell.style = currency_style
+
+    # --- CIERRE DE ARCHIVO ---
     output = io.BytesIO()
     wb.save(output)
     return output.getvalue()

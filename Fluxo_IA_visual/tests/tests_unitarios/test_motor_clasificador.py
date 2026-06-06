@@ -1,5 +1,7 @@
 import pytest
+from unittest.mock import patch
 from Fluxo_IA_visual.core.motor_clasificador import MotorClasificador
+from Fluxo_IA_visual.utils.tags_y_pesos_fluxo import CategoriaTag
 
 # ============================================================================
 # MOCKS Y FIXTURES
@@ -12,18 +14,32 @@ class TransaccionMock:
         self.monto = monto
         self.tipo = tipo
         self.categoria = categoria
+        self.razon_clasificacion = ""
 
 @pytest.fixture
 def motor_clasificador_test():
     """Motor configurado con diccionarios pequeños para pruebas controladas."""
-    diccionarios = {
-        'excluidas': ['comision', 'manejo de cuenta'],
-        'efectivo': ['deposito en efectivo', 'dep. efectivo'],
-        'traspaso': ['traspaso entre cuentas', 'spei enviado'],
-        # Dejamos los demás vacíos para simplificar
-        'financiamiento': [], 'bmrcash': [], 'moratorio': []
+    
+    # Creamos un ecosistema falso de Tags y Pesos solo para el Test
+    config_mock = {
+        CategoriaTag.EXCLUIDA: {"peso": 9999, "palabras": ['comision', 'manejo de cuenta']},
+        CategoriaTag.EFECTIVO: {"peso": 30, "palabras": ['deposito en efectivo', 'dep. efectivo']},
+        CategoriaTag.TRASPASO: {"peso": 40, "palabras": ['traspaso entre cuentas', 'spei enviado']},
+        CategoriaTag.TPV: {"peso": 80, "palabras": []}, # Lo dejamos vacío porque no se evalúa estáticamente en estos tests
+        CategoriaTag.FINANCIAMIENTO: {"peso": 50, "palabras": []},
+        CategoriaTag.PAGO_FINANCIAMIENTO: {"peso": 50, "palabras": []},
+        CategoriaTag.BMRCASH: {"peso": 30, "palabras": []},
+        CategoriaTag.MORATORIOS: {"peso": 20, "palabras": []},
+        CategoriaTag.IVA: {"peso": 1000, "palabras": ["iva"]},
+        CategoriaTag.COMISION_CR: {"peso": 100, "palabras": []},
+        CategoriaTag.COMISION_DB: {"peso": 100, "palabras": []},
+        CategoriaTag.COMISION_AMEX: {"peso": 100, "palabras": []},
+        CategoriaTag.COMISION_MIXTA: {"peso": 90, "palabras": []}
     }
-    return MotorClasificador(diccionarios_palabras=diccionarios, debug_flags=None)
+    
+    # Parcheamos la constante dentro del módulo donde vive el MotorClasificador
+    with patch('Fluxo_IA_visual.core.motor_clasificador.CONFIGURACION_TAGS', config_mock):
+        yield MotorClasificador(debug_flags=None)
 
 # ============================================================================
 # PRUEBAS: CAPA 1 (PRE-CLASIFICACIÓN ESTÁTICA / EMBUDO)
@@ -86,6 +102,8 @@ def test_calcular_totales_suma_correcta(motor_clasificador_test):
         assert totales["TPV"] == 1500.50
         assert totales["EFECTIVO"] == 200.00
         assert totales["TRASPASO_ABONO"] == 0.0
+        # Verificamos que la comisión (cargo) no haya sumado a ingresos
+        assert totales["COMISION_CR"] == 0.0
 
 # ============================================================================
 # PRUEBAS: ORQUESTACIÓN COMPLETA (MOCK DE IA ASÍNCRONA)

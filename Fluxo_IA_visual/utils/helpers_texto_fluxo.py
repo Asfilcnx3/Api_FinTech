@@ -1,3 +1,5 @@
+# utils/helpers_texto_fluxo.py
+
 import re # EN ESTE ARCHIVO IRÁN TODOS LOS HELPERS DE TEXTO PARA FLUXO
 
 # Creamos las palabras clave para verificar si un archivo es analizado o escaneado
@@ -19,7 +21,8 @@ PALABRAS_TPV = [
     "terminales punto de venta", "punto de venta", "tpv", "terminal", "evopay", "clip", "izettle", "netpay", "mp agregador", "mpagregador", "getnet",
     "pocket de latinoameric", "pocket de billpocket", "billpocket", "spei amexco", "data merchant services", "abrexpress company mexicsa",
     "net pay", "netpay", "payclip", "pocket", "kiwi", "kiwi international", "zettle", "gananciasclip", "ganancias clip", "deposito bpu", "depositobpu",
-    "net pay sapi de cv", "srpago", "sr pago", "señor pago", "señorpago", "wuzi", "bn-nts", "vta. cre", "vta. deb", "netpay", "pay sapi de cv", "first data", "fiserv", "evopay mx", "evopaymx", "evopay", "evopayments", "bzpay", "bz pay", "bzpayments", "bz payments", "bzpay solutions", "bz pay solutions", "psm payment services mexico sa de cv"
+    "net pay sapi de cv", "srpago", "sr pago", "señor pago", "señorpago", "wuzi", "bn-nts", "vta. cre", "vta. deb", "netpay", "pay sapi de cv", "first data", "fiserv", "evopay mx", "evopaymx", "evopay", "evopayments", "bzpay", "bz pay", "bzpayments", "bz payments", "bzpay solutions", "bz pay solutions", "psm payment services mexico sa de cv",
+    "ventas credito", "ventas debito"
 ]
 
 PALABRAS_EFECTIVO = [
@@ -110,7 +113,11 @@ PALABRAS_COMISION_TPV_GENERICA = [
     "izettle",
     "zettle",
     "terminales punto de venta",
-    "tpv"
+    "tpv",
+    "comision",
+    "comisiones",
+    "tasa de descuento",
+    "descuento"
 ]
 
 # Definimos los campos esperados y sus tipos (No funcionan aún)
