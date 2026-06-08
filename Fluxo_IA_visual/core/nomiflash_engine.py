@@ -10,7 +10,7 @@ from ..models.responses_nomiflash import NomiFlash
 from pydantic import BaseModel
 
 # Helpers y Servicios
-from ..services.pdf_processor import convertir_pdf_a_imagenes, extraer_texto_de_pdf, leer_qr_de_imagenes
+from ..services.pdf_processor import convertir_pdf_a_imagenes_qr, extraer_texto_de_pdf, leer_qr_de_imagenes
 from ..utils.helpers import extraer_json_del_markdown, sanitizar_datos_ia, extraer_rfc_curp_por_texto
 from ..services.ia_extractor import analizar_gpt_nomi
 from ..services.ocr_services import ocr_service
@@ -96,9 +96,9 @@ class NomiFlashEngine:
             # ====================================================
             # Extracción de texto crudo para regex (Rápido y barato)
             texto_inicial = extraer_texto_de_pdf(pdf_bytes, num_paginas=2)
-            logger.info(f"Debug para el texto inicial: {texto_inicial[:500]}")
+            # logger.info(f"Debug para el texto inicial: {texto_inicial[:500]}")
             tipo_regex = "nomina" if "nomina" in tipo_doc else tipo_doc
-            logger.info(f"Debug para el tipo regex: {tipo_regex}")
+            # logger.info(f"Debug para el tipo regex: {tipo_regex}")
             rfc_regex, curp_regex = extraer_rfc_curp_por_texto(texto_inicial, tipo_regex)
             
             # Preparación de imágenes para IA
@@ -106,7 +106,7 @@ class NomiFlashEngine:
             paginas = self._determinar_paginas_dinamicas(pdf_bytes, tipo_doc)
             
             imagen_buffers = await loop.run_in_executor(
-                None, convertir_pdf_a_imagenes, pdf_bytes, paginas
+                None, convertir_pdf_a_imagenes_qr, pdf_bytes, paginas
             )
             
             # Lectura de QR (Muy fiable si existe)

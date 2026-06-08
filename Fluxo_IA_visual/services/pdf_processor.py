@@ -35,25 +35,60 @@ def convertir_pdf_a_imagenes(pdf_bytes: bytes, paginas: List[int] = [1]) -> List
 
     return buffers_imagenes
 
+def convertir_pdf_a_imagenes_qr(pdf_bytes: bytes, paginas: List[int] = [1, 2]) -> List[BytesIO]:
+    """
+    Convierte las páginas especificadas del PDF a imágenes crudas.
+    Por defecto procesa las páginas 1 y 2 para asegurar la captura del QR del SAT.
+    """
+    buffers_imagenes = []
+    matriz_escala = fitz.Matrix(2, 2)
+
+    try:
+        with fitz.open(stream=pdf_bytes, filetype="pdf") as documento:
+            for num_pagina in paginas:
+                if 0 <= num_pagina - 1 < len(documento):
+                    pagina = documento.load_page(num_pagina - 1)
+                    pix = pagina.get_pixmap(matrix=matriz_escala)
+                    img_bytes = pix.tobytes("png")
+                    buffers_imagenes.append(BytesIO(img_bytes))
+                else:
+                    # Si el doc solo tiene 1 página, ignoramos silenciosamente la petición de la pag 2
+                    pass
+    except Exception as e:
+        raise ValueError(f"No se pudo procesar el archivo como PDF: {e}")
+
+    return buffers_imagenes
+
 def leer_qr_de_imagenes(imagen_buffers: List[BytesIO]) -> Optional[str]:
     """
-    Lee una lista de imágenes en memoria y devuelve el contenido del primer QR que encuentre.
+    Lee las imágenes buscando un QR. Si la imagen cruda falla,
+    aplica una binarización rápida de Otsu como fallback.
     """
     for buffer in imagen_buffers:
-        # Reiniciamos el puntero del buffer para que PIL pueda leerlo
         buffer.seek(0)
-        imagen = Image.open(buffer)
+        
+        # Leemos los bytes crudos en un array de numpy (más versátil para OpenCV y pyzbar)
+        file_bytes = np.asarray(bytearray(buffer.read()), dtype=np.uint8)
+        img_cv = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+        
+        if img_cv is None:
+            continue
 
-        # 'decode' busca todos los códigos de barras/QR en la imagen
-        codigos_encontrados = decode(imagen)
+        # Intento 1: Imagen cruda (Rápido, ideal para la mayoría de PDFs nativos)
+        codigos_encontrados = decode(img_cv)
+        
+        # Intento 2: Fallback con Binarización de Otsu (Para cuando el antialiasing arruina el QR)
+        if not codigos_encontrados:
+            gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+            _, img_binaria = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+            codigos_encontrados = decode(img_binaria)
 
         if codigos_encontrados:
-            # Devolvemos el dato del primer código encontrado, decodificado a string
             primer_codigo = codigos_encontrados[0].data.decode("utf-8")
             return primer_codigo
 
-    logger.error("No se encontró ningún código QR en las imágenes.")
-    return None # No se encontró ningún QR en ninguna imagen
+    logger.error("No se encontró ningún código QR en las imágenes (ni con fallback binario).")
+    return None
 
 # Estas funciones hacen el trabajo pesado para UN SOLO PDF.
 # --- FUNCIÓN PARA EXTRACCIÓN DE TEXTO CON OCR ---

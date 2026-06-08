@@ -213,8 +213,12 @@ def procesar_ocr_worker_sync(
         # 2. Buscar el saldo inicial (Arranque)
         saldo_arranque = extraer_saldo_inicial_poc(textos_crudos)
         
-        # 3. Procesamiento y reglas deterministas
-        extractor = ExtractorDeterministaOCR()
+        # 2.5 Capturamos el banco de la metadata de IA para usarlo en las reglas deterministas (si está disponible)
+        banco_origen = ia_data.get("banco", "GENERICO").upper()
+        logger.info(f"[TextractWorker] Banco detectado para bifurcación: {banco_origen}")
+        
+        # 3. Procesamiento y reglas deterministas (Inyectamos el banco)
+        extractor = ExtractorDeterministaOCR(banco=banco_origen)
         transacciones_brutas = extractor.procesar_transacciones(filas_estructuradas, saldo_arranque)
         transacciones_limpias = extractor.deduplicar_transacciones(transacciones_brutas)
         
