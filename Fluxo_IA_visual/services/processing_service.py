@@ -53,7 +53,7 @@ class ProcessingService:
 
         # --- INSTANCIA DEL MOTOR CLASIFICADOR (HÍBRIDO V2) ---
         self.motor_clasificador = MotorClasificador(
-            debug_flags=[1,2] #None # Se usará [1, 2, 3, 4] para debuguear si es necesario
+            debug_flags=None # Se usará [1, 2, 3, 4] para debuguear si es necesario
         )
 
     async def ejecutar_pipeline_background(self, job_id: str, lista_archivos: list):

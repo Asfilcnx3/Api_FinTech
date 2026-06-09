@@ -1,9 +1,21 @@
+# core/extractor_determinista.py
+
 import re
 import json
 
 class ExtractorDeterministaOCR:
-    def __init__(self):
-        self.rx_fecha = re.compile(r'^(\d{2}/\d{2}/\d{4}|0[1-9]|[12]\d|3[01])(?=\s|$)')
+    def __init__(self, banco="ESTANDAR"):
+        self.banco = str(banco).upper()
+        
+        # 1. BIFURCACIÓN DE REGEX DE FECHA
+        if self.banco == "BANORTE":
+            self.rx_fecha = re.compile(
+                r'^(\d{2}/\d{2}/\d{4}|\d{2}-[a-zA-Z]{3}-\d{2,4})|^(0[1-9]|[12]\d|3[01])(?=\s|$)', 
+                re.IGNORECASE
+            )
+        else:
+            self.rx_fecha = re.compile(r'^(\d{2}/\d{2}/\d{4}|0[1-9]|[12]\d|3[01])(?=\s|$)')
+
         self.rx_monto = re.compile(r'[+-]?\$?\s*\d{1,3}(?:,\d{3})*\.\d{2}')
         self.triggers_basura = [
             "ESTE DOCUMENTO ES UNA REPRESENTACIÓN", "SELLO DIGITAL", "CADENA ORIGINAL", 
@@ -27,19 +39,30 @@ class ExtractorDeterministaOCR:
 
     def detectar_carriles(self, filas_estructuradas):
         coordenadas_dinero = []
+        x_deposito = None
+        x_retiro = None
+        
+        # 1. Recolección de muestras y lectura de encabezados
         for fila in filas_estructuradas[:150]: 
             for bloque in fila["bloques"]:
-                if self.rx_monto.search(bloque['texto'].strip()):
+                txt_upper = bloque['texto'].strip().upper()
+                
+                if self.rx_monto.search(txt_upper):
                     coordenadas_dinero.append(bloque['left'])
+                
+                if "DEPOSITO" in txt_upper or "DEPÓSITO" in txt_upper:
+                    x_deposito = bloque['left']
+                if "RETIRO" in txt_upper or "CARGO" in txt_upper:
+                    x_retiro = bloque['left']
                     
         if len(coordenadas_dinero) < 10:
             return {"retiro": 0.595, "deposito": 0.710, "saldo": 0.825}
             
         coordenadas_dinero.sort()
         
+        # 2. Clustering 1D
         grupos = []
         grupo_actual = [coordenadas_dinero[0]]
-        
         for x in coordenadas_dinero[1:]:
             if x - grupo_actual[-1] < 0.04: 
                 grupo_actual.append(x)
@@ -50,27 +73,51 @@ class ExtractorDeterministaOCR:
         
         grupos.sort(key=len, reverse=True)
         top_grupos = grupos[:3]
-        
         centros = sorted([sum(g) / len(g) for g in top_grupos])
-        carriles = {}
         
-        if len(centros) == 3:
-            carriles["retiro"] = centros[0]
-            carriles["deposito"] = centros[1]
-            carriles["saldo"] = centros[2]
-        elif len(centros) == 2:
-            if centros[1] > 0.78: 
-                carriles["saldo"] = centros[1]
-                if centros[0] < 0.65: carriles["retiro"] = centros[0]
-                else: carriles["deposito"] = centros[0]
-            else:
+        carriles = {}
+        banco_invertido = False
+        
+        if x_deposito is not None and x_retiro is not None:
+            if x_deposito < x_retiro:
+                banco_invertido = True
+        
+        # 3. Asignación Bifurcada
+        if self.banco == "BANORTE":
+            if len(centros) == 3:
+                carriles["deposito"] = centros[0]
+                carriles["retiro"] = centros[1]
+                carriles["saldo"] = centros[2]
+            elif len(centros) == 2:
+                if centros[1] > 0.78: 
+                    carriles["saldo"] = centros[1]
+                    if centros[0] < 0.65: carriles["deposito"] = centros[0]
+                    else: carriles["retiro"] = centros[0]
+                else:
+                    carriles["deposito"] = centros[0]
+                    carriles["retiro"] = centros[1]
+                    
+            if "deposito" not in carriles: carriles["deposito"] = 0.595
+            if "retiro" not in carriles: carriles["retiro"] = 0.710
+            if "saldo" not in carriles: carriles["saldo"] = 0.825
+        else:
+            if len(centros) == 3:
                 carriles["retiro"] = centros[0]
                 carriles["deposito"] = centros[1]
-                
-        if "retiro" not in carriles: carriles["retiro"] = 0.595
-        if "deposito" not in carriles: carriles["deposito"] = 0.710
-        if "saldo" not in carriles: carriles["saldo"] = 0.825
-        
+                carriles["saldo"] = centros[2]
+            elif len(centros) == 2:
+                if centros[1] > 0.78: 
+                    carriles["saldo"] = centros[1]
+                    if centros[0] < 0.65: carriles["retiro"] = centros[0]
+                    else: carriles["deposito"] = centros[0]
+                else:
+                    carriles["retiro"] = centros[0]
+                    carriles["deposito"] = centros[1]
+                    
+            if "retiro" not in carriles: carriles["retiro"] = 0.595
+            if "deposito" not in carriles: carriles["deposito"] = 0.710
+            if "saldo" not in carriles: carriles["saldo"] = 0.825
+            
         return carriles
 
     def asignar_columna_monto(self, x_obj, carriles, margen=0.08):
@@ -84,51 +131,6 @@ class ExtractorDeterministaOCR:
             return mejor_columna
         return None
 
-    def _evaluar_estado_tabla(self, texto_limpio, indice_fila, filas_estructuradas):
-        score_enviados = 0
-        score_recibidos = 0
-        
-        if any(k in texto_limpio for k in ["SPEI", "SPEL", "TRANSFERENCIA", "TRASPASO"]):
-            score_enviados += 1
-            score_recibidos += 1
-            
-        if any(k in texto_limpio for k in ["ENVIAD", "SALIDA", "RETIRO", "EMITID"]):
-            score_enviados += 2
-        if any(k in texto_limpio for k in ["RECIBID", "ENTRADA", "DEPOSITO", "COBRANZA"]):
-            score_recibidos += 2
-            
-        if "DETALLEDEMOVIMIENTOS" in texto_limpio and "SPEI" not in texto_limpio:
-            return "PRINCIPAL"
-        if any(k in texto_limpio for k in ["DETALLESDELCREDITO", "DETALLESDELCRÉDITO", "INVERSIONES", "POSICIÓN", "RESUMENFISCAL", "CREDITO"]):
-            return "OTRAS_TABLAS"
-
-        if score_enviados == 0 and score_recibidos == 0:
-            return None
-
-        montos_por_fila = []
-        filas_futuras = filas_estructuradas[indice_fila + 1 : indice_fila + 6]
-        
-        for f in filas_futuras:
-            montos = [b for b in f["bloques"] if self.rx_monto.search(b['texto'].strip())]
-            if len(montos) > 0:
-                montos_por_fila.append(len(montos))
-                
-        if montos_por_fila:
-            if all(cantidad == 1 for cantidad in montos_por_fila):
-                score_enviados += 2
-                score_recibidos += 2
-            elif any(cantidad >= 2 for cantidad in montos_por_fila):
-                score_enviados -= 3
-                score_recibidos -= 3
-
-        UMBRAL = 3 
-        if score_enviados >= UMBRAL and score_enviados > score_recibidos:
-            return "SPEI_ENVIADOS"
-        elif score_recibidos >= UMBRAL and score_recibidos > score_enviados:
-            return "SPEI_RECIBIDOS"
-            
-        return None
-    
     def procesar_transacciones(self, filas_estructuradas, saldo_inicial):
         carriles = self.detectar_carriles(filas_estructuradas)
         transacciones = []
@@ -139,16 +141,19 @@ class ExtractorDeterministaOCR:
         for i, fila in enumerate(filas_estructuradas):
             texto_unido_clean = fila["texto_unido"].upper().replace(" ", "").replace("_", "")
             
-            if any(k in texto_unido_clean for k in ["SPEI", "SPEL"]) and "RECIBID" in texto_unido_clean:
-                seccion_actual = "SPEI_RECIBIDOS"
-                continue
-            elif any(k in texto_unido_clean for k in ["SPEI", "SPEL"]) and "ENVIAD" in texto_unido_clean:
-                seccion_actual = "SPEI_ENVIADOS"
-                continue
-            elif "DETALLEDEMOVIMIENTOS" in texto_unido_clean and "SPEI" not in texto_unido_clean:
-                seccion_actual = "PRINCIPAL"
-                continue
+            # 1. BYPASS DE MÁQUINA DE ESTADOS SPEI
+            if self.banco != "BANORTE":
+                if any(k in texto_unido_clean for k in ["SPEI", "SPEL"]) and "RECIBID" in texto_unido_clean:
+                    seccion_actual = "SPEI_RECIBIDOS"
+                    continue
+                elif any(k in texto_unido_clean for k in ["SPEI", "SPEL"]) and "ENVIAD" in texto_unido_clean:
+                    seccion_actual = "SPEI_ENVIADOS"
+                    continue
+                elif "DETALLEDEMOVIMIENTOS" in texto_unido_clean and "SPEI" not in texto_unido_clean:
+                    seccion_actual = "PRINCIPAL"
+                    continue
                 
+            # 2. ESCUDO ANTI-BASURA
             if any(basura.replace(" ", "") in texto_unido_clean for basura in [t.replace(" ", "") for t in self.triggers_basura]):
                 continue 
 
@@ -192,7 +197,6 @@ class ExtractorDeterministaOCR:
         saldo_leido = None
         importe_generico = 0.0
         descripcion_tokens = []
-        
         requiere_revision = False
         saldo_inferido = None
 
@@ -259,6 +263,14 @@ class ExtractorDeterministaOCR:
         return tx, saldo_arrastre
     
     def deduplicar_transacciones(self, todas_las_transacciones):
+        # 1. BYPASS DE DEDUPLICACIÓN
+        if self.banco == "BANORTE":
+            for tx in todas_las_transacciones:
+                tx.pop("seccion", None)
+            todas_las_transacciones.sort(key=lambda x: x["fecha"])
+            return todas_las_transacciones
+
+        # 2. LÓGICA ESTRICTA (Mifel y otros)
         PALABRAS_IGNORADAS = {"de", "la", "el", "en", "por", "para", "un", "una", "spei", "pago", "envio", "transferencia", "cv", "sa", "banco"}
 
         def obtener_palabras_clave(texto: str) -> set:
