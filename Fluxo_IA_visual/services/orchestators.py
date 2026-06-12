@@ -182,6 +182,23 @@ def procesar_ocr_worker_sync(
     file_path: str, 
     filename: str
 ) -> Union[AnalisisTPV.ResultadoExtraccion, Exception]:
+    """
+    Ejecuta la extracción de transacciones utilizando el motor OCR determinista de AWS Textract.
+    
+    Este worker es invocado sincrónicamente dentro de un ProcessPoolExecutor para no 
+    bloquear el Event Loop principal de FastAPI. Aplica reglas de negocio y deduplicación
+    sobre los bloques de texto extraídos.
+
+    Args:
+        ia_data (dict): Metadatos iniciales obtenidos del análisis de la carátula (ej. Banco, RFC).
+        file_path (str): Ruta absoluta temporal donde se encuentra el documento físico.
+        filename (str): Nombre original del archivo para propósitos de trazabilidad y logging.
+
+    Returns:
+        Union[AnalisisTPV.ResultadoExtraccion, Exception]: Objeto estructurado con las transacciones
+        y metadatos técnicos en caso de éxito. Retorna una instancia de Exception si ocurre 
+        un fallo crítico durante el proceso.
+    """
     
     # --- CLASE ADAPTADORA INTERNA ---
     class TransaccionAdapterOCR:

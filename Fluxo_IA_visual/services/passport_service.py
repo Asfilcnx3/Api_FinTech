@@ -35,8 +35,9 @@ class PassportService:
             logger.warning(f"Error limpiando pasaportes antiguos: {e}")
     
     def _get_path(self, job_id: str) -> str:
-        # Convertimos a string para asegurar compatibilidad con open()
-        return str(self.passport_dir / f"{job_id}.json")
+        # os.path.basename extrae solo el archivo final, destruyendo rutas maliciosas
+        safe_job_id = os.path.basename(str(job_id))
+        return str(self.passport_dir / f"{safe_job_id}.json")
 
     def crear_pasaporte(self, job_id: str):
         """Inicializa el archivo JSON en disco."""

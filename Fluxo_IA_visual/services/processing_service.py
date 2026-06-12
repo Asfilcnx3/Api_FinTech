@@ -33,10 +33,11 @@ from ..services.orchestators import (
 logger = logging.getLogger(__name__)
 
 class ProcessingService:
-    def __init__(self, file_manager):
+    # Aceptamos las dependencias por constructor
+    def __init__(self, file_manager, passport_service, storage_service):
         self.file_manager = file_manager
-        self.passport = PassportService() # Inyección manual del pasaporte
-        self.storage = StorageService()
+        self.passport = passport_service 
+        self.storage = storage_service
 
         # --- SEMÁFORO DE CONCURRENCIA ---
         self.sem_ia = asyncio.Semaphore(20)
@@ -56,10 +57,24 @@ class ProcessingService:
             debug_flags=None # Se usará [1, 2, 3, 4] para debuguear si es necesario
         )
 
-    async def ejecutar_pipeline_background(self, job_id: str, lista_archivos: list):
+    async def ejecutar_pipeline_background(self, job_id: str, lista_archivos: list, pool_global = None):
         """
-        Esta función encapsula TODA la lógica pesada.
-        Recibe la lista de metadatos de archivos: [{'path': Path, 'filename': str, ...}]
+        Orquesta el flujo de trabajo completo (Pipeline V2) para la extracción y clasificación de PDFs.
+        
+        Esta función coordina 6 etapas: Análisis de carátulas (I/O Bound), enrutamiento OCR vs Digital,
+        extracción paralela en CPU, clasificación masiva con IA, reconciliación global de traspasos
+        y generación de reportes finales (Excel/JSON).
+
+        Args:
+            job_id (str): Identificador único del proceso asíncrono. Usado para rastrear el pasaporte y archivos.
+            lista_archivos (list): Lista de diccionarios con metadatos de los archivos extraídos previamente
+                                    (incluye 'path', 'filename', etc.).
+            pool_global (ProcessPoolExecutor, optional): Pool de procesos inyectado a nivel aplicación para
+                                                            evitar estrangulamiento de CPU. Si es None, crea uno temporal.
+
+        Returns:
+            None: La función no retorna valores directamente, sino que guarda los resultados
+                    en el StorageService y actualiza el estado mediante PassportService.
         """
         # 0. INICIO
         self.passport.crear_pasaporte(job_id)
@@ -235,91 +250,88 @@ class ProcessingService:
 
         logger.info(f"Ejecutando Workers. Digitales: {len(documentos_digitales)} | OCR: {len(documentos_escaneados)}")
 
-        with ProcessPoolExecutor() as executor:
-            
-            # A. Digitales
-            for doc in documentos_digitales:
+        # Si por alguna razón no viene el pool global (ej. tests unitarios), creamos uno temporal
+        executor = pool_global if pool_global else ProcessPoolExecutor()
+        
+        # ELIMINAMOS el `with ProcessPoolExecutor() as executor:` y desindentamos el bloque interior
+        # A. Digitales
+        for doc in documentos_digitales:
+            tarea = loop.run_in_executor(
+                executor, # Usamos el executor global
+                procesar_digital_worker_sync, 
+                doc["ia_data"],     
+                doc["filename"],
+                str(doc["file_path"]),   
+                doc["rango_paginas"]
+            )
+            tareas_digitales.append((doc["index"], tarea))
+
+        # B. OCR
+        if procesar_ocr:
+            for doc in documentos_escaneados:
                 tarea = loop.run_in_executor(
-                    executor,
-                    procesar_digital_worker_sync, 
-                    doc["ia_data"],     
-                    doc["filename"],
-                    str(doc["file_path"]),   
-                    doc["rango_paginas"]
+                    executor, # Usamos el executor global
+                    procesar_ocr_worker_sync,
+                    doc["ia_data"],
+                    str(doc["file_path"]),
+                    doc["filename"]
                 )
-                tareas_digitales.append((doc["index"], tarea))
+                tareas_ocr.append((doc["index"], tarea))
+        else:
+            self._manejar_ocr_omitidos(documentos_escaneados, resultados_finales, es_mayor)
 
-            # B. OCR
-            if procesar_ocr:
-                for doc in documentos_escaneados:
-                    tarea = loop.run_in_executor(
-                        executor,
-                        procesar_ocr_worker_sync,
-                        doc["ia_data"],
-                        str(doc["file_path"]),
-                        doc["filename"]
-                    )
-                    tareas_ocr.append((doc["index"], tarea))
-            else:
-                self._manejar_ocr_omitidos(documentos_escaneados, resultados_finales, es_mayor)
+        # C. Esperar resultados y actualizar Pasaporte dinámicamente
+        todos_los_futuros = []
+        if tareas_digitales: todos_los_futuros.extend([t[1] for t in tareas_digitales])
+        if tareas_ocr: todos_los_futuros.extend([t[1] for t in tareas_ocr])
 
-            # C. Esperar resultados y actualizar Pasaporte dinámicamente
-            todos_los_futuros = []
-            if tareas_digitales: todos_los_futuros.extend([t[1] for t in tareas_digitales])
-            if tareas_ocr: todos_los_futuros.extend([t[1] for t in tareas_ocr])
-
-            if todos_los_futuros:
-                # [IMPLEMENTACIÓN DE LÓGICA MATEMÁTICA 2]
-                # as_completed nos permite actualizar la barra de progreso conforme termina cada archivo
-                for futuro_completado in asyncio.as_completed(todos_los_futuros):
-                    try:
-                        res = await futuro_completado
-                        
-                        # Intentamos extraer el nombre para el log
-                        nombre_archivo = "Desconocido"
-                        if hasattr(res, 'AnalisisIA') and res.AnalisisIA:
-                            nombre_archivo = res.AnalisisIA.nombre_archivo_virtual or "Archivo"
-
-                        # Verificamos si es OCR o Digital
-                        # (Asegúrate de que tu modelo ResultadoExtraccion tenga 'es_digital' o úsalo por defecto)
-                        es_digital = getattr(res, 'es_digital', True) 
-                        
-                        if es_digital:
-                            # Digital: Ya sumamos las páginas al inicio, solo logueamos
-                            self.passport.actualizar(job_id, descripcion=f"Leído: {nombre_archivo}")
-                        else:
-                            # OCR: Sumamos al contador de páginas OCR (que valen 1.5s cada una)
-                            self.passport.actualizar(
-                                job_id, 
-                                descripcion=f"OCR Finalizado: {nombre_archivo}", 
-                                sumar_paginas_ocr=1 # Asumimos 1 página por tarea OCR simple
-                            )
-                            
-                    except Exception as e:
-                        logger.error(f"Error en tarea individual: {e}")
-
-            # D. Recoger resultados finales ordenados
-            # (Requerido porque as_completed pierde el orden)
-            resultados_brutos_digitales = []
-            if tareas_digitales:
-                resultados_brutos_digitales = await asyncio.gather(*[t[1] for t in tareas_digitales], return_exceptions=True)
-
-            resultados_brutos_ocr = []
-            ocr_timed_out = False
-            if tareas_ocr:
+        if todos_los_futuros:
+            # [IMPLEMENTACIÓN DE LÓGICA MATEMÁTICA 2]
+            # as_completed nos permite actualizar la barra de progreso conforme termina cada archivo
+            for futuro_completado in asyncio.as_completed(todos_los_futuros):
                 try:
-                    resultados_brutos_ocr = await asyncio.wait_for(
-                        asyncio.gather(*[t[1] for t in tareas_ocr], return_exceptions=True),
-                        timeout=13 * 60
-                    )
-                    # --- LOGS MOMENTANEOS ---
-                    logger.info(f"[TRACKING OCR - 2] ProcessPool devolvió {len(resultados_brutos_ocr)} resultados OCR. Timed_out: {ocr_timed_out}")
-                    for idx, res_ocr in enumerate(resultados_brutos_ocr):
-                        logger.info(f"   -> OCR Item {idx}: Tipo {type(res_ocr)}")
-                    # ----------------------
-                except asyncio.TimeoutError:
-                    ocr_timed_out = True
-                    self._manejar_timeout_ocr(tareas_ocr, documentos_escaneados, resultados_finales)
+                    res = await futuro_completado
+                    
+                    # Intentamos extraer el nombre para el log
+                    nombre_archivo = "Desconocido"
+                    if hasattr(res, 'AnalisisIA') and res.AnalisisIA:
+                        nombre_archivo = res.AnalisisIA.nombre_archivo_virtual or "Archivo"
+
+                    # Verificamos si es OCR o Digital
+                    # (Asegúrate de que tu modelo ResultadoExtraccion tenga 'es_digital' o úsalo por defecto)
+                    es_digital = getattr(res, 'es_digital', True) 
+                    
+                    if es_digital:
+                        # Digital: Ya sumamos las páginas al inicio, solo logueamos
+                        self.passport.actualizar(job_id, descripcion=f"Leído: {nombre_archivo}")
+                    else:
+                        # OCR: Sumamos al contador de páginas OCR (que valen 1.5s cada una)
+                        self.passport.actualizar(
+                            job_id, 
+                            descripcion=f"OCR Finalizado: {nombre_archivo}", 
+                            sumar_paginas_ocr=1 # Asumimos 1 página por tarea OCR simple
+                        )
+                        
+                except Exception as e:
+                    logger.error(f"Error en tarea individual: {e}")
+
+        # D. Recoger resultados finales ordenados
+        # (Requerido porque as_completed pierde el orden)
+        resultados_brutos_digitales = []
+        if tareas_digitales:
+            resultados_brutos_digitales = await asyncio.gather(*[t[1] for t in tareas_digitales], return_exceptions=True)
+
+        resultados_brutos_ocr = []
+        ocr_timed_out = False
+        if tareas_ocr:
+            try:
+                resultados_brutos_ocr = await asyncio.wait_for(
+                    asyncio.gather(*[t[1] for t in tareas_ocr], return_exceptions=True),
+                    timeout=13 * 60
+                )
+            except asyncio.TimeoutError:
+                ocr_timed_out = True
+                self._manejar_timeout_ocr(tareas_ocr, documentos_escaneados, resultados_finales)
 
         # --- ETAPA 4: RECOLECCIÓN ---
         resultados_fase_2 = self._ensamblar_resultados_crudos(

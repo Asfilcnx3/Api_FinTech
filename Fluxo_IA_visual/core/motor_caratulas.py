@@ -1,3 +1,5 @@
+# core/motor_caratulas.py
+
 import fitz  # PyMuPDF
 import logging
 import re
@@ -52,14 +54,33 @@ class MotorCaratulas:
         self,
         pdf_bytes: bytes,
         prompt_base: str,
-        analizar_gpt_fn,   # Inyectamos la función analizar_gpt_fluxo
-        analizar_qwen_fn,  # Inyectamos la función analizar_con_ocr_fluxo
-        extraer_json_fn,   # Inyectamos extraer_json_del_markdown
-        sanitizar_fn       # Inyectamos sanitizar_datos_ia
+        analizar_gpt_fn,   
+        analizar_qwen_fn,  
+        extraer_json_fn,   
+        sanitizar_fn
     ) -> Tuple[List[Dict[str, Any]], bool, str, Dict[int, str], List[Tuple[int, int]]]:
         """
-        El orquestador principal del motor. Ejecuta todo el flujo de extracción física,
-        estática y de IA, culminando en la triangulación determinista.
+        Ejecuta el flujo multimodal de extracción, clasificación y reconciliación de carátulas bancarias.
+        
+        Combina extracción de texto crudo (para validar rangos y cuentas), evaluación con 
+        modelos multimodales concurrentes (GPT-Vision y Qwen-VL), y una triangulación 
+        determinista basada en Regex para resolver discrepancias y evitar alucinaciones.
+
+        Args:
+            pdf_bytes (bytes): El documento completo cargado en memoria.
+            prompt_base (str): El prompt maestro con las reglas de extracción.
+            analizar_gpt_fn (Callable): Inyección de dependencia para el cliente de GPT.
+            analizar_qwen_fn (Callable): Inyección de dependencia para el cliente de Qwen.
+            extraer_json_fn (Callable): Función de parsing para extraer JSON del Markdown.
+            sanitizar_fn (Callable): Función para tipar y limpiar los datos de salida.
+
+        Returns:
+            Tuple: 
+                - List[Dict]: Resultados reconciliados de cada cuenta válida.
+                - bool: Indicador de si el documento es nativo digital (True) o escaneado (False).
+                - str: Texto global del documento (para contexto).
+                - Dict: Texto mapeado por número de página.
+                - List[Tuple]: Rangos de páginas detectados para cada cuenta (inicio, fin).
         """
         # 1. Extracción física y detección de rangos
         texto_por_pagina, rangos_cuentas = self.extraer_texto_y_rangos(pdf_bytes)

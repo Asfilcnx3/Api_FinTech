@@ -1,3 +1,5 @@
+# services/file_manager.py
+
 import shutil
 import os
 import uuid
@@ -7,6 +9,8 @@ import logging
 from pathlib import Path
 from fastapi import UploadFile, HTTPException
 from typing import List, Dict, Any
+
+from ..core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -56,11 +60,36 @@ class FileManagerService:
             unique_filename = f"{uuid.uuid4()}{file_extension}"
             file_path = self.upload_dir / unique_filename
 
-            # Usamos shutil.copyfileobj para escribir en disco por chunks (buffer)
+            # 1. Validar Magic Bytes (El cambio que hicimos antes)
+            cabecera = upload_file.file.read(4)
+            upload_file.file.seek(0)
+            
+            es_zip = cabecera.startswith(b'PK\x03\x04')
+            es_pdf = cabecera.startswith(b'%PDF')
+            
+            if not (es_zip or es_pdf):
+                raise HTTPException(status_code=415, detail="Tipo de archivo no soportado o falsificado.")
+
+            # 2. Control de Tamaño Máximo Dinámico (Prevención OOM)
+            # Convertimos MB a Bytes
+            max_size_bytes = settings.MAX_FILE_SIZE_MB * 1024 * 1024 
+            tamanio_actual = 0
+            
             with file_path.open("wb") as buffer:
-                shutil.copyfileobj(upload_file.file, buffer)
+                # Leemos en fragmentos de 1MB para no saturar la RAM
+                while chunk := upload_file.file.read(1024 * 1024):
+                    tamanio_actual += len(chunk)
+                    if tamanio_actual > max_size_bytes:
+                        # Si se pasa, cerramos, borramos la basura y lanzamos el error
+                        buffer.close()
+                        file_path.unlink(missing_ok=True)
+                        logger.warning(f"Archivo rechazado por sobrepasar límite: {upload_file.filename}")
+                        raise HTTPException(status_code=413, detail=f"El archivo supera el límite permitido de {settings.MAX_FILE_SIZE_MB}MB.")
+                    buffer.write(chunk)
             
             return file_path
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Error guardando archivo temporal {upload_file.filename}: {e}")
             raise HTTPException(status_code=500, detail="Error interno al guardar el archivo.")
@@ -120,6 +149,12 @@ class FileManagerService:
 
                     # 2. Si pasó todas las auditorías, procedemos a extraer
                     for member in archivos_a_extraer:
+                        # --- PREVENCIÓN ZIP SLIP ---
+                        target_path = (extract_dir / member).resolve()
+                        if not str(target_path).startswith(str(extract_dir.resolve())):
+                            logger.critical(f"Alerta de Seguridad: Zip Slip detectado. Archivo malicioso: {member}")
+                            raise HTTPException(status_code=400, detail="El archivo ZIP contiene rutas maliciosas.")
+
                         zip_ref.extract(member, path=extract_dir)
                         full_path = extract_dir / member
                         

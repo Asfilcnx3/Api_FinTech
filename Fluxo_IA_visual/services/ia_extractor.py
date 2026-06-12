@@ -1,3 +1,5 @@
+# services/ia_extractor.py
+
 from .pdf_processor import convertir_pdf_a_imagenes
 from ..core.config import settings
 from ..utils.helpers import _crear_prompt_agente_unificado, parsear_respuesta_json_ocr
