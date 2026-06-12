@@ -4,9 +4,13 @@ from fastapi import APIRouter, UploadFile, File, Form, BackgroundTasks, HTTPExce
 from fastapi.responses import FileResponse, JSONResponse
 from typing import List, Optional
 import uuid
+from pydantic import BaseModel, Field
+from uuid import UUID
 import logging
+from fastapi import Request
 
 # Servicios
+from ...models.passport import PassportData
 from ...services.file_manager import FileManagerService
 from ...services.processing_service import ProcessingService
 from ...services.storage_service import StorageService
@@ -28,9 +32,11 @@ def get_webhook_service() -> WebhookService: return WebhookService()
 
 # Inyector compuesto: ProcessingService necesita un FileManager
 def get_processing_service(
-    file_manager: FileManagerService = Depends(get_file_manager)
+    file_manager: FileManagerService = Depends(get_file_manager),
+    passport_service: PassportService = Depends(get_passport_service), 
+    storage: StorageService = Depends(get_storage)                     
 ) -> ProcessingService:
-    return ProcessingService(file_manager)
+    return ProcessingService(file_manager, passport_service, storage)
 
 # Inyector del Orquestador Universal
 def get_orquestador_general(
@@ -48,6 +54,7 @@ def get_orquestador_general(
     summary="Extrae datos estructurados de transacciones TPV."
 )
 async def procesar_pdf_api(
+    request: Request,
     background_tasks: BackgroundTasks,
     archivos: List[UploadFile] = File(..., description="Archivos PDF o ZIP"),
     webhook_url: Optional[str] = Form(None, description="URL para notificar al terminar"),
@@ -72,13 +79,17 @@ async def procesar_pdf_api(
     if not lista_archivos_trabajo:
         raise HTTPException(status_code=400, detail="No se encontraron archivos PDF válidos.")
 
+    # Rescatamos el pool global
+    pool_global = request.app.state.process_pool
+
     # DELEGAMOS AL ORQUESTADOR GENERAL
     background_tasks.add_task(
         orquestador.ejecutar_y_notificar,
-        processing_service.ejecutar_pipeline_background, # 1. La función a ejecutar
-        job_id,                                          # 2. El Job ID
-        webhook_url,                                     # 3. El webhook
-        lista_archivos_trabajo                           # 4. Los *args que necesita tu pipeline
+        processing_service.ejecutar_pipeline_background, 
+        job_id,                                          
+        webhook_url,                                     
+        lista_archivos_trabajo,
+        pool_global # PASAMOS EL POOL COMO ARGUMENTO
     )
 
     return RespuestaProcesamientoIniciado(
@@ -87,11 +98,38 @@ async def procesar_pdf_api(
         estatus="procesando"
     )
 
-@router.get("/fluxo/descargar-resultado/{job_id}")
+class RespuestaPasaporte(BaseModel):
+    mensaje: str = Field(description="Mensaje de estado", examples=["Archivo aún procesando"])
+    pasaporte: PassportData = Field(description="Objeto con la telemetría y progreso en tiempo real")
+
+@router.get(
+    "/fluxo/descargar-resultado/{job_id}",
+    summary="Descarga el reporte final o consulta el progreso (Pasaporte)",
+    description="Intenta descargar el resultado. Si aún no está listo, devuelve un código 202 con el estado actual del procesamiento.",
+    responses={
+        200: {
+            "description": "El archivo está listo. Retorna un binario Excel o un JSON dependiendo del formato solicitado.",
+            "content": {
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {
+                    "example": "Binario del archivo Excel (.xlsx)"
+                },
+                "application/json": {
+                    "example": {"tu_data": "json"}
+                }
+            }
+        },
+        202: {
+            "description": "El procesamiento sigue en curso. Utiliza el pasaporte para actualizar la barra de progreso en el frontend.",
+            "model": RespuestaPasaporte
+        },
+        404: {
+            "description": "El Job ID no existe, expiró o fue eliminado por limpieza automática."
+        }
+    }
+)
 async def descargar_resultado(
-    job_id: str, 
+    job_id: UUID, 
     formato: str = Query("excel", enum=["excel", "json"]),
-    # --- INYECCIÓN DE DEPENDENCIAS AQUÍ ---
     storage: StorageService = Depends(get_storage),
     passport_service: PassportService = Depends(get_passport_service)
 ):
@@ -99,20 +137,22 @@ async def descargar_resultado(
     Intenta descargar. Si no está listo, retorna un 202 (Accepted) con el Pasaporte 
     para que el frontend sepa qué mostrar.
     """
+    job_id_str = str(job_id)
+    
     # 1. Intentar buscar el archivo final
-    ruta = storage.obtener_ruta_archivo(job_id) if formato == "excel" else storage.obtener_datos_json(job_id)
+    ruta = storage.obtener_ruta_archivo(job_id_str) if formato == "excel" else storage.obtener_datos_json(job_id_str)
     
     if ruta:
         # SI EXISTE, lo entregamos (Código 200 normal)
         if formato == "json": return ruta
         return FileResponse(
             path=ruta, 
-            filename=f"Reporte_{job_id}.xlsx",
+            filename=f"Reporte_{job_id_str}.xlsx",
             media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
         )
     
     # 2. SI NO EXISTE, buscamos el Pasaporte
-    pasaporte = passport_service.leer_pasaporte(job_id)
+    pasaporte = passport_service.leer_pasaporte(job_id_str)
     
     if pasaporte:
         # Retornamos 202 Accepted (estándar REST para "estoy en ello")
@@ -125,4 +165,4 @@ async def descargar_resultado(
         )
 
     # 3. Si no hay ni archivo ni pasaporte -> 404
-    raise HTTPException(status_code=404, detail="Job no encontrado.")
+    raise HTTPException(status_code=404, detail="Job no encontrado o expirado.")

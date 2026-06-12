@@ -57,6 +57,7 @@ def extraer_json_del_markdown(respuesta: str) -> Dict[str, Any]:
     except json.JSONDecodeError:
         logger.debug(f"El modelo no devolvió un JSON válido. Respuesta: {respuesta[:200]}...")
         return {}
+    
 # --- FUNCIÓN PARA EXTRAER RFC Y CURP DE TEXTO ---
 def extraer_rfc_curp_por_texto(texto: str, tipo_doc: str) -> Tuple[List[str], List[str]]:
     """
@@ -206,7 +207,7 @@ def filtrar_caratulas_duplicadas(lista_cuentas: list, firmas_vistas_globales: se
             firmas_vistas_globales.add(firma_cuenta)
             cuentas_unicas.append(cuenta)
         else:
-            logger.info(f"🚫 [Filtro Duplicados] Se omitió un estado de cuenta duplicado: {banco.upper()} | RFC: {rfc} | Periodo: {p_fin}")
+            logger.info(f"[Filtro Duplicados] Se omitió un estado de cuenta duplicado: {banco.upper()} | RFC: {rfc} | Periodo: {p_fin}")
 
     return cuentas_unicas
 

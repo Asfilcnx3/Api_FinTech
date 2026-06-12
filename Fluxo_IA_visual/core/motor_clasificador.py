@@ -37,6 +37,12 @@ class MotorClasificador:
             prefijo = etiquetas.get(flag, "[DEBUG]  ")
             logger.info(f"  {prefijo} {mensaje}")
     
+    def _enmascarar_pii(self, texto: str) -> str:
+        """Oculta secuencias numéricas largas (Cuentas, SPEI, Teléfonos) para los logs."""
+        if not texto: return ""
+        # Reemplaza secuencias de 4 o más números por asteriscos
+        return re.sub(r'\d{4,}', '****', texto)
+    
     def _aplicar_matriz_conflictos(self, tags_encontrados: dict, es_abono: bool) -> tuple:
         """
         Fase 2 y 3: Evalúa los tags.
@@ -134,9 +140,11 @@ class MotorClasificador:
             # FILTRO ANTI-BASURA OCR
             if tipo_lower == "importe":
                 tx.categoria = "BASURA_OCR"
-                tx.razon_clasificacion = "Descarte automático: Identificado como Basura OCR / CFDI." # <-- NUEVO
+                tx.razon_clasificacion = "Descarte automático: Identificado como Basura OCR / CFDI."
                 resueltas_por_python.append((idx_real, tx))
-                self._log_debug(1, f"Tx {idx_real} descartada (Basura OCR/CFDI) -> {desc_plana[:40]}...")
+                # USAR EL ENMASCARADO AQUÍ
+                desc_segura = self._enmascarar_pii(desc_plana[:40])
+                self._log_debug(1, f"Tx {idx_real} descartada (Basura OCR) -> {desc_segura}...")
                 continue
             
             es_abono = tipo_lower in ["abono", "deposito", "depósito", "credito", "crédito"]
@@ -166,7 +174,8 @@ class MotorClasificador:
                 tx.categoria = categoria_final
                 tx.razon_clasificacion = razon
                 resueltas_por_python.append((idx_real, tx))
-                self._log_debug(2, f"Tx {idx_real} clasificada como {tx.categoria} por Matriz/Pesos -> {desc_plana[:40]}...")
+                desc_segura = self._enmascarar_pii(desc_plana[:40])
+                self._log_debug(2, f"Tx {idx_real} clasificada como {tx.categoria} -> {desc_segura}...")
             else:
                 # Si no hubo tags, se va a la IA
                 pendientes_para_ia.append((idx_real, tx))
@@ -209,12 +218,23 @@ class MotorClasificador:
         nombre_cliente: str = ""
     ) -> dict:
         """
-        El orquestador maestro del clasificador.
-        1. Filtra estáticamente (La Atarraya).
-        2. Envía lotes pequeños a la IA.
-        3. Ensambla resultados.
-        4. Pasa por el Sub-Motor de Comisiones.
-        5. Calcula totales.
+        Orquesta el motor de clasificación híbrido para un lote de transacciones.
+        
+        Aplica una estrategia de "embudo":
+        1. Capa determinista (Regex/Pesos) para atrapar transacciones obvias y basura OCR.
+        2. Capa de IA semántica (LLM) que recibe lotes dinámicos para clasificar ambigüedades.
+        3. Ensamblaje, inyección de metadatos y cálculo de totales (Sub-motor de comisiones).
+
+        Args:
+            transacciones (List[Any]): Lista de objetos de transacción en crudo.
+            banco (str): Nombre del banco, utilizado para cargar prompts específicos de la IA.
+            funcion_ia_clasificadora (Callable): Función inyectada que maneja la llamada a la API del LLM.
+            batch_size (int, optional): Tamaño máximo del lote de transacciones enviado a la IA. Por defecto 100.
+            nombre_cliente (str, optional): Nombre del titular para reglas heurísticas de traspasos propios.
+
+        Returns:
+            dict: Diccionario consolidado con la sumatoria monetaria por cada categoría 
+                    (ej. {"EFECTIVO": 1500.0, "TPV": 25000.0, "COMISION_CR": 450.0}).
         """
         if not transacciones:
             return {}

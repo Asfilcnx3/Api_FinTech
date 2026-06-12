@@ -1,7 +1,11 @@
+# main.py
+
 from .core.config import settings
 from .api.endpoints import router_fluxo, router_csf, router_nomi, router_precalificacion, router_front
 
 import sys
+from concurrent.futures import ProcessPoolExecutor
+import os
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
@@ -21,24 +25,61 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Maneja los eventos de inicio y apagado de la aplicación."""
-    # Código de inicio
+    # Determinamos un número seguro de workers (ej. total de cores físicos menos 1)
+    max_workers = max(1, os.cpu_count() - 1)
+    app.state.process_pool = ProcessPoolExecutor(max_workers=max_workers)
+    
     logger.info(f"Iniciando {settings.PROJECT_NAME} v{settings.APP_VERSION}")
+    logger.info(f"Pool global de procesos iniciado con {max_workers} workers.")
     logger.info(f"Modo Debug: {settings.DEBUG}")
     logger.info(f"Creado por: {settings.DEV_NAME}")
         
     yield
-    # Código de apagado
-    logger.info("Cerrando la aplicación.")
+    
+    # Código de apagado: liberamos la RAM y cerramos procesos
+    app.state.process_pool.shutdown(wait=True)
+    logger.info("Cerrando la aplicación y limpiando el pool de procesos.")
+
+# Definimos los tags visuales para Swagger
+tags_metadata = [
+    {
+        "name": "Extracción de Fluxo",
+        "description": "Análisis profundo de transacciones TPV y estados de cuenta usando motores espaciales y OCR.",
+    },
+    {
+        "name": "Extracción de NomiFlash",
+        "description": "Procesamiento y extracción de datos de recibos de nómina.",
+    },
+    {
+        "name": "General",
+        "description": "Endpoints de estado, métricas e información del sistema.",
+    }
+]
+
+# Descripción en Markdown para la cabecera de /docs
+description_md = """
+Esta API orquesta un flujo de trabajo avanzado para la extracción y clasificación de texto dentro de documentos financieros.
+
+## Características Principales
+* **Resiliencia:** Mitigación de Zip Bombs y ataques de Path Traversal.
+* **Escalabilidad:** Procesamiento asíncrono con control de memoria para archivos de gran volumen.
+* **Inteligencia:** Motores híbridos (Determinista + Modelos Multimodales) para clasificación de transacciones.
+* **Flexibilidad:** Orquestador agnóstico que puede ejecutar cualquier pipeline y notificar resultados vía Webhooks.
+"""
 
 # Inicialización de la aplicación FastAPI
 app = FastAPI(
-    title=settings.PROJECT_NAME,
+    title=f"{settings.PROJECT_NAME} API",
     version=settings.APP_VERSION,
-    description="API para la extracción de Texto (Entradas TPV) dentro de PDF's, mediante un flujo de trabajo.",
+    description=description_md,
+    openapi_tags=tags_metadata,
+    contact={
+        "name": settings.DEV_NAME
+    },
     docs_url="/docs" if settings.DEBUG else None,
     redoc_url="/redoc" if settings.DEBUG else None,
     lifespan=lifespan
-) 
+)
 
 # Configurar CORS (Cross-Origin Resource Sharing)
 # Es importante restringir los origines en un entorno de prooducción para mayor seguridad

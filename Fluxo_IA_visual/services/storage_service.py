@@ -48,7 +48,8 @@ class StorageService:
     def guardar_json_local(self, datos: dict, job_id: str):
         """Guarda el objeto de respuesta completo en JSON."""
         self._limpiar_archivos_antiguos()
-        filename = f"data_{job_id}.json"
+        safe_job_id = os.path.basename(str(job_id)) # <--- Sanitización interna
+        filename = f"data_{safe_job_id}.json"
         filepath = os.path.join(self.DOWNLOADS_DIR, filename)
         
         try:
@@ -60,7 +61,8 @@ class StorageService:
 
     def obtener_datos_json(self, job_id: str) -> Optional[dict]:
         """Lee el JSON del disco y lo devuelve como diccionario."""
-        filename = f"data_{job_id}.json"
+        safe_job_id = os.path.basename(str(job_id)) # <--- Sanitización interna
+        filename = f"data_{safe_job_id}.json"
         filepath = os.path.join(self.DOWNLOADS_DIR, filename)
         
         if os.path.exists(filepath):

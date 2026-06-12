@@ -17,15 +17,15 @@ class AnalisisTPV:
             populate_by_name = True # Permite que Pydantic acepte tanto 'error' como 'detalle_error' al construirlo
 
     class Transaccion(BaseModel):
-        """Representa una única transaccion encontrada dentro del documento [3 partes]."""
-        fecha: str
-        periodo: str
-        descripcion: str
-        monto: str
-        tipo: str
-        categoria: str
-        es_sospechosa: bool = False
-        razon_clasificacion: str = ""
+        """Representa una única transacción encontrada dentro del documento."""
+        fecha: str = Field(description="Fecha de la transacción extraída del documento.", examples=["15-JUN-26"])
+        periodo: str = Field(description="Periodo contable inferido.", examples=["JUNIO 2026"])
+        descripcion: str = Field(description="Descripción cruda o unificada del movimiento.", examples=["TRASPASO SPEI A TERCEROS"])
+        monto: str = Field(description="Monto en formato string, sin formato de moneda.", examples=["1500.50"])
+        tipo: str = Field(description="Clasificación binaria del movimiento.", examples=["abono", "cargo"])
+        categoria: str = Field(description="Etiqueta asignada por el motor de clasificación.", examples=["EFECTIVO", "TPV", "GENERAL"])
+        es_sospechosa: bool = Field(default=False, description="Bandera de alerta para prevención de fraudes o discrepancias.")
+        razon_clasificacion: str = Field(default="", description="Justificación técnica de por qué se asignó la categoría.")
     
     class ResultadoTPV(BaseModel):
         """Representa todas las transacciones TPV encontadas dentro del documento."""
@@ -33,23 +33,23 @@ class AnalisisTPV:
         error_transacciones: Optional[str] = None
 
     class ResultadoAnalisisIA(BaseModel):
-        """Clase de respuesta para un analisis de carátula exitóso."""
-        nombre_archivo_virtual: Optional[str] = None
+        """Clase de respuesta para un análisis de carátula exitoso."""
+        nombre_archivo_virtual: Optional[str] = Field(default=None, description="Nombre asignado en memoria para trazabilidad.", examples=["Estado_Cuenta_Marzo.pdf"])
 
         # Campos de la carátula
-        banco: str
-        tipo_moneda: Optional[str] = Field(default=None, description="Ejemplo: MXN, USD, etc.")
+        banco: str = Field(description="Institución bancaria detectada por el motor o la IA.", examples=["BANORTE", "BBVA"])
+        tipo_moneda: Optional[str] = Field(default=None, description="Moneda detectada en el documento.", examples=["MXN", "USD"])
         
-        rfc: Optional[str] = Field(default=None, description="Ejemplo: GODE561231GR8")
-        nombre_cliente: Optional[str] = Field(default=None, description="Nombre del cliente")
-        clabe_interbancaria: Optional[str] = Field(default=None, description="CLABE interbancaria")
-        periodo_inicio: Optional[str] = Field(default=None, description="Período de inicio")
-        periodo_fin: Optional[str] = Field(default=None, description="Período de fin")
+        rfc: Optional[str] = Field(default=None, description="Registro Federal de Contribuyentes extraído.", examples=["GODE561231GR8"])
+        nombre_cliente: Optional[str] = Field(default=None, description="Razón social o nombre del titular.", examples=["COMERCIALIZADORA GODE SA DE CV"])
+        clabe_interbancaria: Optional[str] = Field(default=None, description="CLABE de 18 dígitos detectada.", examples=["072320012345678901"])
+        periodo_inicio: Optional[str] = Field(default=None, description="Fecha de inicio del ciclo del estado de cuenta.", examples=["01/03/2026"])
+        periodo_fin: Optional[str] = Field(default=None, description="Fecha de corte del estado de cuenta.", examples=["31/03/2026"])
         
-        comisiones: Optional[float] = Field(default=None, description="Comisiones totales del período que se muestran en la carátula")
-        depositos: Optional[float] = Field(default=None, description="Total de depósitos del período que se muestran en la carátula")
-        cargos: Optional[float] = Field(default=None, description="Total de cargos del período que se muestran en la carátula")
-        saldo_promedio: Optional[float] = Field(default=None, description="Saldo promedio del período que se muestran en la carátula")
+        comisiones: Optional[float] = Field(default=None, description="Comisiones totales declaradas explícitamente en la carátula.", examples=[1250.50])
+        depositos: Optional[float] = Field(default=None, description="Total de depósitos declarados en la carátula.", examples=[350000.00])
+        cargos: Optional[float] = Field(default=None, description="Total de retiros o cargos declarados en la carátula.", examples=[345000.00])
+        saldo_promedio: Optional[float] = Field(default=None, description="Saldo promedio mensual declarado.", examples=[15000.00])
 
         # Métricas de medición
         total_depositos_extraidos: Optional[float] = Field(default=0.0, description="Suma real de los abonos encontrados")
@@ -87,17 +87,21 @@ class AnalisisTPV:
         paginas_fallidas: Optional[int] = Field(default=0, description="Páginas que fallaron o no arrojaron transacciones")
 
     class ResultadoExtraccion(BaseModel):
-        """Representa la respuesta para los documentos individuales -> Caratula + Resultados TPV."""
+        """Representa la respuesta consolidada para un documento individual: Carátula + Detalle de Transacciones."""
+
         # --- CAMPOS DE ESTATUS ---
-        nombre_documento: Optional[str] = Field(None, description="Nombre original del archivo procesado")
-        estatus_documento: str = Field("exitoso", description="Estatus general del documento")
+        nombre_documento: Optional[str] = Field(None, description="Nombre original del archivo procesado.", examples=["lote_01_banco.pdf"])
+        estatus_documento: str = Field(
+            "exitoso", 
+            description="Estado final del procesamiento. Puede ser 'exitoso' o 'fallido'. Un estado fallido implica que se generó un ErrorRespuesta en los detalles.",
+            examples=["exitoso"]
+        )
         
-        AnalisisIA: Optional["AnalisisTPV.ResultadoAnalisisIA"] = None
-        DetalleTransacciones: Optional[Union["AnalisisTPV.ResultadoTPV", "AnalisisTPV.ErrorRespuesta"]] = None
+        AnalisisIA: Optional["AnalisisTPV.ResultadoAnalisisIA"] = Field(None, description="Resultados extraídos de la carátula y métricas globales calculadas.")
+        DetalleTransacciones: Optional[Union["AnalisisTPV.ResultadoTPV", "AnalisisTPV.ErrorRespuesta"]] = Field(None, description="Lista de movimientos extraídos o el detalle del error si falló.")
 
         # --- MÉTRICAS ---
-        # Usamos List[Dict[str, Any]] para máxima flexibilidad
-        metadata_tecnica: List[Dict[str, Any]] = Field(default_factory=list)
+        metadata_tecnica: List[Dict[str, Any]] = Field(default_factory=list, description="Telemetría de extracción por página (tiempo, score, método OCR).")
         
         # --- CAMPOS INTERNOS (Contexto para Geometría) ---
         # exclude=True hace que estos campos existan en Python pero NO en el JSON final
