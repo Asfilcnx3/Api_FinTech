@@ -51,6 +51,24 @@ class AnalisisTPV:
         cargos: Optional[float] = Field(default=None, description="Total de retiros o cargos declarados en la carátula.", examples=[345000.00])
         saldo_promedio: Optional[float] = Field(default=None, description="Saldo promedio mensual declarado.", examples=[15000.00])
 
+        # --- CAMPOS ESPECÍFICOS KAPITAL (Sumandos) ---
+        kapital_dep_efectivo: Optional[float] = Field(default=0.0, description="Suma de depósitos en efectivo para KAPITAL")
+        kapital_dep_cheques: Optional[float] = Field(default=0.0, description="Suma de depósitos en cheques para KAPITAL")
+        kapital_transf_recibidas: Optional[float] = Field(default=0.0, description="Suma de transferencias recibidas para KAPITAL")
+        kapital_otros_abonos: Optional[float] = Field(default=0.0, description="Suma de otros abonos para KAPITAL")
+        kapital_intereses_ganados: Optional[float] = Field(default=0.0, description="Suma de intereses ganados para KAPITAL")
+        
+        kapital_ret_efectivo: Optional[float] = Field(default=0.0, description="Suma de retiros en efectivo para KAPITAL")
+        kapital_cheques_cobrados: Optional[float] = Field(default=0.0, description="Suma de cheques cobrados para KAPITAL")
+        kapital_transf_enviadas: Optional[float] = Field(default=0.0, description="Suma de transferencias enviadas para KAPITAL")
+        kapital_otros_cargos: Optional[float] = Field(default=0.0, description="Suma de otros cargos para KAPITAL")
+        kapital_ret_isr: Optional[float] = Field(default=0.0, description="Suma de retenciones de ISR para KAPITAL")
+        kapital_int_prestamos: Optional[float] = Field(default=0.0, description="Suma de intereses de préstamos para KAPITAL")
+        kapital_amort_prestamos: Optional[float] = Field(default=0.0, description="Suma de amortizaciones de préstamos para KAPITAL")
+        kapital_movimientos_mes_abonos: Optional[float] = Field(default=0.0, description="Abonos de inversión (+) Movimientos del Mes")
+        kapital_movimientos_mes_cargos: Optional[float] = Field(default=0.0, description="Cargos de inversión (-) Movimientos del Mes")
+        # ---------------------------------------------
+
         # Métricas de medición
         total_depositos_extraidos: Optional[float] = Field(default=0.0, description="Suma real de los abonos encontrados")
         total_cargos_extraidos: Optional[float] = Field(default=0.0, description="Suma real de los cargos encontrados")
