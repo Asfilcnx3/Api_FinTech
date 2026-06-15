@@ -384,6 +384,11 @@ class MotorExtraccionEspacial:
                 candidates = []
                 for w in header_tokens:
                     clean_txt = w[4].upper().strip()
+                    
+                    # Evitamos falsos positivos en KAPITAL con palabras comunes en zonas de SPEI
+                    if self.banco == "KAPITAL" and ("SPEI" in clean_txt or "TRANSFERENCIA" in clean_txt or "DESEMBOLSO" in clean_txt or "RETENCION" in clean_txt):
+                        continue
+
                     if clean_txt in keywords or any(k in clean_txt for k in keywords):
                         candidates.append(w)
                 
@@ -1373,7 +1378,7 @@ class MotorExtraccionEspacial:
                     texto_fila_completo = " ".join([w[4] for w in tokens_fila_completa]).upper()
                     
                     # Si detectamos que la fila entera es un Total, aniquilamos la transacción
-                    if REGEX_FILA_TOTAL.search(texto_fila_completo) or "TOTAL DE LAS" in texto_fila_completo or "MOVIMIENTOS DEL PRESENTE ESTADO" in texto_fila_completo:
+                    if REGEX_FILA_TOTAL.search(texto_fila_completo) or "TOTAL DE LAS" in texto_fila_completo or "MOVIMIENTOS DEL PRESENTE ESTADO" in texto_fila_completo or "SALDO INICIAL" in texto_fila_completo:
                         continue
                         
                     # 2. Limpieza de Descripciones: Quitamos la basura (ej. "Nuevos cargos y abonos...")

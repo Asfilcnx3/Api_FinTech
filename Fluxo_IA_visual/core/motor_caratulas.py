@@ -117,10 +117,16 @@ class MotorCaratulas:
                 else:
                     paginas_para_ia = list(range(inicio_rango, fin_rango + 1))
 
+            # --- ENRUTAMIENTO DE PROMPT PARA KAPITAL ---
+            prompt_a_usar = prompt_base
+            if banco_detectado == "KAPITAL":
+                from ..utils.helpers_texto_fluxo import prompt_kapital_fluxo
+                prompt_a_usar = prompt_kapital_fluxo
+
             # D. Ejecución concurrente de Modelos Multimodales
-            # Pasamos los bytes; la conversión a imagen la hace la función de la IA por ahora
-            tarea_gpt = analizar_gpt_fn(prompt_base, pdf_bytes, paginas_a_procesar=paginas_para_ia)
-            tarea_qwen = analizar_qwen_fn(prompt_base, pdf_bytes, paginas_a_procesar=paginas_para_ia)
+            # Pasamos el prompt enrutado en lugar del base
+            tarea_gpt = analizar_gpt_fn(prompt_a_usar, pdf_bytes, paginas_a_procesar=paginas_para_ia)
+            tarea_qwen = analizar_qwen_fn(prompt_a_usar, pdf_bytes, paginas_a_procesar=paginas_para_ia)
 
             import asyncio
             resultados_ia_brutos = await asyncio.gather(tarea_gpt, tarea_qwen, return_exceptions=True)
@@ -388,8 +394,14 @@ class MotorCaratulas:
         
         # Obtenemos todos los campos posibles (usando GPT como base estructural)
         todos_los_campos = set(datos_gpt.keys()) | set(datos_qwen.keys())
-        CAMPOS_NUMERICOS = {"comisiones", "depositos", "cargos", "saldo_promedio"}
-
+        CAMPOS_NUMERICOS = {
+            "comisiones", "depositos", "cargos", "saldo_promedio",
+            "kapital_dep_efectivo", "kapital_dep_cheques", "kapital_transf_recibidas",
+            "kapital_otros_abonos", "kapital_intereses_ganados", "kapital_ret_efectivo",
+            "kapital_cheques_cobrados", "kapital_transf_enviadas", "kapital_otros_cargos",
+            "kapital_ret_isr", "kapital_int_prestamos", "kapital_amort_prestamos",
+            "kapital_movimientos_mes_abonos", "kapital_movimientos_mes_cargos"
+        }
         for campo in todos_los_campos:
             v_regex = datos_regex.get(campo)
             v_qwen = datos_qwen.get(campo)
@@ -450,6 +462,29 @@ class MotorCaratulas:
         # Inyectamos el banco del Regex si la IA no supo clasificarlo bien
         if datos_regex.get("banco"):
             resultado_final["banco"] = datos_regex["banco"]
+
+        # --- SUMATORIA MATEMÁTICA PARA KAPITAL ---
+        if resultado_final.get("banco") == "KAPITAL":
+            # Extraemos de forma segura (si es None, lo convertimos a 0.0)
+            resultado_final["depositos"] = sum([
+                resultado_final.get("kapital_dep_efectivo") or 0.0,
+                resultado_final.get("kapital_dep_cheques") or 0.0,
+                resultado_final.get("kapital_transf_recibidas") or 0.0,
+                resultado_final.get("kapital_otros_abonos") or 0.0,
+                resultado_final.get("kapital_intereses_ganados") or 0.0,
+                resultado_final.get("kapital_movimientos_mes_abonos") or 0.0 
+            ])
+            
+            resultado_final["cargos"] = sum([
+                resultado_final.get("kapital_ret_efectivo") or 0.0,
+                resultado_final.get("kapital_cheques_cobrados") or 0.0,
+                resultado_final.get("kapital_transf_enviadas") or 0.0,
+                resultado_final.get("kapital_otros_cargos") or 0.0,
+                resultado_final.get("kapital_ret_isr") or 0.0,
+                resultado_final.get("kapital_int_prestamos") or 0.0,
+                resultado_final.get("kapital_amort_prestamos") or 0.0,
+                resultado_final.get("kapital_movimientos_mes_cargos") or 0.0 
+            ])
 
         return resultado_final
 

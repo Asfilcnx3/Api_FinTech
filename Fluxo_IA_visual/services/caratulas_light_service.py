@@ -274,8 +274,27 @@ class CaratulasLightService:
             if not tiene_caratulas_recientes:
                 faltantes_a = sorted(list(set_a - periodos_encontrados))
                 faltantes_b = sorted(list(set_b - periodos_encontrados))
-                # Mensaje explícito de qué meses le faltan para que el gestor sepa qué pedir
-                mensaje_periodos = f"No se completaron los 3 meses requeridos. Falta(n) periodo(s): {', '.join(faltantes_a)} (o alternativamente asumiendo desfase: {', '.join(faltantes_b)})."
+                
+                # Elegimos el set que le exija al usuario subir MENOS archivos
+                mejor_opcion = faltantes_a if len(faltantes_a) <= len(faltantes_b) else faltantes_b
+                cantidad_faltante = len(mejor_opcion)
+                
+                # Diccionario para formatear los meses al español
+                nombres_meses = {
+                    "01": "enero", "02": "febrero", "03": "marzo", "04": "abril",
+                    "05": "mayo", "06": "junio", "07": "julio", "08": "agosto",
+                    "09": "septiembre", "10": "octubre", "11": "noviembre", "12": "diciembre"
+                }
+                
+                meses_formateados = []
+                for periodo in mejor_opcion:
+                    mes_num, anio = periodo.split("-")
+                    meses_formateados.append(f"{nombres_meses[mes_num]} {anio}")
+                
+                mensaje_periodos = f"Faltan al menos {cantidad_faltante} estado(s) de cuenta de los meses: {', '.join(meses_formateados)}"
+                
+                # Log explícito para saber qué pedía cada set y qué se le mostró al usuario
+                logger.info(f"[Job {job_id}] Periodos incompletos. Faltantes Set A: {faltantes_a} | Faltantes Set B: {faltantes_b} | Mostrado al usuario: {meses_formateados}")
                     
             # ==========================================================
             # --- IDEA 2: VALIDACIÓN DE CONGRUENCIA (RFC / NOMBRE) ---

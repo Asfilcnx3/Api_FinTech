@@ -22,7 +22,8 @@ PALABRAS_TPV = [
     "pocket de latinoameric", "pocket de billpocket", "billpocket", "spei amexco", "data merchant services", "abrexpress company mexicsa",
     "net pay", "netpay", "payclip", "pocket", "kiwi", "kiwi international", "zettle", "gananciasclip", "ganancias clip", "deposito bpu", "depositobpu",
     "net pay sapi de cv", "srpago", "sr pago", "señor pago", "señorpago", "wuzi", "bn-nts", "vta. cre", "vta. deb", "netpay", "pay sapi de cv", "first data", "fiserv", "evopay mx", "evopaymx", "evopay", "evopayments", "bzpay", "bz pay", "bzpayments", "bz payments", "bzpay solutions", "bz pay solutions", "psm payment services mexico sa de cv",
-    "ventas credito", "ventas debito", "quark payments", "quark", "quark payment solutions", "quark payments solutions", "quark payment solutions sa de cv", "quarkpayments"
+    "ventas credito", "ventas debito", "quark payments", "quark", "quark payment solutions", "quark payments solutions", "quark payment solutions sa de cv", "quarkpayments",
+    "druo", "druo sa de cv", "bpu"
 ]
 
 PALABRAS_EFECTIVO = [
@@ -30,11 +31,11 @@ PALABRAS_EFECTIVO = [
 ]
 
 PALABRAS_TRASPASO_ENTRE_CUENTAS = [
-    "traspaso entre cuentas", "traspaso cuentas propias", "traspaso entre cuentas propias", "transferencia entre cuentas propias", "transferencia entre cuentas", "traspaso entre mis cuentas", "traspaso a cuenta propia", "transferencia a cuenta propia", "traspaso a mis cuentas", "transferencia a mis cuentas", "transferencia cuentas propias", "traspaso a", "transferencia a", "transferencia entre", "traspaso entre", "traspaso tarjeta", "traspaso a cuenta de terceros"
+    "traspaso entre cuentas", "traspaso cuentas propias", "traspaso entre cuentas propias", "transferencia entre cuentas propias", "transferencia entre cuentas", "traspaso entre mis cuentas", "traspaso a cuenta propia", "transferencia a cuenta propia", "traspaso a mis cuentas", "transferencia a mis cuentas", "transferencia cuentas propias",  "traspaso tarjeta", "traspaso a cuenta de terceros"
 ]   
 
 PALABRAS_TRASPASO_FINANCIAMIENTO = [
-    "prestamo", "anticipo de ventas", "anticipo de venta", "financiamiento", "anticipo", "adelanto", "adelanto de ventas", "préstamo", "crédito", "otorgamiento de crédito", "comision por apertura", "credito"
+    "prestamo", "anticipo de ventas", "anticipo de venta", "financiamiento", "anticipo", "adelanto", "adelanto de ventas", "préstamo", "crédito", "otorgamiento de crédito", "comision por apertura", "credito", "fondeo fluxo", "fondeo", "desembolso de credito", "desembolso de crédito"
 ]
 
 PALABRAS_BMRCASH = [
@@ -53,7 +54,6 @@ PALABRAS_PAGO_FINANCIAMIENTO = [
     "domiciliacion",
     "sofom",
     "cgo domiciliacion",
-    "druo sa de cv",
     "pago de capital",
     "intereses exento tasa",
     "pago credito",
@@ -62,7 +62,11 @@ PALABRAS_PAGO_FINANCIAMIENTO = [
     "pago a interes-capital de credito",
     "cargo por intereses de credito",
     "cargo capital de credito",
-    "domi-druo sa de cv"
+    "domi-druo sa de cv",
+    "pago fluxo", 
+    "fluxo fin sapi",
+    "pago de capital",
+    "intereses exento tasa"
 ]
 
 ### DICCIONARIOS PARA COMISIONES
@@ -316,7 +320,32 @@ CONFIGURACION_BANCOS = {
         "rfc_pattern": [r"r\.f\.c\.\s*([a-zA-ZÑ&]{3,4}\d{6}[a-zA-Z0-9]{2,3})"],
         "comisiones_pattern": [r"comisiones\s*([\d,]+\.\d{2})"],
         "depositos_pattern": [r"dep[oó]sitos\s*([\d,]+\.\d{2})"]
-    }
+    },
+    "kapital": {
+        "alias": ["kapital", "kapital mexico grupo financiero"],
+        "rfc_pattern": [r"rfc\s*([a-zñ&]{3,4}\d{6}[a-z0-9]{2,3})"],
+        "comisiones_pattern": [r"comisiones\s*cobradas\s*\$\s*([\d,]+\.\d{2})"],
+        
+        # Depósitos Kapital
+        "kapital_dep_efectivo_pattern": [r"dep[oó]sitos en efectivo\s*\$?\s*([\d,]+\.\d{2})"],
+        "kapital_dep_cheques_pattern": [r"dep[oó]sitos de cheques\s*\$?\s*([\d,]+\.\d{2})"],
+        "kapital_transf_recibidas_pattern": [r"transferencia recibida\s*\$?\s*([\d,]+\.\d{2})"],
+        "kapital_otros_abonos_pattern": [r"otros abonos a su cuenta\s*\$?\s*([\d,]+\.\d{2})"],
+        "kapital_intereses_ganados_pattern": [r"intereses ganados\s*\$?\s*([\d,]+\.\d{2})"],
+        
+        # Cargos Kapital
+        "kapital_ret_efectivo_pattern": [r"retiros efectivo sucursal y cajeros autom[aá]ticos\s*\$?\s*([\d,]+\.\d{2})"],
+        "kapital_cheques_cobrados_pattern": [r"cheques cobrados\s*\$?\s*([\d,]+\.\d{2})"],
+        "kapital_transf_enviadas_pattern": [r"transferencias enviadas\s*\$?\s*([\d,]+\.\d{2})"],
+        "kapital_otros_cargos_pattern": [r"otros cargos a sus cuentas\s*\$?\s*([\d,]+\.\d{2})"],
+        "kapital_ret_isr_pattern": [r"retenciones de isr\s*\$?\s*([\d,]+\.\d{2})"],
+        "kapital_int_prestamos_pattern": [r"intereses por pr[eé]stamos otorgados\s*\$?\s*([\d,]+\.\d{2})"],
+        "kapital_amort_prestamos_pattern": [r"amortizaci[oó]n por pr[eé]stamos otorgados\s*\$?\s*([\d,]+\.\d{2})"],
+
+        # Inversiones Kapital
+        "kapital_movimientos_mes_abonos_pattern": [r"\(\s*\+\s*\)\s*movimientos del mes\s*\$?\s*([\d,]+\.\d{2})"],
+        "kapital_movimientos_mes_cargos_pattern": [r"\(\s*[\-\–\—]\s*\)\s*movimientos del mes\s*\$?\s*([\d,]+\.\d{2})"]
+    },
 }
 
 ALIAS_A_BANCO_MAP = {}
@@ -409,6 +438,59 @@ REGLAS IMPORTANTES:
 - Los valores tipo string deben de estar COMPLETO y en MAYÚSCULAS.
 - Para montos, solo números con decimales (por ejemplo, "$31,001.00" debe devolverse como 31001.00).
 - Si hay varios RFC, el válido es el que aparece junto al nombre y dirección del cliente.
+"""
+
+prompt_kapital_fluxo = """
+Eres un experto extractor de datos de estados de cuenta bancarios. 
+Este documento pertenece al banco "KAPITAL". Este banco NO muestra un total de depósitos o cargos, sino que los desglosa en múltiples conceptos.
+
+INSTRUCCIONES CRÍTICAS (CAMPOS A EXTRAER):
+1. Campos Base: Extrae NOMBRE DEL BANCO, TIPO DE MONEDA, NOMBRE DEL CLIENTE, CLABE, RFC, PERIODO DE INICIO, PERIODO DE FIN y SALDO PROMEDIO.
+2. Desglose de Depósitos: Busca exhaustivamente los siguientes conceptos y extrae su valor. Si no aparecen, devuelve 0.0:
+   - "Depósitos en Efectivo"
+   - "Depósitos de Cheques"
+   - "Transferencia recibida"
+   - "Otros abonos a su cuenta"
+   - "Intereses ganados"
+   - "(+) Movimientos del Mes" (Suele estar en la sección de Detalle de Inversiones. Guárdalo en kapital_movimientos_mes_abonos)
+3. Desglose de Cargos: Busca exhaustivamente los siguientes conceptos y extrae su valor. Si no aparecen, devuelve 0.0:
+   - "Retiros efectivo sucursal y cajeros automaticos"
+   - "Cheques cobrados"
+   - "Transferencias enviadas"
+   - "Otros cargos a sus cuentas"
+   - "Retenciones de isr"
+   - "Intereses por prestamos otorgados"
+   - "Amortizacion por prestamos otorgados"
+   - "(-) Movimientos del Mes" (Suele estar en la sección de Detalle de Inversiones. Guárdalo en kapital_movimientos_mes_cargos)
+
+FORMATO DE RESPUESTA EXACTO (JSON):
+```json
+{
+    "banco": "KAPITAL",
+    "tipo_moneda": "MXN",
+    "nombre_cliente": "NOMBRE EN MAYUSCULAS",
+    "clabe_interbancaria": "012345678901234567",
+    "rfc": "XXX000000XXX",
+    "periodo_inicio": "YYYY-MM-DD",
+    "periodo_fin": "YYYY-MM-DD",
+    "saldo_promedio": 12345.67,
+    "kapital_dep_efectivo": 0.0,
+    "kapital_dep_cheques": 0.0,
+    "kapital_transf_recibidas": 0.0,
+    "kapital_otros_abonos": 0.0,
+    "kapital_intereses_ganados": 0.0,
+    "kapital_movimientos_mes_abonos": 0.0,
+    "kapital_ret_efectivo": 0.0,
+    "kapital_cheques_cobrados": 0.0,
+    "kapital_transf_enviadas": 0.0,
+    "kapital_otros_cargos": 0.0,
+    "kapital_ret_isr": 0.0,
+    "kapital_int_prestamos": 0.0,
+    "kapital_amort_prestamos": 0.0,
+    "kapital_movimientos_mes_cargos": 0.0
+}
+```
+REGLAS: Solo devuelve el JSON sin formato markdown adicional. Si el valor está vacío o no existe, usa 0.0. No infieras montos.
 """
 
 PROMPT_FASE_2_ESCRIBA_TEXTO = """
