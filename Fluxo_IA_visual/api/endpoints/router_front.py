@@ -1,3 +1,5 @@
+# api/endpoints/router_front.py
+
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, status, Depends, BackgroundTasks
 from typing import List, Optional
 import logging
@@ -64,16 +66,18 @@ async def extraer_datos_fluxo(
     background_tasks: BackgroundTasks,
     archivos: List[UploadFile] = File(..., description="Archivos PDF o ZIP"),
     webhook_url: Optional[str] = Form(None, description="URL para notificar al terminar"),
+    job_id_existente: Optional[str] = Form(None, description="Job ID previo para acumular resultados en la misma sesión"),
     file_manager: FileManagerService = Depends(get_file_manager),
     storage: StorageService = Depends(get_storage),
     caratulas_service: CaratulasLightService = Depends(get_caratulas_light_service),
-    orquestador: OrquestadorWebhooks = Depends(get_orquestador_general) # <--- INYECTAMOS
+    orquestador: OrquestadorWebhooks = Depends(get_orquestador_general)
 ):
     """
     Endpoint lazy: Recibe archivos, los guarda temporalmente y delega 
     el trabajo pesado al orquestador en background.
     """
-    job_id = str(uuid.uuid4())
+    # 1. Generar o reutilizar el Job ID
+    job_id = job_id_existente if job_id_existente else str(uuid.uuid4())
     lista_archivos_trabajo = []
     
     # 1. Guardar y descomprimir (Streaming a Disco)
@@ -90,19 +94,23 @@ async def extraer_datos_fluxo(
     if not lista_archivos_trabajo:
         raise HTTPException(status_code=400, detail="No se encontraron archivos PDF válidos en la subida.")
 
-    # 2. Registrar el inicio del trabajo en disco
-    storage.update_job(job_id, {
-        "estatus": "procesando",
-        "mensaje": "Iniciando lectura de archivos en paralelo..."
-    })
+    # 2. Registrar el inicio del trabajo en disco sin borrar el historial
+    datos_previos = storage.obtener_datos_json(job_id)
+    if not datos_previos:
+        datos_previos = {}
+        
+    datos_previos["estatus"] = "procesando"
+    datos_previos["mensaje"] = "Iniciando lectura de archivos o recuperando caché..."
+    
+    storage.update_job(job_id, datos_previos)
 
     # 3. DELEGAMOS AL ORQUESTADOR GENERAL
     background_tasks.add_task(
         orquestador.ejecutar_y_notificar,
         caratulas_service.ejecutar_pipeline_concurrente, # 1. La función específica de carátulas
-        job_id,                                          # 2. El Job ID
+        job_id,                                          # 2. El Job ID actual
         webhook_url,                                     # 3. El webhook
-        lista_archivos_trabajo                           # 4. Los argumentos (lista de archivos)
+        lista_archivos_trabajo                          # 4. Los argumentos (lista de archivos)
     )
 
     # 4. Responder de inmediato al cliente

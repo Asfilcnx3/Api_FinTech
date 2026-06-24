@@ -1,9 +1,12 @@
+# services/caratulas_light_service.py
+
 import asyncio
 import logging
 import re
 import fitz
 from pathlib import Path
 from datetime import datetime
+from typing import Optional
 
 # Ajusta las rutas relativas según la ubicación exacta de tu carpeta services
 from ..core.motor_caratulas_light import procesar_caratula_frontend
@@ -163,6 +166,7 @@ class CaratulasLightService:
         async with semaforo:
             ruta_pdf = Path(info_archivo["path"])
             nombre_original = info_archivo["filename"]
+            hash_actual = info_archivo.get("hash_documento") # Recuperamos el hash
             
             try:
                 # A. Validar límite de peso
@@ -211,15 +215,16 @@ class CaratulasLightService:
                     return {"error": {
                         "nombre_documento": nombre_original,
                         "estatus_documento": "fallido",
+                        "hash_documento": hash_actual,
                         "detalle_error": res_estructurada.error_procesamiento
                     }}
                 
-                # Convertimos el modelo Pydantic a diccionario e inyectamos los nuevos campos
                 resultados_dict = []
                 for item in res_estructurada.resultados:
                     dict_item = item.model_dump()
                     dict_item["nombre_documento"] = nombre_original
                     dict_item["estatus_documento"] = "exitoso"
+                    dict_item["hash_documento"] = hash_actual
                     resultados_dict.append(dict_item)
                     
                 return {"exito": resultados_dict}
@@ -229,35 +234,88 @@ class CaratulasLightService:
                 return {"error": {
                     "nombre_documento": nombre_original,
                     "estatus_documento": "fallido",
+                    "hash_documento": hash_actual,
                     "detalle_error": f"Error interno al extraer - {str(e)}"
                 }}
 
     async def ejecutar_pipeline_concurrente(self, job_id: str, lista_archivos: list):
         """Orquestador background: Dispara N archivos a la vez, guardando estado en disco (JSON)."""
         try:
-            self.storage.update_job(job_id, {
-                "estatus": "procesando", 
-                "resultados_exitosos": [], 
-                "errores": []
-            })
-            
-            semaforo = asyncio.Semaphore(15)
-            
-            tareas = [
-                self._procesar_archivo_individual(info, semaforo)
-                for info in lista_archivos
-            ]
-            
-            resultados_brutos = await asyncio.gather(*tareas)
-            
             exitos = []
             errores = []
-            
-            for res in resultados_brutos:
-                if "error" in res:
-                    errores.append(res["error"])
-                elif "exito" in res:
-                    exitos.extend(res["exito"])
+            archivos_a_procesar = []
+
+            # ==========================================================
+            # 1. RECUPERACIÓN DE CACHÉ (DEL MISMO JOB ID)
+            # ==========================================================
+            hashes_exitosos_cache = {}
+            hashes_errores_cache = {}
+
+            # Leemos el archivo JSON actual antes de procesar
+            resultado_anterior = self.storage.obtener_datos_json(job_id)
+            if resultado_anterior:
+                # Mapear éxitos anteriores
+                for exito in resultado_anterior.get("resultados_exitosos", []):
+                    h = exito.get("hash_documento")
+                    if h:
+                        hashes_exitosos_cache[h] = exito
+
+                # Mapear errores anteriores
+                for error in resultado_anterior.get("errores", []):
+                    h = error.get("hash_documento")
+                    if h:
+                        hashes_errores_cache[h] = error
+
+            # ==========================================================
+            # 2. ACTUALIZACIÓN DE ESTADO VISUAL
+            # ==========================================================
+            # Actualizamos el job a "procesando" pero CONSERVAMOS los resultados 
+            # anteriores para que el frontend siga viéndolos durante el polling.
+            self.storage.update_job(job_id, {
+                "estatus": "procesando", 
+                "mensaje": "Procesando nuevos documentos...",
+                "resultados_exitosos": list(hashes_exitosos_cache.values()), 
+                "errores": list(hashes_errores_cache.values())
+            })
+
+            # ==========================================================
+            # 3. FILTRADO (DEDUPLICACIÓN)
+            # ==========================================================
+            for info in lista_archivos:
+                h_actual = info.get("hash_documento")
+                
+                if h_actual in hashes_exitosos_cache:
+                    logger.info(f"Deduplicación: Rescatando éxito de {info['filename']} desde caché.")
+                    exito_recuperado = hashes_exitosos_cache[h_actual].copy()
+                    exito_recuperado["nombre_documento"] = info["filename"]
+                    exitos.append(exito_recuperado)
+                
+                elif h_actual in hashes_errores_cache:
+                    logger.info(f"Deduplicación: Rescatando error de {info['filename']} desde caché.")
+                    error_recuperado = hashes_errores_cache[h_actual].copy()
+                    error_recuperado["nombre_documento"] = info["filename"]
+                    errores.append(error_recuperado)
+                    
+                else:
+                    archivos_a_procesar.append(info)
+
+            # ==========================================================
+            # 4. PROCESAMIENTO DE ARCHIVOS NUEVOS
+            # ==========================================================
+            if archivos_a_procesar:
+                semaforo = asyncio.Semaphore(15)
+                tareas = [
+                    self._procesar_archivo_individual(info, semaforo)
+                    for info in archivos_a_procesar
+                ]
+                
+                resultados_brutos = await asyncio.gather(*tareas)
+                
+                for res in resultados_brutos:
+                    if "error" in res:
+                        errores.append(res["error"])
+                    elif "exito" in res:
+                        exitos.extend(res["exito"])
             
             # ==========================================================
             # --- IDEA 1: INDICADOR ESTRICTO Y ALERTA DE PERIODOS ---

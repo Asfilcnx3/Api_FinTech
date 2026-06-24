@@ -58,16 +58,20 @@ async def procesar_pdf_api(
     background_tasks: BackgroundTasks,
     archivos: List[UploadFile] = File(..., description="Archivos PDF o ZIP"),
     webhook_url: Optional[str] = Form(None, description="URL para notificar al terminar"),
-    # --- INYECCIÓN DE DEPENDENCIAS AQUÍ ---
+    job_id_existente: Optional[str] = Form(None, description="Job ID previo para acumular resultados"), # Agregamos este parámetro
     file_manager: FileManagerService = Depends(get_file_manager),
+    storage: StorageService = Depends(get_storage), # INYECTAMOS EL STORAGE AQUÍ
     processing_service: ProcessingService = Depends(get_processing_service),
     orquestador: OrquestadorWebhooks = Depends(get_orquestador_general)
 ):
-    job_id = str(uuid.uuid4())
+    # 1. Generar o reutilizar el Job ID
+    job_id = job_id_existente if job_id_existente else str(uuid.uuid4())
     lista_archivos_trabajo = []
 
     try:
         for archivo in archivos:
+            # Nota: El FileManager ya le inyecta el "hash_documento" a cada archivo 
+            # gracias a la modificación que hicimos para el primer servicio.
             resultado = file_manager.procesar_entrada(archivo)
             lista_archivos_trabajo.extend(resultado)
     except HTTPException as he:
@@ -79,17 +83,27 @@ async def procesar_pdf_api(
     if not lista_archivos_trabajo:
         raise HTTPException(status_code=400, detail="No se encontraron archivos PDF válidos.")
 
-    # Rescatamos el pool global
+    # 2. Registrar el inicio o actualizar historial sin borrarlo
+    datos_previos = storage.obtener_datos_json(job_id)
+    if not datos_previos:
+        datos_previos = {}
+        
+    datos_previos["estatus"] = "procesando"
+    datos_previos["mensaje"] = "Iniciando Pipeline V2 o recuperando caché..."
+    
+    storage.update_job(job_id, datos_previos)
+
+    # 3. Rescatamos el pool global
     pool_global = request.app.state.process_pool
 
-    # DELEGAMOS AL ORQUESTADOR GENERAL
+    # 4. DELEGAMOS AL ORQUESTADOR GENERAL
     background_tasks.add_task(
         orquestador.ejecutar_y_notificar,
         processing_service.ejecutar_pipeline_background, 
         job_id,                                          
         webhook_url,                                     
         lista_archivos_trabajo,
-        pool_global # PASAMOS EL POOL COMO ARGUMENTO
+        pool_global 
     )
 
     return RespuestaProcesamientoIniciado(

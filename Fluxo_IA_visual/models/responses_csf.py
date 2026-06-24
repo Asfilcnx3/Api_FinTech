@@ -1,3 +1,5 @@
+# models/responses_csf.py
+
 from .responses_general import ErrorRespuestaBase, ContribuyenteBaseFisica, ContribuyenteBaseMoral
 from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import List, Optional, Self, Union
