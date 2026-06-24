@@ -12,6 +12,7 @@ class AnalisisTPV:
         nombre_documento: str = Field(default="Desconocido")
         estatus_documento: str = Field(default="fallido")
         detalle_error: str = Field(alias="error")
+        hash_documento: Optional[str] = Field(None, description="Hash SHA-256 del archivo físico")
 
         class Config:
             populate_by_name = True # Permite que Pydantic acepte tanto 'error' como 'detalle_error' al construirlo
@@ -114,7 +115,7 @@ class AnalisisTPV:
             description="Estado final del procesamiento. Puede ser 'exitoso' o 'fallido'. Un estado fallido implica que se generó un ErrorRespuesta en los detalles.",
             examples=["exitoso"]
         )
-        
+        hash_documento: Optional[str] = Field(None, description="Hash SHA-256 del archivo físico")
         AnalisisIA: Optional["AnalisisTPV.ResultadoAnalisisIA"] = Field(None, description="Resultados extraídos de la carátula y métricas globales calculadas.")
         DetalleTransacciones: Optional[Union["AnalisisTPV.ResultadoTPV", "AnalisisTPV.ErrorRespuesta"]] = Field(None, description="Lista de movimientos extraídos o el detalle del error si falló.")
 

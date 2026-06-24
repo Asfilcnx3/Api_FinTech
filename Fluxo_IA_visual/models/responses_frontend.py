@@ -1,3 +1,5 @@
+# models/responses_frontend.py
+
 # NOTA: Este archivo define los modelos de datos que se utilizan para estructurar las respuestas que se envían al frontend.
 # Aquí se crean modelos ligeros y específicos para la Carátula, que es el primer nivel de extracción que se le muestra al usuario antes de procesar el PDF completo.
 
@@ -7,6 +9,7 @@ from typing import List, Optional
 class DatosCaratulaLight(BaseModel):
     nombre_documento: Optional[str] = Field(None, description="Nombre original del archivo procesado")
     estatus_documento: Optional[str] = Field("exitoso", description="Estatus del documento")
+    hash_documento: Optional[str] = Field(None, description="Hash SHA-256 del archivo físico")
     banco: Optional[str] = Field(None, description="Nombre del banco en minúsculas (ej. bbva, banorte)")
     clabe: Optional[str] = Field(None, description="CLABE interbancaria de 18 dígitos")
     periodo: Optional[str] = Field(None, description="Periodo del estado de cuenta en formato MM-YYYY")
@@ -27,6 +30,7 @@ class RespuestaProcesamientoIniciado(BaseModel):
 class ErrorDocumento(BaseModel):
     nombre_documento: str
     estatus_documento: str = "fallido"
+    hash_documento: Optional[str] = Field(None, description="Hash SHA-256 del archivo físico")
     detalle_error: str
 
 class RespuestaEstadoTrabajo(BaseModel):

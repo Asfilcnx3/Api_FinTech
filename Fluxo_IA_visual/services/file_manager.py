@@ -5,6 +5,7 @@ import os
 import uuid
 import zipfile
 import time
+import hashlib
 import logging
 from pathlib import Path
 from fastapi import UploadFile, HTTPException
@@ -45,6 +46,19 @@ class FileManagerService:
                 logger.info(f"Limpieza FileManager: Se eliminaron {contador} temporales antiguos.")
         except Exception as e:
             logger.warning(f"Error limpiando temporales antiguos: {e}")
+    
+    def _calcular_hash_archivo(self, ruta_archivo: Path) -> str:
+        """Calcula el hash SHA-256 de un archivo en disco mediante lectura por bloques."""
+        sha256_hash = hashlib.sha256()
+        try:
+            with open(ruta_archivo, "rb") as f:
+                # Leer en bloques de 4K
+                for byte_block in iter(lambda: f.read(4096), b""):
+                    sha256_hash.update(byte_block)
+            return sha256_hash.hexdigest()
+        except Exception as e:
+            logger.warning(f"No se pudo calcular hash para {ruta_archivo}: {e}")
+            return "hash_generacion_fallida"
 
     def guardar_archivo_temporal(self, upload_file: UploadFile) -> Path:
         """
@@ -162,7 +176,8 @@ class FileManagerService:
                             "path": full_path,
                             "filename": Path(member).name,
                             "original_source": upload_file.filename,
-                            "es_zip_content": True
+                            "es_zip_content": True,
+                            "hash_documento": self._calcular_hash_archivo(full_path)
                         })
                 
                 # Borrar el .zip original para ahorrar espacio
@@ -181,7 +196,8 @@ class FileManagerService:
                 "path": temp_path,
                 "filename": upload_file.filename,
                 "original_source": upload_file.filename,
-                "es_zip_content": False
+                "es_zip_content": False,
+                "hash_documento": self._calcular_hash_archivo(temp_path)
             })
         
         else:

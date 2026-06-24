@@ -78,10 +78,49 @@ class ProcessingService:
         """
         # 0. INICIO
         self.passport.crear_pasaporte(job_id)
-        logger.info(f"Iniciando Pipeline V2 (Motor Híbrido) para Job {job_id}")
+        logger.info(f"Iniciando Pipeline V2 (Motor Híbrido) con Idempotencia para Job {job_id}")
+        
+        # GUARDIA DE MEMORIA: Respaldamos TODAS las rutas subidas en esta petición
+        # para asegurar que el file_manager las borre al final, procesadas o no.
+        todas_las_rutas_temporales = [d["path"] for d in lista_archivos]
+        
+        # ==========================================================
+        # --- ETAPA 0: IDEMPOTENCIA Y RECUPERACIÓN DE CACHÉ ---
+        # ==========================================================
+        self.passport.actualizar(job_id, fase=0, nombre_fase="Deduplicación", descripcion="Buscando historial previo...")
+        
+        archivos_nuevos = []
+        resultados_cacheados_obj = []
+        
+        # Obtenemos el JSON de la sesión actual
+        datos_previos = self.storage.obtener_datos_json(job_id) or {}
+        resultados_previos = datos_previos.get("resultados_individuales", [])
+        
+        # Mapeamos los resultados previos por su hash
+        cache_general = { item.get("hash_documento"): item for item in resultados_previos if item.get("hash_documento") }
+
+        for doc_info in lista_archivos:
+            h_actual = doc_info.get("hash_documento")
+            filename = doc_info.get("filename")
+            
+            if h_actual in cache_general:
+                logger.info(f"Deduplicación: Rescatando documento de caché -> {filename}")
+                dict_recuperado = cache_general[h_actual].copy()
+                dict_recuperado["nombre_documento"] = filename
+                
+                # Parseamos el diccionario de vuelta a un objeto Pydantic para el pipeline
+                resultados_cacheados_obj.append(AnalisisTPV.ResultadoExtraccion(**dict_recuperado))
+            else:
+                archivos_nuevos.append(doc_info)
+
+        if resultados_cacheados_obj:
+            self.passport.actualizar(job_id, descripcion=f"Rescatados {len(resultados_cacheados_obj)} documentos. Procesando {len(archivos_nuevos)} nuevos...")
+
+        # Aislamos el pipeline: Las Etapas 1 a 5 SOLO trabajarán con esta nueva lista
+        lista_archivos = archivos_nuevos
         
         tareas_analisis = []
-        
+
         # --- ETAPA 1: PORTADAS (I/O Bound -> Threads o Async nativo) ---
         self.passport.actualizar(job_id, fase=1, nombre_fase="Análisis Inicial", descripcion="Escaneando estructura de archivos...")
 
@@ -134,6 +173,7 @@ class ProcessingService:
             doc_meta = lista_archivos[i]
             filename = doc_meta["filename"]
             file_path = str(doc_meta["path"])
+            hash_actual = doc_meta.get("hash_documento")
 
             # Manejo de Errores de Etapa 1
             if isinstance(resultado_bruto, Exception):
@@ -153,10 +193,12 @@ class ProcessingService:
                 resultados_finales[i] = AnalisisTPV.ResultadoExtraccion(
                     nombre_documento=filename,
                     estatus_documento="fallido",
+                    hash_documento=hash_actual, 
                     AnalisisIA=ia_dummy, 
                     DetalleTransacciones=AnalisisTPV.ErrorRespuesta(
                         nombre_documento=filename,
-                        detalle_error=error_msg
+                        detalle_error=error_msg,
+                        hash_documento=hash_actual 
                     )
                 )
                 continue
@@ -179,10 +221,12 @@ class ProcessingService:
                 resultados_finales[i] = AnalisisTPV.ResultadoExtraccion(
                     nombre_documento=filename,
                     estatus_documento="exitoso", # Se marca exitoso para no disparar alarmas rojas de fallo técnico
+                    hash_documento=hash_actual,
                     AnalisisIA=ia_dummy, 
                     DetalleTransacciones=AnalisisTPV.ErrorRespuesta(
                         nombre_documento=filename,
-                        detalle_error="Omitido: Es un duplicado exacto de otro estado de cuenta en este lote."
+                        detalle_error="Omitido: Es un duplicado exacto de otro estado de cuenta en este lote.",
+                        hash_documento=hash_actual
                     )
                 )
                 continue
@@ -197,6 +241,7 @@ class ProcessingService:
                         "sub_index": idx_cuenta,
                         "filename": f"{filename} (Cta {idx_cuenta + 1})",
                         "file_path": file_path, 
+                        "hash_documento": hash_actual,
                         "ia_data": datos_cuenta,
                         "texto_por_pagina": texto_por_pagina,
                         "movimientos": movimientos_seguros,
@@ -213,9 +258,11 @@ class ProcessingService:
                 resultados_finales[i] = AnalisisTPV.ResultadoExtraccion(
                     nombre_documento=filename,
                     estatus_documento="fallido",
+                    hash_documento=hash_actual,
                     DetalleTransacciones=AnalisisTPV.ErrorRespuesta(
                         nombre_documento=filename,
-                        detalle_error="Error interno separando cuentas."
+                        detalle_error="Error interno separando cuentas.",
+                        hash_documento=hash_actual
                     )
                 )
 
@@ -373,6 +420,13 @@ class ProcessingService:
             await asyncio.gather(*tareas_documentos)
 
         # =====================================================================
+        # --- ETAPA 5.4: INYECCIÓN DE CACHÉ (IDEMPOTENCIA) ---
+        # =====================================================================
+        if resultados_cacheados_obj:
+            logger.info(f"Inyectando {len(resultados_cacheados_obj)} documentos cacheados al pool global para cruce de traspasos.")
+            resultados_fase_2.extend(resultados_cacheados_obj)
+
+        # =====================================================================
         # --- ETAPA 5.5: ANÁLISIS GLOBAL DE TRASPASOS (NOMBRES Y CUENTAS) ---
         # =====================================================================
         self.passport.actualizar(job_id, descripcion="Realizando cruce global de traspasos propios (Nombres y Cuentas)...")
@@ -482,8 +536,7 @@ class ProcessingService:
         self._generar_y_guardar_reportes(resultados_fase_2, job_id)
 
         # --- LIMPIEZA FINAL ---
-        rutas_a_borrar = [d["path"] for d in lista_archivos]
-        self.file_manager.limpiar_temporales(rutas_a_borrar)
+        self.file_manager.limpiar_temporales(todas_las_rutas_temporales) # <-- Usamos la variable de la Etapa 0
         logger.info(f"Job {job_id} finalizado exitosamente.")
         
         # FINAL
@@ -505,6 +558,7 @@ class ProcessingService:
             resultados_finales[doc["index"]] = AnalisisTPV.ResultadoExtraccion(
                 nombre_documento=filename,
                 estatus_documento="fallido",
+                hash_documento=doc.get("hash_documento"),
                 AnalisisIA=doc["ia_data"],
                 DetalleTransacciones=AnalisisTPV.ErrorRespuesta(
                     nombre_documento=filename,
@@ -517,6 +571,7 @@ class ProcessingService:
             # Buscamos la data original para no perder lo que ya teníamos (carátula)
             # Esto es ineficiente O(N), pero N es pequeño (<20)
             doc_data = next((d for d in docs_escaneados if d["index"] == index), None)
+            hash_doc = doc_data.get("hash_documento") if doc_data else None
             ia_data = doc_data["ia_data"] if doc_data else None
             filename = doc_data.get("filename", "Desconocido") if doc_data else "Desconocido"
             
@@ -528,6 +583,7 @@ class ProcessingService:
             resultados_finales[index] = AnalisisTPV.ResultadoExtraccion(
                 nombre_documento=filename,
                 estatus_documento="fallido",
+                hash_documento=hash_doc,
                 AnalisisIA=ia_data,
                 DetalleTransacciones=error_obj
             )
@@ -555,6 +611,7 @@ class ProcessingService:
                     res_model = AnalisisTPV.ResultadoExtraccion(
                         nombre_documento=nombre_arch,
                         estatus_documento="fallido",
+                        hash_documento=contexto.get("hash_documento"),
                         AnalisisIA=AnalisisTPV.ResultadoAnalisisIA(
                             banco="ERROR_PROCESAMIENTO",
                             nombre_archivo_virtual=nombre_arch
@@ -604,15 +661,17 @@ class ProcessingService:
                             item_obj = AnalisisTPV.ResultadoExtraccion(
                                 nombre_documento=contexto.get("filename", "Desconocido"),
                                 estatus_documento="exitoso",
+                                hash_documento=contexto.get("hash_documento"),
                                 AnalisisIA=analisis_ia,
                                 DetalleTransacciones=detalle_tpv,
                                 metadata_tecnica=[item.get("metricas", {})]
                             )
                         else:
-                            # Ya es un objeto (quizás vino de otro lado)
+                            # Ya es un objeto
                             item_obj = item
                             item_obj.nombre_documento = contexto.get("filename", "Desconocido")
                             item_obj.estatus_documento = "exitoso"
+                            item_obj.hash_documento = contexto.get("hash_documento")
 
                         # AHORA SÍ podemos usar notación de punto
                         item_obj.file_path_origen = contexto["file_path"]
@@ -624,6 +683,7 @@ class ProcessingService:
                 else:
                     # Asumimos que si no es lista ni Exception, ya es un objeto Pydantic
                     res.nombre_documento = contexto.get("filename", "Desconocido")
+                    res.hash_documento = contexto.get("hash_documento")
                     
                     if isinstance(res.DetalleTransacciones, AnalisisTPV.ErrorRespuesta):
                         res.estatus_documento = "fallido"
