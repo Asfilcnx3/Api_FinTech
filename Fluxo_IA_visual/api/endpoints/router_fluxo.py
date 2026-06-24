@@ -64,8 +64,15 @@ async def procesar_pdf_api(
     processing_service: ProcessingService = Depends(get_processing_service),
     orquestador: OrquestadorWebhooks = Depends(get_orquestador_general)
 ):
-    # 1. Generar o reutilizar el Job ID
-    job_id = job_id_existente if job_id_existente else str(uuid.uuid4())
+    # 1. Generar o reutilizar el Job ID (Con sanitización)
+    job_id_limpio = job_id_existente.strip() if job_id_existente else None
+    
+    # Protegemos contra strings vacíos o la palabra "string" que inyecta Swagger UI
+    if not job_id_limpio or job_id_limpio.lower() == "string":
+        job_id = str(uuid.uuid4())
+    else:
+        job_id = job_id_limpio
+    
     lista_archivos_trabajo = []
 
     try:
